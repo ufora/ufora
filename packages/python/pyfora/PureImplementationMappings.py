@@ -91,6 +91,9 @@ class PureImplementationMappings(object):
     def canInvert(self, instance):
         return typeOfInstance(instance) in self.pyforaTypeToMapping
 
+    def canInvertInstancesOf(self, classMapping):
+        return classMapping in self.pyforaTypeToMapping
+
     def mappableInstanceToPure(self, instance):
         if id(instance) in self.pythonInstanceIdsToMappingAndId:
             mapper = self.pythonInstanceIdsToMappingAndId[id(instance)][0]

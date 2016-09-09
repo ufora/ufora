@@ -121,3 +121,5 @@ PackedHomogenousData = type_description(
     'PackedHomogenousData',
     'dtype, dataAsBytes'
     )
+
+HomogenousListAsNumpyArray = type_description("HomogenousListAsNumpyArray", "array")

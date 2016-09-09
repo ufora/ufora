@@ -249,7 +249,11 @@ class PurePythonNumpyArrayMapping(PureImplementationMapping):
                 )
 
     def mapPyforaInstanceToPythonInstance(self, pureNumpyArray):
-        array = np.array(pureNumpyArray.values)
+        if isinstance(pureNumpyArray.values, TypeDescription.HomogenousListAsNumpyArray):
+            array = pureNumpyArray.values.array
+        else:
+            array = np.array(pureNumpyArray.values)
+
         try:
             return array.reshape(pureNumpyArray.shape)
         except:

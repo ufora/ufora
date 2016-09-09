@@ -19,6 +19,7 @@ import pyfora.NamedSingletons as NamedSingletons
 import pyfora.PyAbortSingletons as PyAbortSingletons
 import pyfora.ModuleLevelObjectIndex as ModuleLevelObjectIndex
 import pyfora.pyAst.PyAstFreeVariableAnalyses as PyAstFreeVariableAnalyses
+import pyfora.TypeDescription as TypeDescription
 import pyfora
 import cPickle as pickle
 import sys
@@ -165,13 +166,13 @@ class PythonObjectRehydrator(object):
         definitions = json['obj_definitions']
         converted = {}
 
-        def convert(objectId):
+        def convert(objectId,retainHomogenousListsAsNumpy=False):
             if objectId in converted:
                 return converted[objectId]
-            converted[objectId] = convertInner(definitions[objectId])
+            converted[objectId] = convertInner(definitions[objectId], retainHomogenousListsAsNumpy)
             return converted[objectId]
 
-        def convertInner(objectDef):
+        def convertInner(objectDef, retainHomogenousListsAsNumpy=False):
             if 'primitive' in objectDef:
                 res = objectDef['primitive']
                 if isinstance(res, str):
@@ -215,11 +216,15 @@ class PythonObjectRehydrator(object):
                 #we use the first element as a prototype when decoding
                 firstElement = convert(objectDef['firstElement'])
 
-                data = data.tolist()
-                assert isinstance(data[0], type(firstElement)), "%s of type %s is not %s" % (
-                    data[0], type(data[0]), type(firstElement)
-                    )
-                return data
+                if retainHomogenousListsAsNumpy:
+                    return TypeDescription.HomogenousListAsNumpyArray(data)
+                else:
+                    data = data.tolist()
+
+                    assert isinstance(data[0], type(firstElement)), "%s of type %s is not %s" % (
+                        data[0], type(data[0]), type(firstElement)
+                        )
+                    return data
 
             if 'builtinException' in objectDef:
                 builtinExceptionTypeName = objectDef['builtinException']
@@ -227,14 +232,24 @@ class PythonObjectRehydrator(object):
                 args = convert(objectDef['args'])
                 return builtinExceptionType(*args)
             if 'classInstance' in objectDef:
-                members = {
-                    k: convert(v)
-                    for k, v in objectDef['members'].iteritems()
-                    }
                 classObject = convert(objectDef['classInstance'])
-                return self._invertPureClassInstanceIfNecessary(
-                    self._instantiateClass(classObject, members)
-                    )
+
+                if self.purePythonClassMapping.canInvertInstancesOf(classObject):
+                    members = {
+                        k: convert(v,retainHomogenousListsAsNumpy=True)
+                        for k, v in objectDef['members'].iteritems()
+                        }
+                    return self.purePythonClassMapping.pureInstanceToMappable(
+                        self._instantiateClass(classObject, members)
+                        )
+                else:
+                    members = {
+                        k: convert(v)
+                        for k, v in objectDef['members'].iteritems()
+                        }
+                    return self._invertPureClassInstanceIfNecessary(
+                        self._instantiateClass(classObject, members)
+                        )
             if 'pyAbortException' in objectDef:
                 pyAbortExceptionTypeName = objectDef['pyAbortException']
                 pyAbortExceptionType = PyAbortSingletons.singletonNameToObject[
