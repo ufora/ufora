@@ -371,8 +371,6 @@ class PythonObjectRehydrator(object):
 
             code = compile(moduleAst, filename, 'exec')
 
-            print "rehydrating class object ", filename, lineNumber, globalScope.keys()
-
             exec code in globalScope, outputLocals
         except:
             logging.error("Failed to instantiate class at %s:%s\n%s",
