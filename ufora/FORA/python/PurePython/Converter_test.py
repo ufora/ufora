@@ -40,7 +40,7 @@ def ThisFunctionIsImpure():
     return multiprocessing.cpu_count()
 
 class ConverterTest(unittest.TestCase):
-    def test_convert_impure_function(self):
+    def test_walking_unconvertible_module(self):
         mappings = PureImplementationMappings.PureImplementationMappings()
         registry = ObjectRegistry.ObjectRegistry()
 
@@ -51,10 +51,7 @@ class ConverterTest(unittest.TestCase):
 
         objId = walker.walkPyObject(ThisFunctionIsImpure)
 
-        for k,v in registry.objectIdToObjectDefinition.iteritems():
-            if isinstance(v,str):
-                v = base64.b64decode(v)
-            print k, repr(v)[:200]
+        self.assertEqual(sorted(registry.objectIdToObjectDefinition[objId].freeVariableMemberAccessChainsToId.keys()), ["multiprocessing"])
 
     
     def test_conversion_metadata(self):

@@ -16,7 +16,6 @@ import pyfora.PureImplementationMappings as PureImplementationMappings
 import pyfora.PureImplementationMapping as PureImplementationMapping
 import pyfora.PyObjectWalker as PyObjectWalker
 import pyfora.NamedSingletons as NamedSingletons
-
 import unittest
 
 class SomeRandomInstance:

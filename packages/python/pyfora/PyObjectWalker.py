@@ -126,7 +126,7 @@ class PyObjectWalker(object):
         _`purePythonClassMapping`: a `PureImplementationMapping` -- used to
             "replace" python objects in an python object graph by a "Pure"
             python class. For example, treat this `np.array` as a
-        `PurePython.SomePureImplementationOfNumpyArray`.
+            `PurePython.SomePureImplementationOfNumpyArray`.
         `_convertedObjectCache`: a mapping from python id -> pure instance
         `_pyObjectIdToObjectId`: mapping from python id -> id registered in
             `self.objectRegistry`
@@ -505,7 +505,9 @@ class PyObjectWalker(object):
             pyObject,
             classOrFunction=_ClassDefinition
             )
-        assert all(id(base) in self._pyObjectIdToObjectId for base in pyObject.__bases__)
+
+        for base in pyObject.__bases__:
+            assert id(base) in self._pyObjectIdToObjectId, (base, pyObject)
 
         self._objectRegistry.defineClass(
             objectId=objectId,
@@ -751,15 +753,14 @@ class PyObjectWalker(object):
         return self._computeSubchainAndTerminalValueAlongModules(
             rootValue, chainWithPosition)
 
-    @staticmethod
-    def _computeSubchainAndTerminalValueAlongModules(rootValue, chainWithPosition):
+    def _computeSubchainAndTerminalValueAlongModules(self, rootValue, chainWithPosition):
         ix = 1
         chain = chainWithPosition.var
         position = chainWithPosition.pos
 
         subchain, terminalValue = chain[:ix], rootValue
 
-        while PyforaInspect.ismodule(terminalValue):
+        while PyforaInspect.ismodule(terminalValue) and not self._purePythonClassMapping.isOpaqueModule(terminalValue):
             if ix >= len(chain):
                 #we're terminating at a module
                 terminalValue = _Unconvertible(terminalValue)

@@ -664,13 +664,12 @@ class ExceptionTestCases(object):
                 pass
 
     def test_reference_nonexistent_module_member(self):
-        with self.create_executor() as executor:
-            import socket
-            def f():
-                return socket.this_doesnt_exist
+        import socket
+        def f():
+            return socket.this_doesnt_exist
 
-            with self.assertRaises(pyfora.PythonToForaConversionError):
-                executor.submit(f)
+        with self.assertRaises(pyfora.ComputationError):
+            self.evaluateWithExecutor(f)
 
 
     def test_invalid_apply(self):

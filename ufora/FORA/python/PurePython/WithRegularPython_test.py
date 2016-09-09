@@ -19,7 +19,7 @@ import pyfora.Exceptions as Exceptions
 import pyfora.pure_modules.pure_pandas as PurePandas
 import pyfora.helpers as helpers
 
-
+import sys
 import unittest
 import traceback
 import pandas
@@ -183,4 +183,17 @@ class WithRegularPython_test(unittest.TestCase):
                     x = AClassReferencingNumpy().f()
 
             self.assertEqual(x, 10)
+
+    def test_can_open_files_in_regular_python(self):
+        with self.create_executor() as fora:
+            with fora.remotely.downloadAll():
+                with helpers.python:
+                    path = sys.modules['pyfora'].__file__
+
+                    if path.endswith("pyc"):
+                        path = path[:-1]
+                    
+                    x = open(path, "rb").readline()
+                    
+            self.assertTrue("Ufora Inc." in x)
 
