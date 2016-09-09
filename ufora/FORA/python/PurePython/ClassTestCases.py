@@ -14,6 +14,8 @@
 
 import pyfora
 import pyfora.Exceptions as Exceptions
+import pyfora.PyforaInspect as PyforaInspect
+
 
 class ClassTestCases(object):
     """Test cases for pyfora classes"""
@@ -1049,3 +1051,23 @@ class ClassTestCases(object):
 
         self.equivalentEvaluationTest(f)
 
+    def test_class_line_number_collision(self):
+        from ufora.FORA.python.PurePython.testModules.same_line_number.A import A
+        from ufora.FORA.python.PurePython.testModules.same_line_number.A import B
+
+        line_number_of_class_A_definition = PyforaInspect.getsourcelines(A)[1]
+        line_number_of_class_B_definition = PyforaInspect.getsourcelines(B)[1]
+
+        self.assertEqual(
+            line_number_of_class_A_definition,
+            line_number_of_class_B_definition
+            )
+
+        with self.create_executor() as executor:
+            x = 99999
+            
+            with executor.remotely.downloadAll():
+                a = A(99999)
+
+            self.assertIsInstance(a, A)
+            self.assertEqual(a.__dict__, A(x).__dict__)

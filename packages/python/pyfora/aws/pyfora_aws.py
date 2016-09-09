@@ -1,10 +1,11 @@
 import argparse
+import itertools
 import os
 import subprocess
 import sys
 import threading
 import time
-from pyfora.aws.Launcher import Launcher
+from pyfora.aws.Cluster import Cluster, EventTypes
 
 
 def get_region(region):
@@ -22,10 +23,57 @@ def get_identity_file(filename):
 class StatusPrinter(object):
     spinner = ['|', '/', '-', '\\']
 
-    def __init__(self):
+    def __init__(self, open_public_port=False):
+        self.open_public_port = open_public_port
         self.spinner_index = 0
         self.last_message_len = 0
         self.last_message = ""
+
+
+    def on_event(self, event):
+        if event.event_type == EventTypes.Launching:
+            if event.body == 'manager':
+                print "Launching manager instance:"
+            else:
+                print "Launching worker instance(s):"
+
+        elif event.event_type == EventTypes.InstanceStatus:
+            self.on_status(event.body)
+
+        elif event.event_type == EventTypes.LaunchFailed:
+            self.failed()
+            if event.body == 'worker':
+                print "Worker(s) could not be launched."
+
+        elif event.event_type == EventTypes.Launched:
+            instance_type, instances = event.body
+            if instance_type == 'manager':
+                instance = instances[0]
+                print "Manager instance started:\n"
+                print_instance(instance, instance_type)
+                print
+                if not self.open_public_port:
+                    print "To tunnel the pyfora HTTP port (30000) over ssh, run the following command:"
+                    print "    ssh -i <ssh_key_file> -L 30000:localhost:30000 ubuntu@%s\n" % instance.ip_address
+            else:
+                self.done()
+                print "Worker instance(s) started:"
+                for worker in instances:
+                    print_instance(worker, 'worker')
+
+        elif event.event_type == EventTypes.WaitingForServices:
+            print "Waiting for services:"
+
+        elif event.event_type == EventTypes.Done:
+            self.done()
+
+        elif event.event_type == EventTypes.Failed:
+            self.failed()
+
+        else:
+            print "Unexpected status event:", event.event_type
+
+
 
     def on_status(self, status):
         if len(status) == 1 and len(status.items()[0][1]) == 1:
@@ -98,8 +146,9 @@ def launcher_args(parsed_args):
 
 
 def worker_logs(args):
-    launcher = Launcher(**launcher_args(args))
-    instances = running_or_pending_instances(launcher.get_reservations())
+    cluster = Cluster(args.name, args.ec2_region)
+    instances = cluster.list_instances()
+    instances = instances.manager + instances.workers
     identity_file = get_identity_file(args.identity_file)
 
     def grep(instance):
@@ -121,8 +170,9 @@ def worker_logs(args):
 def worker_load(args):
     cmd_to_run = 'tail -f /mnt/ufora/logs/ufora-worker.log' if args.logs else \
         'sudo apt-get install htop\\; htop'
-    launcher = Launcher(**launcher_args(args))
-    instances = running_or_pending_instances(launcher.get_reservations())
+    cluster = Cluster(args.name, args.ec2_region)
+    instances = cluster.list_instances()
+    instances = instances.manager + instances.workers
     identity_file = get_identity_file(args.identity_file)
 
     session = os.getenv("USER")
@@ -180,63 +230,32 @@ def start_instances(args):
         args.name = 'pyfora'
         print '--name argument was not specified. Using default name: ' + args.name
 
-    launcher = Launcher(instance_type=args.instance_type,
-                        open_public_port=open_public_port,
-                        commit_to_build=args.commit,
-                        vpc_id=args.vpc_id,
-                        subnet_id=args.subnet_id,
-                        security_group_id=args.security_group_id,
-                        **launcher_args(args))
+    status_printer = StatusPrinter(args.open_public_port)
 
-    status_printer = StatusPrinter()
-    print "Launching manager instance:"
-    manager = launcher.launch_manager(ssh_keyname,
-                                      args.spot_price,
-                                      callback=status_printer.on_status)
-    if not manager:
-        status_printer.failed()
+    cluster = Cluster(args.name, args.ec2_region)
+    instances = cluster.launch(args.instance_type,
+                               ssh_keyname,
+                               args.num_instances,
+                               open_public_port,
+                               args.vpc_id,
+                               args.subnet_id,
+                               args.security_group_id,
+                               args.spot_price,
+                               status_printer.on_event)
+
+
+    if not instances.manager:
         list_instances(args)
         return
-    status_printer.done()
 
-    print "Manager instance started:\n"
-    print_instance(manager, 'manager')
-    print ""
-    if not args.open_public_port:
-        print "To tunnel the pyfora HTTP port (30000) over ssh, run the following command:"
-        print "    ssh -i <ssh_key_file> -L 30000:localhost:30000 ubuntu@%s\n" % manager.ip_address
-
-    workers = []
-    if args.num_instances > 1:
-        print "Launching worker instance(s):"
-        workers = launcher.launch_workers(args.num_instances-1,
-                                          ssh_keyname,
-                                          manager.id,
-                                          args.spot_price,
-                                          callback=status_printer.on_status)
-        if not workers:
-            status_printer.failed()
-            print "Workers could not be launched."
-            list_instances(args)
-        else:
-            status_printer.done()
-            print "Worker instance(s) started:"
-
-            for worker in workers:
-                print_instance(worker, 'worker')
-
-    print "Waiting for services:"
-    if launcher.wait_for_services([manager] + workers, callback=status_printer.on_status):
-        status_printer.done()
-    else:
-        status_printer.failed()
 
 def pad(s, ct):
     return s + " " * max(ct - len(s), 0)
 
 def restart_instances(args):
-    launcher = Launcher(**launcher_args(args))
-    instances = running_or_pending_instances(launcher.get_reservations())
+    cluster = Cluster(args.name, args.ec2_region)
+    instances = cluster.list_instances()
+    instances = instances.manager + instances.workers
     identity_file = get_identity_file(args.identity_file)
 
     def restart_instance(instance):
@@ -259,90 +278,75 @@ def restart_instances(args):
 
 
 def add_instances(args):
-    launcher = Launcher(**launcher_args(args))
-    manager = [i for i in running_or_pending_instances(launcher.get_reservations())
-               if 'manager' in i.tags.get('Name', '')]
-    if len(manager) > 1:
+    cluster = Cluster(args.name, args.ec2_region)
+    instances = cluster.list_instances()
+
+    if len(instances.manager) > 1:
         print "There is more than one Manager instance. Can't add workers.", \
             "Managers:"
-        for m in manager:
+        for m in instances.manager:
             print_instance(m)
         return 1
-    elif len(manager) == 0:
-        print "No manager instances are running. Can't add workers."
+    elif len(instances.manager) == 0:
+        print "No manager instance is running. Can't add workers."
         return 1
 
     if args.num_instances < 1:
         print "--num-instances must be greater or equal to 1."
         return 1
 
-    manager = manager[0]
-    launcher.vpc_id = manager.vpc_id
-    launcher.subnet_id = manager.subnet_id
-    launcher.instance_type = manager.instance_type
-    launcher.security_group_id = manager.groups[0].id
-
-    print "Launching worker instance(s):"
     status_printer = StatusPrinter()
-    workers = launcher.launch_workers(args.num_instances,
-                                      manager.key_name,
-                                      manager.id,
-                                      args.spot_price,
-                                      callback=status_printer.on_status)
+    cluster.add_workers(instances.manager[0],
+                        args.num_instances,
+                        args.spot_price,
+                        status_printer.on_event)
+
+
     status_printer.done()
-
-    print "Workers started:"
-    for worker in workers:
-        print_instance(worker, 'worker')
-
-    print ""
-    print "Waiting for services:"
-    if launcher.wait_for_services(workers, callback=status_printer.on_status):
-        status_printer.done()
-    else:
-        status_printer.failed()
 
 
 def list_instances(args):
-    launcher = Launcher(**launcher_args(args))
-    reservations = launcher.get_reservations()
-    instances = running_or_pending_instances(reservations)
-    count = len(instances)
+    cluster = Cluster(args.name, get_region(args.ec2_region))
+    instances = cluster.list_instances()
+    count = len(instances.workers)
+    if instances.manager:
+        count += len(instances.manager)
+        if len(instances.manager) > 1:
+            print "Something is wrong! This cluster has more than one manager!"
+
     print "%d instance%s%s" % (count, 's' if count != 1 else '', ':' if count > 0 else '')
-    for i in instances:
+    for manager in instances.manager:
+        print_instance(manager)
+    for i in instances.workers:
         print_instance(i)
 
-    if reservations['unfulfilled_spot_requests']:
+    if instances.unfulfilled:
         print ""
-        count = len(reservations['unfulfilled_spot_requests'])
+        count = len(instances.unfulfilled)
         print "%d unfulfilled spot instance request%s:" % (count, 's' if count != 1 else '')
-        for r in reservations['unfulfilled_spot_requests']:
+        for r in instances.unfulfilled:
             print_spot_request(r)
 
 
 def stop_instances(args):
-    launcher = Launcher(**launcher_args(args))
-    reservations = launcher.get_reservations()
-    instances = running_or_pending_instances(reservations)
-    count = len(instances)
+    cluster = Cluster(args.name, args.ec2_region)
+    instances = cluster.list_instances()
+
+    count = len(instances.manager) + len(instances.workers)
     if count == 0:
         print "No running instances to stop"
     else:
         verb = 'Terminating' if args.terminate else 'Stopping'
         print '%s %d instances:' % (verb, count)
-        for i in instances:
+        for i in itertools.chain(instances.workers, instances.manager):
             print_instance(i)
-            if args.terminate:
-                i.terminate()
-            else:
-                i.stop()
 
-    spot_requests = reservations['unfulfilled_spot_requests']
-    if spot_requests:
-        print "Cancelling %d unfulfilled spot instance requests:" % len(spot_requests)
-        for r in spot_requests:
+    if instances.unfulfilled:
+        print "Cancelling %d unfulfilled spot instance requests:" % len(instances.unfulfilled)
+        for r in instances.unfulfilled:
             print_spot_request(r)
-            r.cancel()
+
+    cluster.stop(instances, args.terminate)
 
 
 def scp(local_path, remote_path, host, identity_file):
@@ -406,8 +410,9 @@ def parallel_for(collection, command):
 
 
 def deploy_package(args):
-    launcher = Launcher(**launcher_args(args))
-    instances = running_instances(launcher.get_reservations())
+    cluster = Cluster(args.name, args.ec2_region)
+    instances = cluster.list_instances()
+    instances = instances.manager + instances.workers
     if len(instances) == 0:
         print "No running instances"
         return
@@ -606,6 +611,7 @@ def main():
     restart_all_parser.set_defaults(func=restart_instances)
     add_arguments(restart_all_parser, command_args)
 
+
     worker_logs_parser = subparsers.add_parser(
         'worker_logs',
         help='Return the last N lines of logs matching a particular regex')
@@ -628,6 +634,7 @@ def main():
                                     default=0,
                                     help="Lines of context before the expression")
 
+
     worker_load_parser = subparsers.add_parser('worker_load',
                                                help='Run htop in tmux for all workers')
     worker_load_parser.set_defaults(func=worker_load)
@@ -636,7 +643,6 @@ def main():
                                     action='store_true',
                                     default=False,
                                     help="Instead of htop, tail the logs")
-
     add_arguments(worker_load_parser, command_args)
 
 
@@ -645,15 +651,18 @@ def main():
     launch_parser.set_defaults(func=start_instances)
     add_arguments(launch_parser, start_args)
 
+
     add_parser = subparsers.add_parser('add',
                                        help='Add workers to the existing cluster')
     add_parser.set_defaults(func=add_instances)
     add_arguments(add_parser, add_args)
 
+
     list_parser = subparsers.add_parser('list',
                                         help='List running backend instances')
     list_parser.set_defaults(func=list_instances)
     add_arguments(list_parser, list_args)
+
 
     stop_parser = subparsers.add_parser('stop',
                                         help='Stop all backend instances')
@@ -663,6 +672,7 @@ def main():
                              action='store_true',
                              help=('Terminate instances instead of stopping them. '
                                    'Spot instances cannot be stopped, only terminated.'))
+
 
     deploy_parser = subparsers.add_parser('deploy',
                                           help='deploy a build to all backend instances')

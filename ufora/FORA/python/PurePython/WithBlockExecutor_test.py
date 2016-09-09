@@ -106,7 +106,7 @@ class WithBlockExecutors_test(unittest.TestCase):
                     messages.append(msg['message'])
 
             fora.connection.logMessageHandler = logMessageHandler
-            
+
             with fora.remotely:
                 print 1, sum(x for x in xrange(10**9))
                 print 2, sum(x for x in xrange(10**9))
@@ -140,7 +140,7 @@ class WithBlockExecutors_test(unittest.TestCase):
                 print sum(f(x) for x in xrange(100))
 
             t0 = time.time()
-            while len(messages) < 101 and time.time() - t0 < 10:
+            while len(messages) < 101 and time.time() - t0 < 12:
                 time.sleep(1.0)
 
             self.assertEqual(len(messages), 101)

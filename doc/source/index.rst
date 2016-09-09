@@ -96,6 +96,7 @@ The :ref:`setup_guides` below contain instructions for setting up the backend in
    :caption: Library Reference
 
    api
+   aws
 
 
 * :ref:`genindex`

@@ -434,7 +434,7 @@ class Launcher(object):
         unfulfilled_spot_requests = [r for r in spot_requests if not r.instance_id]
 
         all_instances = instances.values() + \
-                        (self.ec2.get_only_instances(instance_ids=spot_instance_ids)
+                        (self.get_only_instances(instance_ids=spot_instance_ids)
                          if spot_instance_ids else [])
         return {
             'instances': all_instances,
@@ -502,6 +502,17 @@ class Launcher(object):
                              'pyfora_cluster',
                              self.cluster_name)
             return reservation.instances
+
+
+    def get_only_instances(self, instance_ids):
+        for i in range(3):
+            try:
+                return self.ec2.get_only_instances(instance_ids)
+            except boto.exception.EC2ResponseError as e:
+                if e.status == 400 and e.error_code == 'InvalidInstanceID.NotFound':
+                    time.sleep(0.5)
+                else:
+                    raise
 
 
     def get_format_args(self, updates):
