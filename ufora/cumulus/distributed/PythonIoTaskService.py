@@ -331,14 +331,17 @@ class PythonIoTaskService(object):
 
         transformer = PyforaToJsonTransformer.PyforaToJsonTransformer()
 
+        assert self.vdm_ is not None
+
         anObjAsJson = converter.transformPyforaImplval(
             request.asOutOfProcessPythonCall.toCall,
             transformer,
-            PyforaToJsonTransformer.ExtractVectorContents(None)
+            PyforaToJsonTransformer.ExtractVectorContents(self.vdm_)
             )
 
         result = PythonIoTasks.outOfProcessPythonCall(
             self.outOfProcessDownloaderPool,
+            self.vdm_,
             anObjAsJson
             )
 

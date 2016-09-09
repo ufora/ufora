@@ -184,6 +184,43 @@ class WithRegularPython_test(unittest.TestCase):
 
             self.assertEqual(x, 10)
 
+    def test_returning_builtin_from_out_of_process(self):
+        with self.create_executor() as fora:
+            with fora.remotely.downloadAll():
+                with helpers.python:
+                    x = len
+
+            self.assertEqual(x("asdf"), 4)
+
+    def test_numpy_arrays_out_of_process(self):
+        with self.create_executor() as fora:
+            with fora.remotely.downloadAll():
+                x = numpy.array([1,2,3,4])
+
+                with helpers.python:
+                    x = x + x
+
+            self.assertTrue(numpy.all(x == numpy.array([2,4,6,8])))
+
+    def test_with_block_in_loop(self):
+        with self.create_executor() as fora:
+            for sz in [1,2,3,4]:
+                with fora.remotely.downloadAll():
+                    with helpers.python:
+                        x = sz
+
+
+    def test_import_large_numpy_arrays(self):
+        with self.create_executor() as fora:
+            sz = 1000000
+            
+            with fora.remotely.downloadAll():
+                with helpers.python:
+                    x = numpy.ones(sz)
+                x = sum(x)
+
+            self.assertEqual(int(x), sz)
+
     def test_can_open_files_in_regular_python(self):
         with self.create_executor() as fora:
             with fora.remotely.downloadAll():

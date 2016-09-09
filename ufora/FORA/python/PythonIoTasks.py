@@ -302,7 +302,9 @@ class OutOfProcessPythonCallExecutor:
 
     def __call__(self, data):
         mappings = PureImplementationMappings.PureImplementationMappings()
-        rehydrator = PythonObjectRehydrator.PythonObjectRehydrator(mappings, allowModuleLevelLookups=False)
+        mappings.load_pure_modules()
+
+        rehydrator = PythonObjectRehydrator.PythonObjectRehydrator(mappings, allowUserCodeModuleLevelLookups=False)
         convertedInstance = rehydrator.convertJsonResultToPythonObject(self.objAsJson)
 
         result = convertedInstance()
@@ -324,7 +326,7 @@ class OutOfProcessPythonCallExecutor:
 
 
 
-def outOfProcessPythonCall(downloaderPool, objectAsJson):
+def outOfProcessPythonCall(downloaderPool, vdm, objectAsJson):
     writer = OutOfProcessPythonCallExecutor(objectAsJson)
 
     result = [None]
@@ -342,7 +344,7 @@ def outOfProcessPythonCall(downloaderPool, objectAsJson):
 
     path = os.path.join(os.path.abspath(os.path.split(pyfora.__file__)[0]), "fora")
     moduleTree = ModuleDirectoryStructure.ModuleDirectoryStructure.read(path, "purePython", "fora")
-    converter = Converter.constructConverter(moduleTree.toJson(), None)
+    converter = Converter.constructConverter(moduleTree.toJson(), vdm)
 
     anObjAsImplval = converter.convertDirectly(objId, objectRegistry)
 

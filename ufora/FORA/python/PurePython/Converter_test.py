@@ -79,7 +79,7 @@ class ConverterTest(unittest.TestCase):
                 PyforaToJsonTransformer.ExtractVectorContents(None)
                 )
 
-            rehydrator = PythonObjectRehydrator.PythonObjectRehydrator(mappings, allowModuleLevelLookups=False)
+            rehydrator = PythonObjectRehydrator.PythonObjectRehydrator(mappings, allowUserCodeModuleLevelLookups=False)
 
             convertedInstance = rehydrator.convertJsonResultToPythonObject(anObjAsJson)
 

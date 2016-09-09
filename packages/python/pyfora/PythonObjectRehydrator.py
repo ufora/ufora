@@ -19,6 +19,7 @@ import pyfora.NamedSingletons as NamedSingletons
 import pyfora.PyAbortSingletons as PyAbortSingletons
 import pyfora.ModuleLevelObjectIndex as ModuleLevelObjectIndex
 import pyfora.pyAst.PyAstFreeVariableAnalyses as PyAstFreeVariableAnalyses
+import pyfora
 import cPickle as pickle
 import sys
 import os
@@ -62,8 +63,8 @@ def updatePyAstMemberChains(pyAst, variablesInScope, isClassContext):
 class PythonObjectRehydrator(object):
     """PythonObjectRehydrator - responsible for building local copies of objects
                                 produced by the server."""
-    def __init__(self, purePythonClassMapping, allowModuleLevelLookups=True):
-        self.allowModuleLevelLookups = allowModuleLevelLookups
+    def __init__(self, purePythonClassMapping, allowUserCodeModuleLevelLookups=True):
+        self.allowUserCodeModuleLevelLookups = allowUserCodeModuleLevelLookups
         self.moduleClassesAndFunctionsByPath = {}
         self.pathsToModules = {}
         self.purePythonClassMapping = purePythonClassMapping
@@ -77,9 +78,6 @@ class PythonObjectRehydrator(object):
 
 
     def moduleLevelObject(self, path, lineNumber):
-        if not self.allowModuleLevelLookups:
-            return None
-
         if path not in self.moduleClassesAndFunctionsByPath:
             self.populateModuleMembers(path)
 
@@ -88,11 +86,24 @@ class PythonObjectRehydrator(object):
  
         return None
 
+    def canPopulateForPath(self, path):
+        if self.allowUserCodeModuleLevelLookups:
+            return True
+
+        if path.startswith(sys.prefix) or path.startswith(pyfora.__path__[0]):
+            #check if this is user code
+            return True
+
+        return False
+
     def populateModuleMembers(self, path):
-        res = {}
+        if path in self.moduleClassesAndFunctionsByPath:
+            return
+
+        res = self.moduleClassesAndFunctionsByPath[path] = {}
         module = self.moduleForFile(path)
 
-        if module is not None:
+        if module is not None and self.canPopulateForPath(path):
             for leafItemName in module.__dict__:
                 leafItemValue = module.__dict__[leafItemName]
 
@@ -100,33 +111,36 @@ class PythonObjectRehydrator(object):
                     try:
                         sourcePath = PyforaInspect.getsourcefile(leafItemValue)
 
-                        if os.path.samefile(path, sourcePath):
-                            _, lineNumber = PyforaInspect.findsource(leafItemValue)
+                        if sourcePath is not None:
+                            if os.path.samefile(path, sourcePath):
+                                _, lineNumber = PyforaInspect.findsource(leafItemValue)
 
-                            lineNumberToUse = lineNumber + 1
+                                lineNumberToUse = lineNumber + 1
 
-                            if lineNumberToUse in res:
-                                raise Exceptions.ForaToPythonConversionError(
-                                    ("PythonObjectRehydrator got a line number collision at lineNumber %s"
-                                     ", between %s and %s"),
-                                    lineNumberToUse,
-                                    leafItemValue,
-                                    res[lineNumber + 1]
-                                    )
+                                if lineNumberToUse in res and res[lineNumberToUse] is not leafItemValue:
+                                    raise Exceptions.ForaToPythonConversionError(
+                                        ("PythonObjectRehydrator got a line number collision at lineNumber %s"
+                                         ", between %s and %s"),
+                                        lineNumberToUse,
+                                        leafItemValue,
+                                        res[lineNumber + 1]
+                                        )
 
-
-                            res[lineNumberToUse] = leafItemValue
-                        else:
-                            self.populateModuleMembers(sourcePath)
+                                res[lineNumberToUse] = leafItemValue
+                            else:
+                                self.populateModuleMembers(sourcePath)
                         
                     except Exceptions.ForaToPythonConversionError:
                         raise
+                    except PyforaInspect.PyforaInspectError:
+                        pass
+                    except IOError:
+                        #this gets raised when PyforaInspect can't find a file it needs
+                        pass
                     except Exception as e:
                         logging.critical("PyforaInspect threw an exception: %s. tb = %s",
                                          e,
                                          traceback.format_exc())
-
-        self.moduleClassesAndFunctionsByPath[path] = res
 
     def moduleForFile(self, path):
         path = sanitizeModulePath(path)
@@ -341,6 +355,8 @@ class PythonObjectRehydrator(object):
 
             code = compile(moduleAst, filename, 'exec')
 
+            print "rehydrating class object ", filename, lineNumber, globalScope.keys()
+
             exec code in globalScope, outputLocals
         except:
             logging.error("Failed to instantiate class at %s:%s\n%s",
@@ -422,7 +438,10 @@ class PythonObjectRehydrator(object):
             expr.args.kwarg = None
 
             expr.decorator_list = []
-            expr.body = functionAst.body
+            
+            #make sure we copy the list - if we use the existing one, we will mess up the
+            #cached copy!
+            expr.body = list(functionAst.body)
             expr.lineno = functionAst.lineno-1
             expr.col_offset = functionAst.col_offset
 
