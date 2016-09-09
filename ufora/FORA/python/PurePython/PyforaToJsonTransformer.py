@@ -40,7 +40,7 @@ class PyforaToJsonTransformer(object):
 
     def transformPrimitive(self, primitive):
         if isinstance(primitive, str):
-            primitive = base64.b64encode(primitive).encode("utf8")
+            primitive = base64.b64encode(primitive)
 
         self.accumulateObjects(1, len(primitive) if isinstance(primitive, str) else 0)        
         return {'primitive': primitive}
@@ -54,7 +54,8 @@ class PyforaToJsonTransformer(object):
         return {'list': listMembers}
 
     def transformHomogenousList(self, firstElement, allElementsAsNumpyArrays):
-        numpyAsStrings = [{'data':base64.b64encode(x.tostring()).encode("utf8"), 'length':len(x)} for x in allElementsAsNumpyArrays]
+        numpyAsStrings = [{'data':base64.b64encode(x.tostring()), 'length':len(x)} for x in allElementsAsNumpyArrays]
+
         numpyDtypeAsString = base64.b64encode(cPickle.dumps(allElementsAsNumpyArrays[0].dtype))
 
         self.accumulateObjects(1, sum(len(x) for x in numpyAsStrings) + len(numpyDtypeAsString))
