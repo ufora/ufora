@@ -971,6 +971,22 @@ class PyAstFreeVariableAnalyses_test(unittest.TestCase):
             res
             )
 
+    def test_freeVariableMemberAccessChains_3(self):
+        tree = ast.parse(
+            textwrap.dedent(
+                """
+                x.y.z = 2
+                """
+                )
+            )
+
+        res = PyAstFreeVariableAnalyses.getFreeVariableMemberAccessChains(tree)
+
+        self.assertEqual(
+            set([('x', 'y', 'z')]),
+            res
+            )
+
 
 
 if __name__ == "__main__":

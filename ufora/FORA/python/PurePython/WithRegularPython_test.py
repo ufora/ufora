@@ -234,3 +234,23 @@ class WithRegularPython_test(unittest.TestCase):
                     
             self.assertTrue("Ufora Inc." in x)
 
+
+            
+    def test_class_chain_access(self):
+        class A():
+            def __init__(self):
+                self.z = 10
+        class B():
+            def __init__(self):
+                self.y = A()
+
+        x = B()
+        self.assertTrue(x.y.z == 10)
+
+        with self.create_executor() as fora:
+            with fora.remotely.downloadAll():
+                with helpers.python:
+                    x.y.z = 20
+                    outX = x
+        
+        self.assertTrue(outX.y.z == 20)
