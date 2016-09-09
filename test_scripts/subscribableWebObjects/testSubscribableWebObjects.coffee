@@ -25,7 +25,7 @@ SubscribableWebObjects = require(relayCoffeePath + "SubscribableWebObjects")
 
 TestTest = require(subscribableClassesPath + "Test.test")
 
-io = require('../../ufora/web/relay/node_modules/socket.io/node_modules/socket.io-client')
+io = require('../../ufora/web/relay/node_modules/socket.io-client')
 
 # nodejs doesn't like self-signed certs. This is a workaround for local testing
 require('https').globalAgent.options.rejectUnauthorized = false

@@ -34,7 +34,18 @@ process.on 'uncaughtException', (err) ->
     for line in err.stack.split('\n')
         logger.error line
 
-httpServer = require('http').createServer()
+
+express = require 'express'
+app = express()
+
+app.set 'view engine', 'pug'
+
+app.use '/js', express.static('public/js')
+
+app.get '/', (req, res) ->
+    res.render 'index'
+
+httpServer = require('http').createServer(app)
 relay = require('./server/relay') config, httpServer, () ->
     logger.info("relay app initialization callback fired")
 
