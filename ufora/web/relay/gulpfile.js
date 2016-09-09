@@ -5,7 +5,7 @@ var uglify = require('gulp-uglify');
 var sourcemaps = require('gulp-sourcemaps');
 
 var paths = {
-    src: ['client/src/*.coffee'],
+    src: ['client/**/*.coffee'],
     modules: ['node_modules/angular/angular.min.js']
 };
 

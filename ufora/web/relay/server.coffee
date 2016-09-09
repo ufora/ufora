@@ -39,6 +39,7 @@ express = require 'express'
 app = express()
 
 app.set 'view engine', 'pug'
+app.set 'views', __dirname + '/client'
 
 app.use '/js', express.static('public/js')
 
