@@ -23,7 +23,8 @@ class Mock(MagicMock):
     def __getattr__(cls, name):
         return Mock()
 
-MOCK_MODULES = ['numpy', 'pandas', 'scipy', 'scipy.special', 'pyfora.SubscribableWebObjects']
+MOCK_MODULES = ['numpy', 'pandas', 'scipy', 'scipy.special', 'pyfora.SubscribableWebObjects',
+                'pyfora.aws.Launcher']
 sys.modules.update((mod_name, Mock()) for mod_name in MOCK_MODULES)
 
 # Determine if we are running in readthedocs.org or not
