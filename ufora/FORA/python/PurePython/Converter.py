@@ -62,7 +62,11 @@ class Converter(object):
                  singletonAndExceptionConverter=None,
                  vdmOverride=None,
                  purePythonModuleImplVal=None,
-                 foraBuiltinsImplVal=None):
+                 foraBuiltinsImplVal=None,
+                 stringDecoder=base64.b64decode
+                 ):
+        self.stringDecoder = stringDecoder
+        
         self.convertedValues = {}
 
         self.singletonAndExceptionConverter = singletonAndExceptionConverter
@@ -280,7 +284,7 @@ class Converter(object):
             return self.nativeConverterAdaptor.createListOfPrimitives(value)
 
         if isinstance(value, str):
-            value = base64.b64decode(value)
+            value = self.stringDecoder(value)
 
         return self.nativeConverterAdaptor.convertConstant(value)
 
@@ -302,7 +306,7 @@ class Converter(object):
         return self.nativeConverterAdaptor.createListFromPackedData(
             self.nativeConstantConverter,
             packedData.dtype, 
-            base64.b64decode(packedData.dataAsBytes)
+            self.stringDecoder(packedData.dataAsBytes)
             )
 
     def convertList(self, listId, dependencyGraph, objectIdToObjectDefinition):
@@ -839,9 +843,9 @@ class Converter(object):
                 ]
             }
 
-def constructConverter(purePythonMDSAsJson, vdm):
+def constructConverter(purePythonMDSAsJson, vdm, stringDecoder=base64.b64decode):
     if purePythonMDSAsJson is None:
-        return Converter(vdmOverride=vdm)
+        return Converter(vdmOverride=vdm,stringDecoder=stringDecoder)
     else:
         purePythonModuleImplval = ModuleImporter.importModuleFromMDS(
             ModuleDirectoryStructure.ModuleDirectoryStructure.fromJson(purePythonMDSAsJson),
@@ -890,6 +894,7 @@ def constructConverter(purePythonMDSAsJson, vdm):
             singletonAndExceptionConverter=singletonAndExceptionConverter,
             vdmOverride=vdm,
             purePythonModuleImplVal=purePythonModuleImplval,
-            foraBuiltinsImplVal=foraBuiltinsImplVal
+            foraBuiltinsImplVal=foraBuiltinsImplVal,
+            stringDecoder=stringDecoder
             )
 

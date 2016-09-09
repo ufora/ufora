@@ -239,7 +239,7 @@ class PurePythonNumpyArrayMapping(PureImplementationMapping):
                 numpyArray.shape,
                 TypeDescription.PackedHomogenousData(
                     str(flattened.dtype),
-                    base64.b64encode(flattened.tostring())
+                    flattened.tostring()
                     )
                 )
         else:

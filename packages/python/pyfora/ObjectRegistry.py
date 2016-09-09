@@ -16,8 +16,9 @@ import pyfora.TypeDescription as TypeDescription
 import base64
 
 class ObjectRegistry(object):
-    def __init__(self):
+    def __init__(self, stringEncoder=base64.b64encode):
         self._nextObjectID = 0
+        self.stringEncoder = stringEncoder
         self.objectIdToObjectDefinition = {}
 
     def getDefinition(self, objectId):
@@ -31,13 +32,17 @@ class ObjectRegistry(object):
 
     def definePrimitive(self, objectId, primitive):
         if isinstance(primitive, str):
-            primitive = base64.b64encode(primitive)
+            primitive = self.stringEncoder(primitive)
         self.objectIdToObjectDefinition[objectId] = primitive
 
     def defineTuple(self, objectId, memberIds):
         self.objectIdToObjectDefinition[objectId] = TypeDescription.Tuple(memberIds)
 
     def definePackedHomogenousData(self, objectId, homogenousData):
+        homogenousData = TypeDescription.PackedHomogenousData(
+            homogenousData.dtype, 
+            self.stringEncoder(homogenousData.dataAsBytes)
+            )
         self.objectIdToObjectDefinition[objectId] = homogenousData
 
     def defineList(self, objectId, memberIds):

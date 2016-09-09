@@ -48,7 +48,7 @@ def roundtripConvert(toConvert, vdm, verbose=False):
     t0 = time.time()
 
     mappings = PureImplementationMappings.PureImplementationMappings()
-    registry = ObjectRegistry.ObjectRegistry()
+    registry = ObjectRegistry.ObjectRegistry(stringEncoder=lambda s:s)
 
     walker = PyObjectWalker.PyObjectWalker(
         purePythonClassMapping=mappings,
@@ -63,18 +63,18 @@ def roundtripConvert(toConvert, vdm, verbose=False):
 
     t1 = time.time()
 
-    objId, registry = pickle.loads(pickle.dumps((objId,registry),2))
+    objId, registry.objectIdToObjectDefinition = pickle.loads(pickle.dumps((objId,registry.objectIdToObjectDefinition),2))
 
     t2 = time.time()
 
     path = os.path.join(os.path.abspath(os.path.split(pyfora.__file__)[0]), "fora")
     moduleTree = ModuleDirectoryStructure.ModuleDirectoryStructure.read(path, "purePython", "fora")
-    converter = Converter.constructConverter(moduleTree.toJson(), vdm)
+    converter = Converter.constructConverter(moduleTree.toJson(), vdm,stringDecoder=lambda s:s)
     anObjAsImplval = converter.convertDirectly(objId, registry)
 
     t3 = time.time()
 
-    transformer = PyforaToJsonTransformer.PyforaToJsonTransformer()
+    transformer = PyforaToJsonTransformer.PyforaToJsonTransformer(stringEncoder=lambda s:s)
 
     anObjAsJson = converter.transformPyforaImplval(
         anObjAsImplval,
@@ -84,7 +84,11 @@ def roundtripConvert(toConvert, vdm, verbose=False):
 
     t4 = time.time()
 
-    rehydrator = PythonObjectRehydrator.PythonObjectRehydrator(mappings, allowUserCodeModuleLevelLookups=False)
+    rehydrator = PythonObjectRehydrator.PythonObjectRehydrator(
+        mappings, 
+        allowUserCodeModuleLevelLookups=False,
+        stringDecoder=lambda s:s
+        )
 
     finalResult = rehydrator.convertJsonResultToPythonObject(anObjAsJson)
 

@@ -64,12 +64,13 @@ def updatePyAstMemberChains(pyAst, variablesInScope, isClassContext):
 class PythonObjectRehydrator(object):
     """PythonObjectRehydrator - responsible for building local copies of objects
                                 produced by the server."""
-    def __init__(self, purePythonClassMapping, allowUserCodeModuleLevelLookups=True):
+    def __init__(self, purePythonClassMapping, allowUserCodeModuleLevelLookups=True, stringDecoder=base64.b64decode):
         self.allowUserCodeModuleLevelLookups = allowUserCodeModuleLevelLookups
         self.moduleClassesAndFunctionsByPath = {}
         self.pathsToModules = {}
         self.purePythonClassMapping = purePythonClassMapping
         self.loadPathsToModules()
+        self.stringDecoder=stringDecoder
 
     def loadPathsToModules(self):
         for module in list(sys.modules.itervalues()):
@@ -176,7 +177,7 @@ class PythonObjectRehydrator(object):
             if 'primitive' in objectDef:
                 res = objectDef['primitive']
                 if isinstance(res, str):
-                    return intern(str(base64.b64decode(res)))
+                    return intern(self.stringDecoder(res))
                 else:
                     return res
 
@@ -201,7 +202,7 @@ class PythonObjectRehydrator(object):
             if 'homogenousListNumpyDataStringsAndSizes' in objectDef:
                 stringsAndSizes = objectDef['homogenousListNumpyDataStringsAndSizes']
 
-                dtype = cPickle.loads(base64.b64decode(objectDef['dtype']))
+                dtype = cPickle.loads(self.stringDecoder(objectDef['dtype']))
                 data = numpy.zeros(shape=objectDef['length'], dtype=dtype)
 
                 curOffset = 0
@@ -210,7 +211,7 @@ class PythonObjectRehydrator(object):
                     size = dataAndSize['length']
                     data[curOffset:curOffset+size] = numpy.ndarray(shape=size,
                                                                    dtype=dtype,
-                                                                   buffer=base64.b64decode(arrayText))
+                                                                   buffer=self.stringDecoder(arrayText))
                     curOffset += size
 
                 #we use the first element as a prototype when decoding

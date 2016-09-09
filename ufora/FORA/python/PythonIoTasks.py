@@ -304,12 +304,12 @@ class OutOfProcessPythonCallExecutor:
         mappings = PureImplementationMappings.PureImplementationMappings()
         mappings.load_pure_modules()
 
-        rehydrator = PythonObjectRehydrator.PythonObjectRehydrator(mappings, allowUserCodeModuleLevelLookups=False)
+        rehydrator = PythonObjectRehydrator.PythonObjectRehydrator(mappings, allowUserCodeModuleLevelLookups=False,stringDecoder=lambda s:s)
         convertedInstance = rehydrator.convertJsonResultToPythonObject(self.objAsJson)
 
         result = convertedInstance()
 
-        registry = ObjectRegistry.ObjectRegistry()
+        registry = ObjectRegistry.ObjectRegistry(stringEncoder=lambda s:s)
 
         walker = PyObjectWalker.PyObjectWalker(
             purePythonClassMapping=mappings,
@@ -318,7 +318,7 @@ class OutOfProcessPythonCallExecutor:
 
         objId = walker.walkPyObject(result)
 
-        return pickle.dumps((objId, registry))
+        return pickle.dumps((objId, registry.objectIdToObjectDefinition))
 
         
 
@@ -340,11 +340,13 @@ def outOfProcessPythonCall(downloaderPool, vdm, objectAsJson):
     downloaderPool.getDownloader() \
             .executeAndCallbackWithString(writer, outputCallback, inputCallback)
 
-    objId, objectRegistry = pickle.loads(result[0])
+    objectRegistry = ObjectRegistry.ObjectRegistry(stringEncoder=lambda s:s)
+
+    objId, objectRegistry.objectIdToObjectDefinition = pickle.loads(result[0])
 
     path = os.path.join(os.path.abspath(os.path.split(pyfora.__file__)[0]), "fora")
     moduleTree = ModuleDirectoryStructure.ModuleDirectoryStructure.read(path, "purePython", "fora")
-    converter = Converter.constructConverter(moduleTree.toJson(), vdm)
+    converter = Converter.constructConverter(moduleTree.toJson(), vdm, stringDecoder=lambda s:s)
 
     anObjAsImplval = converter.convertDirectly(objId, objectRegistry)
 

@@ -21,10 +21,11 @@ class HaltTransformationException(Exception):
 ASSUMED_OBJECT_BYTECOUNT_OVERHEAD = 20
 
 class PyforaToJsonTransformer(object):
-    def __init__(self, maxBytecount = None):
+    def __init__(self, maxBytecount = None, stringEncoder=base64.b64encode):
         self.anyListsThatNeedLoading = False
         self.bytesEncoded = 0
         self.maxBytecount = maxBytecount
+        self.stringEncoder = stringEncoder
 
     def transformListThatNeedsLoading(self, length):
         self.accumulateObjects(length)
@@ -40,7 +41,7 @@ class PyforaToJsonTransformer(object):
 
     def transformPrimitive(self, primitive):
         if isinstance(primitive, str):
-            primitive = base64.b64encode(primitive)
+            primitive = self.stringEncoder(primitive)
 
         self.accumulateObjects(1, len(primitive) if isinstance(primitive, str) else 0)        
         return {'primitive': primitive}
@@ -54,9 +55,9 @@ class PyforaToJsonTransformer(object):
         return {'list': listMembers}
 
     def transformHomogenousList(self, firstElement, allElementsAsNumpyArrays):
-        numpyAsStrings = [{'data':base64.b64encode(x.tostring()), 'length':len(x)} for x in allElementsAsNumpyArrays]
+        numpyAsStrings = [{'data':self.stringEncoder(x.tostring()), 'length':len(x)} for x in allElementsAsNumpyArrays]
 
-        numpyDtypeAsString = base64.b64encode(cPickle.dumps(allElementsAsNumpyArrays[0].dtype))
+        numpyDtypeAsString = self.stringEncoder(cPickle.dumps(allElementsAsNumpyArrays[0].dtype))
 
         self.accumulateObjects(1, sum(len(x) for x in numpyAsStrings) + len(numpyDtypeAsString))
 

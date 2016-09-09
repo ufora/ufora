@@ -327,9 +327,9 @@ class PythonIoTaskService(object):
         #this should happen at bootup
         path = os.path.join(os.path.abspath(os.path.split(pyfora.__file__)[0]), "fora")
         moduleTree = ModuleDirectoryStructure.ModuleDirectoryStructure.read(path, "purePython", "fora")
-        converter = Converter.constructConverter(moduleTree.toJson(), None)
+        converter = Converter.constructConverter(moduleTree.toJson(), self.vdm_, stringDecoder=lambda s:s)
 
-        transformer = PyforaToJsonTransformer.PyforaToJsonTransformer()
+        transformer = PyforaToJsonTransformer.PyforaToJsonTransformer(stringEncoder=lambda s:s)
 
         assert self.vdm_ is not None
 
