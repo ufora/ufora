@@ -18,6 +18,7 @@ import pyfora.RemotePythonObject as RemotePythonObject
 import pyfora.Future as Future
 import pyfora.NamedSingletons as NamedSingletons
 import pyfora.PyforaWithBlock as PyforaWithBlock
+import pyfora.TypeDescription as TypeDescription
 import pyfora.PyforaInspect as PyforaInspect
 import pyfora.pyAst.PyAstUtil as PyAstUtil
 import pyfora.ModuleLevelObjectIndex as ModuleLevelObjectIndex
@@ -206,6 +207,9 @@ class PyObjectWalker(object):
     def _walkPyObject(self, pyObject, objectId):
         if isinstance(pyObject, RemotePythonObject.RemotePythonObject):
             self._registerRemotePythonObject(objectId, pyObject)
+        elif isinstance(pyObject, TypeDescription.PackedHomogenousData):
+            #it would be better to register the future and do a second pass of walking
+            self._registerPackedHomogenousData(objectId, pyObject)
         elif isinstance(pyObject, Future.Future):
             #it would be better to register the future and do a second pass of walking
             self._walkPyObject(pyObject.result(), objectId)
@@ -242,6 +246,9 @@ class PyObjectWalker(object):
             self._registerClassInstance(objectId, pyObject)
         else:
             assert False, "don't know what to do with %s" % pyObject
+
+    def _registerPackedHomogenousData(self, objectId, packedHomogenousData):
+        self._objectRegistry.definePackedHomogenousData(objectId, packedHomogenousData)
 
     def _registerRemotePythonObject(self, objectId, remotePythonObject):
         """
@@ -307,7 +314,13 @@ class PyObjectWalker(object):
         `_registerList`: register a `list` instance with `self.objectRegistry`.
         Recursively call `walkPyObject` on the values in the list.
         """
-        if all(isPrimitive(val) for val in list_):
+        def allPrimitives(l):
+            for x in l:
+                if not isPrimitive(x):
+                    return False
+            return True
+
+        if allPrimitives(list_):
             self._registerPrimitive(objectId, list_)
         else:
             memberIds = [self.walkPyObject(val) for val in list_]

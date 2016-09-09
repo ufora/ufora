@@ -13,12 +13,14 @@
 #   limitations under the License.
 
 
+import pyfora.TypeDescription as TypeDescription
 from pyfora.PureImplementationMapping import PureImplementationMapping, pureMapping
 import pyfora.pure_modules.pure_math as PureMath
 from pyfora.pure_modules.pure___builtin__ import Round
 
 import math
 import numpy as np
+import base64
 
 
 class PurePythonNumpyArray(object):
@@ -229,10 +231,22 @@ class PurePythonNumpyArrayMapping(PureImplementationMapping):
         return [PurePythonNumpyArray]
 
     def mapPythonInstanceToPyforaInstance(self, numpyArray):
-        return PurePythonNumpyArray(
-            numpyArray.shape,
-            numpyArray.flatten().tolist()
-            )
+        flattened = numpyArray.flatten()
+        dtypeStr = str(flattened.dtype)
+
+        if TypeDescription.isValidPackedHomogenousDataType(dtypeStr):
+            return PurePythonNumpyArray(
+                numpyArray.shape,
+                TypeDescription.PackedHomogenousData(
+                    str(flattened.dtype),
+                    base64.b64encode(flattened.tostring())
+                    )
+                )
+        else:
+            return PurePythonNumpyArray(
+                numpyArray.shape,
+                flattened.tolist()
+                )
 
     def mapPyforaInstanceToPythonInstance(self, pureNumpyArray):
         array = np.array(pureNumpyArray.values)

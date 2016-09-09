@@ -69,6 +69,8 @@ class Converter(object):
 
         self.pyforaBoundMethodClass = purePythonModuleImplVal.getObjectMember("PyBoundMethod")
 
+        self.nativeConstantConverter = nativeConstantConverter
+        
         builtinMemberMapping = Converter.computeBuiltinMemberMapping(
             purePythonModuleImplVal=purePythonModuleImplVal,
             foraBuiltinsImplVal=foraBuiltinsImplVal
@@ -81,7 +83,8 @@ class Converter(object):
             nativeListConverter=nativeListConverter,
             vdmOverride=vdmOverride,
             builtinMemberMapping=builtinMemberMapping,
-            purePythonModuleImplVal=purePythonModuleImplVal)
+            purePythonModuleImplVal=purePythonModuleImplVal
+            )
 
         self.convertedStronglyConnectedComponents = set()
 
@@ -175,6 +178,14 @@ class Converter(object):
         elif isinstance(objectDefinition, TypeDescription.List):
             return (
                 self.convertList(
+                    objectId,
+                    dependencyGraph,
+                    objectIdToObjectDefinition
+                    )
+                )
+        elif isinstance(objectDefinition, TypeDescription.PackedHomogenousData):
+            return (
+                self.convertPackedHomogenousDataAsList(
                     objectId,
                     dependencyGraph,
                     objectIdToObjectDefinition
@@ -284,6 +295,15 @@ class Converter(object):
             raise pyfora.PythonToForaConversionError(
                 "don't know how to convert lists or tuples which reference themselves"
                 )
+
+    def convertPackedHomogenousDataAsList(self, listId, dependencyGraph, objectIdToObjectDefinition):
+        packedData = objectIdToObjectDefinition[listId]
+
+        return self.nativeConverterAdaptor.createListFromPackedData(
+            self.nativeConstantConverter,
+            packedData.dtype, 
+            base64.b64decode(packedData.dataAsBytes)
+            )
 
     def convertList(self, listId, dependencyGraph, objectIdToObjectDefinition):
         self._convertListMembers(listId, dependencyGraph, objectIdToObjectDefinition)
@@ -474,6 +494,12 @@ class Converter(object):
         elif isinstance(objectDefinition, TypeDescription.Unconvertible):
             self.convertUnconvertibleValue(objectId, objectDefinition.module_path)
 
+        elif isinstance(objectDefinition, TypeDescription.PackedHomogenousData):
+            self.convertedValues[objectId] = self.convertPackedHomogenousDataAsList(
+                    objectId,
+                    dependencyGraph,
+                    objectIdToObjectDefinition
+                    )
         else:
             assert False, "haven't gotten to this yet %s" % type(objectDefinition)
 

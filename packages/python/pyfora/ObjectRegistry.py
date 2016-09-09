@@ -37,6 +37,9 @@ class ObjectRegistry(object):
     def defineTuple(self, objectId, memberIds):
         self.objectIdToObjectDefinition[objectId] = TypeDescription.Tuple(memberIds)
 
+    def definePackedHomogenousData(self, objectId, homogenousData):
+        self.objectIdToObjectDefinition[objectId] = homogenousData
+
     def defineList(self, objectId, memberIds):
         self.objectIdToObjectDefinition[objectId] = TypeDescription.List(memberIds)
 
@@ -153,7 +156,9 @@ class ObjectRegistry(object):
                 isinstance(objectDefinition,
                            (TypeDescription.File, TypeDescription.RemotePythonObject,
                             TypeDescription.NamedSingleton, list,
-                            TypeDescription.Unconvertible)):
+                            TypeDescription.Unconvertible,
+                            TypeDescription.PackedHomogenousData
+                            )):
             return []
         elif isinstance(objectDefinition, (TypeDescription.BuiltinExceptionInstance)):
             return [objectDefinition.argsId]

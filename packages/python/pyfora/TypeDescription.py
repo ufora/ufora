@@ -18,10 +18,10 @@ import collections
 
 
 NoneType = type(None)
+primitiveTypes = (NoneType, int, float, str, bool)
 
 def isPrimitive(pyObject):
-    return isinstance(pyObject, (NoneType, int, float, str, bool))
-
+    return isinstance(pyObject, primitiveTypes)
 
 def type_description(typename, field_names):
     T = collections.namedtuple(typename, field_names + " typeName")
@@ -30,6 +30,9 @@ def type_description(typename, field_names):
     T.__new__.__defaults__ = tuple(prototype)
     return T
 
+
+def isValidPackedHomogenousDataType(dtypeStr):
+    return dtypeStr == "float64"
 
 def fromDict(value_dict):
     return globals()[value_dict["typeName"]](**value_dict)
@@ -111,4 +114,10 @@ InstanceMethod = type_description(
 Unconvertible = type_description(
     'Unconvertible',
     'module_path'
+    )
+
+#data stored as a numpy-array-like string
+PackedHomogenousData = type_description(
+    'PackedHomogenousData',
+    'dtype, dataAsBytes'
     )

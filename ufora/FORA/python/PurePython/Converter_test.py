@@ -17,6 +17,8 @@ import os
 import base64
 import numpy
 import multiprocessing
+import cPickle as pickle
+import time
 
 import ufora.FORA.python.ModuleDirectoryStructure as ModuleDirectoryStructure
 import pyfora.PureImplementationMappings as PureImplementationMappings
@@ -28,6 +30,9 @@ import pyfora.PythonObjectRehydrator as PythonObjectRehydrator
 import pyfora
 import ufora.FORA.python.PurePython.Converter as Converter
 import ufora.FORA.python.PurePython.PyforaToJsonTransformer as PyforaToJsonTransformer
+import ufora.test.PerformanceTestReporter as PerformanceTestReporter
+import ufora.native.FORA as FORANative
+import ufora.native.CallbackScheduler as CallbackScheduler
 
 class ThisIsAClass:
     def f(self):
@@ -38,6 +43,55 @@ def ThisIsAFunction():
 
 def ThisFunctionIsImpure():
     return multiprocessing.cpu_count()
+
+def roundtripConvert(toConvert, vdm, verbose=False):
+    t0 = time.time()
+
+    mappings = PureImplementationMappings.PureImplementationMappings()
+    registry = ObjectRegistry.ObjectRegistry()
+
+    walker = PyObjectWalker.PyObjectWalker(
+        purePythonClassMapping=mappings,
+        objectRegistry=registry
+        )
+
+    objId = walker.walkPyObject(toConvert)
+
+    if verbose:
+        for k,v in registry.objectIdToObjectDefinition.iteritems():
+            print k, repr(v)[:150]
+
+    t1 = time.time()
+
+    objId, registry = pickle.loads(pickle.dumps((objId,registry),2))
+
+    t2 = time.time()
+
+    path = os.path.join(os.path.abspath(os.path.split(pyfora.__file__)[0]), "fora")
+    moduleTree = ModuleDirectoryStructure.ModuleDirectoryStructure.read(path, "purePython", "fora")
+    converter = Converter.constructConverter(moduleTree.toJson(), vdm)
+    anObjAsImplval = converter.convertDirectly(objId, registry)
+
+    t3 = time.time()
+
+    transformer = PyforaToJsonTransformer.PyforaToJsonTransformer()
+
+    anObjAsJson = converter.transformPyforaImplval(
+        anObjAsImplval,
+        transformer,
+        PyforaToJsonTransformer.ExtractVectorContents(vdm)
+        )
+
+    t4 = time.time()
+
+    rehydrator = PythonObjectRehydrator.PythonObjectRehydrator(mappings, allowUserCodeModuleLevelLookups=False)
+
+    finalResult = rehydrator.convertJsonResultToPythonObject(anObjAsJson)
+
+    t5 = time.time()
+
+    return finalResult, {'0: walking': t1-t0, '1: serialize/deserialize': t2 - t1, '2: toImplval': t3-t2, '3: toJson': t4-t3, '4: toPython': t5-t4}
+
 
 class ConverterTest(unittest.TestCase):
     def test_walking_unconvertible_module(self):
@@ -84,17 +138,17 @@ class ConverterTest(unittest.TestCase):
             convertedInstance = rehydrator.convertJsonResultToPythonObject(anObjAsJson)
 
             def walkJsonObject(o):
-            	if isinstance(o, str):
-            		try:
-            			o_decoded = base64.b64decode(o)
-            			return base64.b64encode(o_decoded.replace("100", "200"))
-    	        	except:
-    	        		return o
-            	if isinstance(o, dict):
-            		return {k:walkJsonObject(o[k]) for k in o}
-            	if isinstance(o, tuple):
-            		return tuple([walkJsonObject(x) for x in o])
-            	return o
+                if isinstance(o, str):
+                    try:
+                        o_decoded = base64.b64decode(o)
+                        return base64.b64encode(o_decoded.replace("100", "200"))
+                    except:
+                        return o
+                if isinstance(o, dict):
+                    return {k:walkJsonObject(o[k]) for k in o}
+                if isinstance(o, tuple):
+                    return tuple([walkJsonObject(x) for x in o])
+                return o
 
             convertedInstanceModified = rehydrator.convertJsonResultToPythonObject(walkJsonObject(anObjAsJson))
 
@@ -107,3 +161,27 @@ class ConverterTest(unittest.TestCase):
                 self.assertEqual(convertedInstance.f(), 100)
                 self.assertEqual(convertedInstanceModified.f(), 200)
 
+
+    @PerformanceTestReporter.PerfTest("pyfora.ConvertionSpeed.strings_100k")
+    def test_conversion_performance_strings(self):
+        anArray = [str(ix) for ix in xrange(100000)]
+        self.conversionTest(anArray)
+
+    @PerformanceTestReporter.PerfTest("pyfora.ConvertionSpeed.ints_100k")
+    def test_conversion_performance_ints(self):
+        anArray = [ix for ix in xrange(100000)]
+        self.conversionTest(anArray)
+
+    @PerformanceTestReporter.PerfTest("pyfora.ConvertionSpeed.numpy_array_10mm")
+    def test_conversion_performance_numpy(self):
+        anArray = numpy.zeros(10000000)
+        self.conversionTest(anArray)
+
+    def conversionTest(self, toCheck):
+        vdm = FORANative.VectorDataManager(CallbackScheduler.singletonForTesting(), 10000000)
+
+        t0 = time.time()
+        aNewArray,timings = roundtripConvert(toCheck, vdm)
+
+        for k in sorted(timings):
+            print k, timings[k]

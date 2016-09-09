@@ -102,6 +102,9 @@ class NativeConverterAdaptor(object):
             self.vdm_
             )
 
+    def createListFromPackedData(self, constantConverter, dtype, dataAsBytes):
+        return self.nativeListConverter.createListFromPackedData(constantConverter, dtype, dataAsBytes)
+
     def convertConstant(self, value):
         return self.constantConverter.convert(value)
 
