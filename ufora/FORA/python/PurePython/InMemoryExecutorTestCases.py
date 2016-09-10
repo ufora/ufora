@@ -19,31 +19,6 @@ import ufora.FORA.python.PurePython.ExecutorTestCases as ExecutorTestCases
 import ufora.test.PerformanceTestReporter as PerformanceTestReporter
 
 class InMemoryExecutorTestCases(ExecutorTestCases.ExecutorTestCases):
-    def test_list_hashing(self):
-        def f(x):
-            x = x[0]
-            res = 0
-            while x > 0:
-                x = x - 1
-                res = res + x
-            return res
-
-        t0 = time.time()
-        self.evaluateWithExecutor(f, [1000000000])
-        t1 = time.time()
-        self.evaluateWithExecutor(f, [1000000001])
-        t2 = time.time()
-        self.evaluateWithExecutor(f, [1000000000])
-        t3 = time.time()
-
-        firstPass = t1 - t0
-        secondPass = t2 - t1
-        thirdPass = t3 - t2
-
-        #the third pass should be _way_ faster.
-        self.assertTrue(thirdPass / firstPass < .1)
-        self.assertTrue(thirdPass / secondPass < .1)
-
     def test_list_comprehension_perf(self):
         def f(totalCt):
             return sum([sum([x for x in xrange(ct)]) for ct in xrange(totalCt)])
