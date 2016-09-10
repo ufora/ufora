@@ -759,7 +759,6 @@ class PyObjectWalker(object):
             rootValue = getattr(__builtin__, freeVariable)
 
         else:
-            print "failed to find ", chainWithPosition, " within ", pyFunction.func_name
             raise UnresolvedFreeVariableException(
                 chainWithPosition, pyFunction.func_name)
 
