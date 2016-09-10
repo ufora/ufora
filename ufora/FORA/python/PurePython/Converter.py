@@ -24,7 +24,7 @@ import pyfora.TypeDescription as TypeDescription
 import pyfora.StronglyConnectedComponents as StronglyConnectedComponents
 import pyfora
 import base64
-
+import os
 import logging
 
 import ufora.native.FORA as ForaNative
@@ -635,7 +635,7 @@ class Converter(object):
                     if len(value) == 0:
                         return transformer.transformPrimitive("")
 
-                    assert value.isVectorOfChar()
+                    assert value.isVectorOfChar(), value
 
                     contents = vectorContentsExtractor(value)
 
@@ -843,17 +843,27 @@ class Converter(object):
                 ]
             }
 
-def constructConverter(purePythonMDSAsJson, vdm, stringDecoder=base64.b64decode):
-    if purePythonMDSAsJson is None:
-        return Converter(vdmOverride=vdm,stringDecoder=stringDecoder)
-    else:
-        purePythonModuleImplval = ModuleImporter.importModuleFromMDS(
-            ModuleDirectoryStructure.ModuleDirectoryStructure.fromJson(purePythonMDSAsJson),
+
+canonicalPurePythonModuleCache_ = [None]
+def canonicalPurePythonModule():
+    if canonicalPurePythonModuleCache_[0] is None:
+        path = os.path.join(os.path.abspath(os.path.split(pyfora.__file__)[0]), "fora")
+        moduleTree = ModuleDirectoryStructure.ModuleDirectoryStructure.read(path, "purePython", "fora")
+        
+        canonicalPurePythonModuleCache_[0] = ModuleImporter.importModuleFromMDS(
+            moduleTree,
             "fora",
             "purePython",
             searchForFreeVariables=True
             )
 
+    return canonicalPurePythonModuleCache_[0]
+
+
+def constructConverter(purePythonModuleImplval, vdm, stringDecoder=base64.b64decode):
+    if purePythonModuleImplval is None:
+        return Converter(vdmOverride=vdm,stringDecoder=stringDecoder)
+    else:
         singletonAndExceptionConverter = \
             PyforaSingletonAndExceptionConverter.PyforaSingletonAndExceptionConverter(
                 purePythonModuleImplval

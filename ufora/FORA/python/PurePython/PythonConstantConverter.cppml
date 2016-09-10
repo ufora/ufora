@@ -15,7 +15,9 @@
 ****************************************************************************/
 #include "PythonConstantConverter.hppml"
 #include "PythonConstantType.hppml"
+#include "../../Judgment/JudgmentOnValue.hppml"
 #include "../../Core/CSTValue.hppml"
+#include "../../TypedFora/ABI/VectorRecord.hpp"
 #include "../../Core/ImplValContainerUtilities.hppml"
 #include "../../Core/MemoryPool.hpp"
 #include "../../Language/FunctionStage1Simulation.hppml"
@@ -24,49 +26,34 @@ namespace Fora {
 
 PythonConstantConverter::PythonConstantConverter(
         const ImmutableTreeMap<PythonConstantType, ImplValContainer>& primitiveTypeMapping)
-    : mTypeConvertersMap(primitiveTypeMapping)
+            : mTypeConvertersMap(primitiveTypeMapping)
     {
-    for (const auto& typeConverterPair: primitiveTypeMapping)
-        {
-        mForaClassToPythonConstantType = mForaClassToPythonConstantType +
-            std::make_pair(
-                typeConverterPair.second,
-                typeConverterPair.first
-                );
-        }
-
+    mStringPrototype = simulateClassInstantiation(
+        *mTypeConvertersMap[PythonConstantType::String()], 
+        ImplValContainerUtilities::createString(String())
+        );
+    mIntPrototype = simulateClassInstantiation(
+        *mTypeConvertersMap[PythonConstantType::Int()], 
+        ImplValContainerUtilities::createSignedInteger(0)
+        );
+    mBoolPrototype = simulateClassInstantiation(
+        *mTypeConvertersMap[PythonConstantType::Boolean()], 
+        ImplValContainerUtilities::createBool(false)
+        );
+    mNonePrototype = simulateClassInstantiation(
+        *mTypeConvertersMap[PythonConstantType::None()], 
+        ImplValContainer()
+        );
+    mFloatPrototype = simulateClassInstantiation(
+        *mTypeConvertersMap[PythonConstantType::Float()], 
+        ImplValContainerUtilities::createDouble(0.0)
+        );
     }
 
-Nullable<ImplValContainer>
-PythonConstantConverter::simulateClassOfCall(
-        const ImplValContainer& value
-        ) const
-    {
-    auto it = mTypeToClass.find(value.type().hash());
-    if (it != mTypeToClass.end())
-        return it->second;
-
-    FunctionStage1::Simulation simulation(10);
-
-    ImmutableTreeVector<ImplValContainer> applyArgs;
-
-    applyArgs = applyArgs + value;
-    applyArgs = applyArgs +
-        ImplValContainerUtilities::createSymbol(Symbol("Class"));
-
-    auto result = simulation.evaluateApply(applyArgs);
-
-    if (result.isResult())
-        mTypeToClass[value.type().hash()] = result.getResult().val();
-    else
-        mTypeToClass[value.type().hash()] = null();
-
-    return mTypeToClass[value.type().hash()];
-    }
-
-FunctionStage1::ExpressionEvaluationResult
+ImplValContainer
 PythonConstantConverter::simulateClassInstantiation(
-        const ImplValContainer& classImplVal, const ImplValContainer& memberImplVal
+        const ImplValContainer& classImplVal, 
+        const ImplValContainer& memberImplVal
         ) const
     {
     FunctionStage1::Simulation simulation(10);
@@ -78,35 +65,23 @@ PythonConstantConverter::simulateClassInstantiation(
         ImplValContainerUtilities::createSymbol(Symbol("CreateInstance"));
     applyArgs = applyArgs + memberImplVal;
 
-    return simulation.evaluateApply(applyArgs);
-    }
+    auto res = simulation.evaluateApply(applyArgs);
 
-ImplValContainer PythonConstantConverter::wrappingValue(
-        const ImplValContainer& value, const PythonConstantType& pythonType
-        ) const
-    {
-    const auto& convertingClassOrNone = mTypeConvertersMap[pythonType];
+    lassert(res.isResult());
 
-    lassert(convertingClassOrNone.isValue());
-
-    FunctionStage1::ExpressionEvaluationResult result =
-        simulateClassInstantiation(*convertingClassOrNone, value);
-
-    lassert(result.isResult());
-
-    return result.getResult().val();
+    return res.getResult().val();
     }
 
 ImplValContainer PythonConstantConverter::convertBoolean(bool value) const
     {
     ImplValContainer boolImplVal = ImplValContainerUtilities::createBool(value);
-    return wrappingValue(boolImplVal, PythonConstantType::Boolean());
+    return ImplValContainer(ImplVal(mBoolPrototype.type(), boolImplVal.data()));
     }
 
 ImplValContainer PythonConstantConverter::convertInt(int64_t value) const
     {
     ImplValContainer intImplVal = ImplValContainerUtilities::createSignedInteger(value);
-    return wrappingValue(intImplVal, PythonConstantType::Int());
+    return ImplValContainer(ImplVal(mIntPrototype.type(), intImplVal.data()));
     }
 
 ImplValContainer PythonConstantConverter::convertString(const std::string& str) const
@@ -118,7 +93,7 @@ ImplValContainer PythonConstantConverter::convertString(const std::string& str) 
             String(str, MemoryPool::getFreeStorePool())
             );
 
-    return wrappingValue(strImplVal, PythonConstantType::String());
+    return ImplValContainer(ImplVal(mStringPrototype.type(), strImplVal.data()));
     }
 
 ImplValContainer PythonConstantConverter::convertLong(const std::string&) const
@@ -128,31 +103,40 @@ ImplValContainer PythonConstantConverter::convertLong(const std::string&) const
 
 ImplValContainer PythonConstantConverter::noneValue() const
     {
-    return wrappingValue(ImplValContainer(), PythonConstantType::None());
+    return mNonePrototype;
     }
 
 ImplValContainer PythonConstantConverter::convertFloat(double value) const
     {
     ImplValContainer floatImplVal = ImplValContainerUtilities::createDouble(value);
-    return wrappingValue(floatImplVal, PythonConstantType::Float());
+    return ImplValContainer(ImplVal(mFloatPrototype.type(), floatImplVal.data()));
     }
 
 Nullable<ImplValContainer> PythonConstantConverter::unwrapToPrimitive(const ImplValContainer& value)
     {
-    auto cls = simulateClassOfCall(value);
-
-    if (cls)
-        {
-        if (!mForaClassToPythonConstantType.contains(*cls))
-            return null();
-        }
-    else
-        return null();
-
     Nullable<pair<ImplValContainer, Nullable<Symbol> > > member =
                 ImplValContainerUtilities::objectGetMember(value, Symbol("@m"));
 
-    lassert(member && !member->second);
+    if (!member || member->second)
+        return null();
+
+    @match Type(member->first.type())
+        -| Vector() ->> {
+            JudgmentOnResult jor = member->first.cast<TypedFora::Abi::VectorRecord>().jor();
+
+            if (jor.size() != 1)
+                return null();
+
+            if (jor[0] != JOV::OfType(Type::Integer(8,false)))
+                return null();
+            }
+        -| String() ->> {}
+        -| Float(bits) ->> { if (bits != 64) return null(); }
+        -| Integer(bits, isSigned) ->> { if (!(bits == 64 && isSigned || bits == 1 && !isSigned)) return null(); }
+        -| Nothing() ->> {}
+        -| _ ->> {
+            return null();
+            }
 
     return null() << member->first;
     }

@@ -344,9 +344,7 @@ def outOfProcessPythonCall(downloaderPool, vdm, objectAsJson):
 
     objId, objectRegistry.objectIdToObjectDefinition = pickle.loads(result[0])
 
-    path = os.path.join(os.path.abspath(os.path.split(pyfora.__file__)[0]), "fora")
-    moduleTree = ModuleDirectoryStructure.ModuleDirectoryStructure.read(path, "purePython", "fora")
-    converter = Converter.constructConverter(moduleTree.toJson(), vdm, stringDecoder=lambda s:s)
+    converter = Converter.constructConverter(Converter.canonicalPurePythonModule(), vdm, stringDecoder=lambda s:s)
 
     anObjAsImplval = converter.convertDirectly(objId, objectRegistry)
 

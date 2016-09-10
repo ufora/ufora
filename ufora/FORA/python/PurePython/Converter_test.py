@@ -67,9 +67,7 @@ def roundtripConvert(toConvert, vdm, verbose=False):
 
     t2 = time.time()
 
-    path = os.path.join(os.path.abspath(os.path.split(pyfora.__file__)[0]), "fora")
-    moduleTree = ModuleDirectoryStructure.ModuleDirectoryStructure.read(path, "purePython", "fora")
-    converter = Converter.constructConverter(moduleTree.toJson(), vdm,stringDecoder=lambda s:s)
+    converter = Converter.constructConverter(Converter.canonicalPurePythonModule(), vdm, stringDecoder=lambda s:s)
     anObjAsImplval = converter.convertDirectly(objId, registry)
 
     t3 = time.time()
@@ -98,6 +96,10 @@ def roundtripConvert(toConvert, vdm, verbose=False):
 
 
 class ConverterTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        Converter.canonicalPurePythonModule()
+
     def test_walking_unconvertible_module(self):
         mappings = PureImplementationMappings.PureImplementationMappings()
         registry = ObjectRegistry.ObjectRegistry()
@@ -124,9 +126,7 @@ class ConverterTest(unittest.TestCase):
 
             objId = walker.walkPyObject(anInstance)
 
-            path = os.path.join(os.path.abspath(os.path.split(pyfora.__file__)[0]), "fora")
-            moduleTree = ModuleDirectoryStructure.ModuleDirectoryStructure.read(path, "purePython", "fora")
-            converter = Converter.constructConverter(moduleTree.toJson(), None)
+            converter = Converter.constructConverter(Converter.canonicalPurePythonModule(), None)
             anObjAsImplval = converter.convertDirectly(objId, registry)
 
             transformer = PyforaToJsonTransformer.PyforaToJsonTransformer()
@@ -182,10 +182,16 @@ class ConverterTest(unittest.TestCase):
         self.conversionTest(anArray)
 
     def conversionTest(self, toCheck):
-        vdm = FORANative.VectorDataManager(CallbackScheduler.singletonForTesting(), 10000000)
+        try:
+            vdm = FORANative.VectorDataManager(CallbackScheduler.singletonForTesting(), 10000000)
 
-        t0 = time.time()
-        aNewArray,timings = roundtripConvert(toCheck, vdm)
+            t0 = time.time()
+            aNewArray,timings = roundtripConvert(toCheck, vdm)
 
-        for k in sorted(timings):
-            print k, timings[k]
+            for k in sorted(timings):
+                print k, timings[k]
+        except:
+            import traceback
+            traceback.print_exc()
+            self.assertTrue(False)
+

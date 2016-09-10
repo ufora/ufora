@@ -324,10 +324,7 @@ class PythonIoTaskService(object):
                 return message
 
     def handleOutOfProcessPythonCall(self, request):
-        #this should happen at bootup
-        path = os.path.join(os.path.abspath(os.path.split(pyfora.__file__)[0]), "fora")
-        moduleTree = ModuleDirectoryStructure.ModuleDirectoryStructure.read(path, "purePython", "fora")
-        converter = Converter.constructConverter(moduleTree.toJson(), self.vdm_, stringDecoder=lambda s:s)
+        converter = Converter.constructConverter(Converter.canonicalPurePythonModule(), self.vdm_, stringDecoder=lambda s:s)
 
         transformer = PyforaToJsonTransformer.PyforaToJsonTransformer(stringEncoder=lambda s:s)
 

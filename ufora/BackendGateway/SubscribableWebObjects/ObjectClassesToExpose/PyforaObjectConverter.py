@@ -19,6 +19,7 @@ import traceback
 import ufora.BackendGateway.SubscribableWebObjects.Exceptions as Exceptions
 import ufora.BackendGateway.ComputedGraph.ComputedGraph as ComputedGraph
 import ufora.BackendGateway.ComputedValue.ComputedValueGateway as ComputedValueGateway
+import ufora.FORA.python.ModuleImporter as ModuleImporter
 import ufora.FORA.python.ModuleDirectoryStructure as ModuleDirectoryStructure
 
 #global variables to hold the state of the converter. This is OK because
@@ -39,7 +40,10 @@ class PyforaObjectConverter(ComputedGraph.Location):
 
             objectRegistry_[0] = ObjectRegistry.ObjectRegistry()
 
-            converter_[0] = Converter.constructConverter(purePythonMDSAsJson, ComputedValueGateway.getGateway().vdm)
+            converter_[0] = Converter.constructConverter(
+                Converter.canonicalPurePythonModule(), 
+                ComputedValueGateway.getGateway().vdm
+                )
         except:
             logging.critical("Failed to initialize the PyforaObjectConverter: %s", traceback.format_exc())
             raise
