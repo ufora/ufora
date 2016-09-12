@@ -79,7 +79,7 @@ RUN pip install --allow-unverified pyodbc\
 RUN curl -sL https://deb.nodesource.com/setup_4.x | bash -
 RUN apt-get install -y nodejs build-essential && \
     npm install -g npm@3.10.6 && \
-    npm install -g coffee-script@1.10.0 mocha@2.3.3 forever@0.14.1
+    npm install -g coffee-script@1.10.0 mocha@2.3.3 forever@0.14.1 gulp-cli@1.2.2
 
 
 RUN echo "ccache -M 10G" >> /etc/bash.bashrc

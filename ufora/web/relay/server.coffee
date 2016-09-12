@@ -44,7 +44,7 @@ app.set 'views', __dirname + '/client'
 app.use '/js', express.static('public/js')
 
 app.get '/', (req, res) ->
-    res.render 'index'
+    res.render 'index', {version: version}
 
 httpServer = require('http').createServer(app)
 relay = require('./server/relay') config, httpServer, () ->

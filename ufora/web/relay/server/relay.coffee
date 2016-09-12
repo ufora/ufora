@@ -123,7 +123,7 @@ class Relay
 
     messageCallback = (buffer) =>
       response = buffer.toString('utf8')
-      @logger.debug "Emitting response:", response
+      @logger.info "Emitting response:", response
       socket.emit "response", response
 
     channel.upstreamMessages = queue.create -1, (messageToSend) =>
@@ -230,5 +230,4 @@ module.exports = (config, httpServer, callback) ->
   relay.initializeSocketIO(httpServer)
   relay.start(callback)
   return relay
-
 
