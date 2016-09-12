@@ -261,8 +261,8 @@ def _collectDataMembersSetInInitAst(initAst):
             )
 
     return _extractSimpleSelfMemberAssignments(
-        initFunctionDef = initAst,
-        selfName = selfArg.id
+        initFunctionDef=initAst,
+        selfName=selfArg.id
         )
 
 
@@ -335,6 +335,7 @@ def _computeInitMethodAstOrNone(pyClassObject):
     return tr
 
 def getRootInContext(pyAstNode, isClassContext):
+    """Return the given node either as-is, or wrapped in a Module node."""
     if not NodeVisitorBases.isScopeNode(pyAstNode):
         raise Exceptions.InternalError(
             "Unsupported type of root node in Analysis (%s)."

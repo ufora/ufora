@@ -127,7 +127,7 @@ class _CollectBoundValuesInScopeVisitor(NodeVisitorBases.GenericInScopeVisitor):
 
     def visit_arguments(self, node):
         self.visit(node.defaults)
-        with self._isInDefinitionMgr(True):
+        with self._isInDefinitionMgr(newValue=True):
             self.visit(node.args)
         if node.vararg is not None:
             self._boundVarsWithPos.add(
@@ -207,7 +207,7 @@ class _FreeVarsVisitor(GenericBoundValuesScopedVisitor):
     # VISITORS
     def visit_Name(self, node):
         identifier = node.id
-        if isinstance(node.ctx, ast.Store):
+        if isinstance(node.ctx, ast.Store) and not self.isBoundSoFar(identifier):
             self._boundInScopeSoFar.add(identifier)
         elif not self.isBoundSoFar(identifier) and \
            isinstance(node.ctx, ast.Load):
@@ -256,9 +256,9 @@ class _FreeVariableMemberAccessChainsVisitor(GenericBoundValuesScopedVisitor):
                         )
                     )
         else:
-            #required to recurse deeper into the AST, but only do it if
-            #_freeVariableMemberAccessChain was None, indicating that it
-            #doesn't want to consume the whole expression
+            # required to recurse deeper into the AST, but only do it if
+            # _freeVariableMemberAccessChain was None, indicating that it
+            # doesn't want to consume the whole expression
             self.generic_visit(node.value)
 
     def visit_Name(self, node):
@@ -288,15 +288,15 @@ class _FreeVariableMemberAccessChainsCollapsingTransformer(ast.NodeTransformer):
         self.chain_to_new_name = chain_to_new_name
 
     def visit_Attribute(self, node):
-        #note that because this class is not tracking bound variables above, this
-        #analysis could be wrong, since there are some scopes that may not
-        #create member access chains. To be correct, this should mimic the logic
-        #that we see in the GenericBoundValuesScopedVisitor etc.
+        # note that because this class is not tracking bound variables above, this
+        # analysis could be wrong, since there are some scopes that may not
+        # create member access chains. To be correct, this should mimic the logic
+        # that we see in the GenericBoundValuesScopedVisitor etc.
 
         chainOrNone = _memberAccessChainOrNone(node)
         if chainOrNone is not None:
-            #we ought to check 'if chainOrNone[0] not in self._boundValues' but we don't have that
-            #because we're not descended from the right kind of visitor.
+            # we ought to check 'if chainOrNone[0] not in self._boundValues' but we don't have that
+            # because we're not descended from the right kind of visitor.
 
             chain = tuple(chainOrNone)
             if chain in self.chain_to_new_name:
@@ -307,7 +307,7 @@ class _FreeVariableMemberAccessChainsCollapsingTransformer(ast.NodeTransformer):
             return node
 
         return self.generic_visit(node)
-        
+
 
 def _memberAccessChainOrNone(pyAstNode):
     res = _memberAccessChainOrNoneImpl(pyAstNode)
@@ -329,12 +329,12 @@ def _memberAccessChainOrNoneImpl(pyAstNode):
         # Attribute(expr value, identifier attr, expr_context context)
         prefix = _memberAccessChainOrNoneImpl(pyAstNode.value)
         if len(prefix) == 0:
-            return []  # how can this path be exercised?
+            return []  # return empty list for unexpected node-type
 
         prefix.append(pyAstNode.attr)
         return prefix
 
-    return []  # how can this path be exercised?
+    return []  # return empty list for unexpected node-type
 
 
 def getFreeVariableMemberAccessChains(pyAstNode,

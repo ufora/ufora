@@ -48,7 +48,7 @@ class PyAstFreeVariableAnalyses_test(unittest.TestCase):
                 """
                 )
             )
-        expectedResult = set(['x','y'])
+        expectedResult = set(['x', 'y'])
         self.assertEqual(
             expectedResult,
             PyAstFreeVariableAnalyses.getFreeVariables(tree)
@@ -65,7 +65,7 @@ class PyAstFreeVariableAnalyses_test(unittest.TestCase):
                 """
                 )
             )
-        expectedResult = set(['range','isinstance'])
+        expectedResult = set(['range', 'isinstance'])
         self.assertEqual(
             expectedResult,
             PyAstFreeVariableAnalyses.getFreeVariables(tree)
@@ -81,7 +81,7 @@ class PyAstFreeVariableAnalyses_test(unittest.TestCase):
                 """
                 )
             )
-        expectedResult = set(['range','isinstance','slice','list'])
+        expectedResult = set(['range', 'isinstance', 'slice', 'list'])
         self.assertEqual(
             expectedResult,
             PyAstFreeVariableAnalyses.getFreeVariables(tree)
@@ -858,12 +858,12 @@ class PyAstFreeVariableAnalyses_test(unittest.TestCase):
 
         self.assertEqual(
             set([]),
-            PyAstFreeVariableAnalyses.getFreeVariables(tree.body[0], isClassContext = False)
+            PyAstFreeVariableAnalyses.getFreeVariables(tree.body[0], isClassContext=False)
             )
 
         self.assertEqual(
             set(['fib']),
-            PyAstFreeVariableAnalyses.getFreeVariables(tree.body[0], isClassContext = True)
+            PyAstFreeVariableAnalyses.getFreeVariables(tree.body[0], isClassContext=True)
             )
 
     def test_freeVariables_name_substring_bug(self):

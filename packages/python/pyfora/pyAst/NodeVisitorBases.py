@@ -21,7 +21,9 @@ class VisitDone(Exception):
     pass
 
 def isScopeNode(pyAstNode):
-    if isinstance(pyAstNode, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.Lambda, ast.GeneratorExp)):
+    """Return true iff argument is a scoped node."""
+    if isinstance(pyAstNode, (ast.Module, ast.ClassDef,
+                              ast.FunctionDef, ast.Lambda, ast.GeneratorExp)):
         return True
     else:
         return False
@@ -50,6 +52,11 @@ class InScopeSaveRestoreValue(object):
 class ScopedSaveRestoreComputedValue(object):
     """ Generic Context Manager for GenericScopedVisitors."""
     def __init__(self, valueGetter, valueSetter, valueComputer):
+        """
+        valueGetter: function that returns the current value
+        valueSetter: function that takes a value and sets it as current
+        valueComputer: function that takes (node, old_value) and computes new value
+        """
         self.valueGetter = valueGetter
         self.valueSetter = valueSetter
         self.valueComputer = valueComputer
