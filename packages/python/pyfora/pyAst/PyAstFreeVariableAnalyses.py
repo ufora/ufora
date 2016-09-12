@@ -281,7 +281,7 @@ class _FreeVariableMemberAccessChainsCollapsingTransformer(ast.NodeTransformer):
             chain = tuple(chainOrNone)
             if chain in self.chain_to_new_name:
                 return ast.copy_location(
-                    ast.Name(self.chain_to_new_name[chain], ast.Load()),
+                    ast.Name(self.chain_to_new_name[chain], node.ctx),
                     node
                     )
             return node
@@ -328,4 +328,3 @@ def collapseFreeVariableMemberAccessChains(pyAstNode,
     pyAstNode = PyAstUtil.getRootInContext(pyAstNode, isClassContext)
     vis = _FreeVariableMemberAccessChainsCollapsingTransformer(chain_to_name)
     return vis.visit(pyAstNode)
-
