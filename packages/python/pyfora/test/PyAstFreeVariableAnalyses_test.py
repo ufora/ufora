@@ -20,6 +20,19 @@ import textwrap
 import unittest
 
 class PyAstFreeVariableAnalyses_test(unittest.TestCase):
+    def test_multiple_assignment(self):
+        tree = ast.parse(
+            textwrap.dedent(
+                """
+                x = y = z = w
+                """
+                )
+            )
+        self.assertEqual(
+            set(['w']),
+            PyAstFreeVariableAnalyses.getFreeVariables(tree)
+            )
+
     def test_members(self):
         tree = ast.parse(
             textwrap.dedent(
@@ -171,8 +184,8 @@ class PyAstFreeVariableAnalyses_test(unittest.TestCase):
             textwrap.dedent(
                 """
                 class C(object):
-                    x = x
                     y = x
+                    x = 0
                 """
                 )
             )
@@ -326,6 +339,20 @@ class PyAstFreeVariableAnalyses_test(unittest.TestCase):
 
         self.assertEqual(
             set(['w']),
+            PyAstFreeVariableAnalyses.getFreeVariables(tree)
+            )
+
+    def test_freeVariables_Assign_2(self):
+        tree = ast.parse(
+            textwrap.dedent(
+                """
+                w = ((x, y), z)
+                """
+                )
+            )
+
+        self.assertEqual(
+            set(['x', 'y', 'z']),
             PyAstFreeVariableAnalyses.getFreeVariables(tree)
             )
 
@@ -975,7 +1002,63 @@ class PyAstFreeVariableAnalyses_test(unittest.TestCase):
         tree = ast.parse(
             textwrap.dedent(
                 """
+                class C:
+                  x.y.z = 3
+                  def f(self):
+                    y = 2
+                    class C:
+                      def g(self, arg):
+                        x.y.z + y + arg
+                C.f
+                """
+                )
+            )
+
+        res = PyAstFreeVariableAnalyses.getFreeVariableMemberAccessChains(tree)
+
+        self.assertEqual(
+            set([('x', 'y', 'z')]),
+            res
+            )
+
+    def test_freeVariableMemberAccessChains_4(self):
+        tree = ast.parse(
+            textwrap.dedent(
+                """
+                x.y.z = 1
+                q = x.y.z
+                """
+                )
+            )
+
+        res = PyAstFreeVariableAnalyses.getFreeVariableMemberAccessChains(tree)
+
+        self.assertEqual(
+            set([('x', 'y', 'z')]),
+            res
+            )
+
+    def test_freeVariableMemberAccessChains_5(self):
+        tree = ast.parse(
+            textwrap.dedent(
+                """
                 x.y.z = 2
+                """
+                )
+            )
+
+        res = PyAstFreeVariableAnalyses.getFreeVariableMemberAccessChains(tree)
+
+        self.assertEqual(
+            set([('x', 'y', 'z')]),
+            res
+            )
+
+    def test_freeVariableMemberAccessChains_6(self):
+        tree = ast.parse(
+            textwrap.dedent(
+                """
+                q = x.y.z = 2
                 """
                 )
             )

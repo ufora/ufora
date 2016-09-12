@@ -192,49 +192,18 @@ class GenericBoundValuesScopedVisitor(NodeVisitorBases.GenericScopedVisitor):
         NodeVisitorBases.GenericScopedVisitor.visit_ClassDef(self, node)
 
 
-class _FreeVarsVisitor(GenericBoundValuesScopedVisitor):
-    """Collect the free variables in a block of code."""
-    def __init__(self):
-        super(_FreeVarsVisitor, self).__init__()
-        self._freeVarsWithPos = set()
-
-    def getFreeVars(self, getPositions=False):
-        if getPositions:
-            return self._freeVarsWithPos
-        else:
-            return {var for (var, _) in self._freeVarsWithPos}
-
-    # VISITORS
-    def visit_Name(self, node):
-        identifier = node.id
-        if isinstance(node.ctx, ast.Store) and not self.isBoundSoFar(identifier):
-            self._boundInScopeSoFar.add(identifier)
-        elif not self.isBoundSoFar(identifier) and \
-           isinstance(node.ctx, ast.Load):
-            self._freeVarsWithPos.add(
-                VarWithPosition(
-                    var=identifier,
-                    pos=NodeVisitorBases.PositionInFile(
-                        lineno=node.lineno,
-                        col_offset=node.col_offset
-                        )
-                    )
-                )
-
-
-def getFreeVariables(pyAstNode, isClassContext=None, getPositions=False):
-    pyAstNode = PyAstUtil.getRootInContext(pyAstNode, isClassContext)
-    freeVarsVisitor = _FreeVarsVisitor()
-    freeVarsVisitor.visit(pyAstNode)
-    return freeVarsVisitor.getFreeVars(getPositions=getPositions)
-
-
 class _FreeVariableMemberAccessChainsVisitor(GenericBoundValuesScopedVisitor):
     """Collect the free variable member access chains in a block of code."""
     def __init__(self, exclude_predicate=None):
         super(_FreeVariableMemberAccessChainsVisitor, self).__init__()
         self._freeVariableMemberAccessChainsWithPos = set()
         self.exclude_predicate = exclude_predicate
+
+    def getFreeVars(self, getPositions=False):
+        if getPositions:
+            return {(chain[0], pos) for (chain, pos) in self._freeVariableMemberAccessChainsWithPos}
+        else:
+            return {chain[0] for (chain, _) in self._freeVariableMemberAccessChainsWithPos}
 
     def getFreeVariablesMemberAccessChains(self, getPositions=False):
         if getPositions:
@@ -243,18 +212,9 @@ class _FreeVariableMemberAccessChainsVisitor(GenericBoundValuesScopedVisitor):
             return {chain for (chain, _) in self._freeVariableMemberAccessChainsWithPos}
 
     def visit_Attribute(self, node):
-        chainOrNone = _memberAccessChainOrNone(node)
+        (chainOrNone, root) = _memberAccessChainWithLocOrNone(node)
         if chainOrNone is not None:
-            if chainOrNone[0] not in self._boundValues:
-                self._freeVariableMemberAccessChainsWithPos.add(
-                    VarWithPosition(
-                        var=chainOrNone,
-                        pos=NodeVisitorBases.PositionInFile(
-                            lineno=node.lineno,
-                            col_offset=node.col_offset
-                            )
-                        )
-                    )
+            self.processChain(chainOrNone, root.ctx, root.lineno, root.col_offset)
         else:
             # required to recurse deeper into the AST, but only do it if
             # _freeVariableMemberAccessChain was None, indicating that it
@@ -263,16 +223,20 @@ class _FreeVariableMemberAccessChainsVisitor(GenericBoundValuesScopedVisitor):
 
     def visit_Name(self, node):
         identifier = node.id
-        if isinstance(node.ctx, ast.Store):
+        self.processChain((identifier,), node.ctx, node.lineno, node.col_offset)
+
+    def processChain(self, chain, ctx, lineno, col_offset):
+        identifier = chain[0]
+        if isinstance(ctx, ast.Store) and not self.isBoundSoFar(identifier):
             self._boundInScopeSoFar.add(identifier)
         elif not self.isBoundSoFar(identifier) and \
-           isinstance(node.ctx, ast.Load):
+           isinstance(ctx, ast.Load):
             self._freeVariableMemberAccessChainsWithPos.add(
                 VarWithPosition(
-                    var=(identifier,),
+                    var=chain,
                     pos=NodeVisitorBases.PositionInFile(
-                        lineno=node.lineno,
-                        col_offset=node.col_offset
+                        lineno=lineno,
+                        col_offset=col_offset
                         )
                     )
                 )
@@ -280,6 +244,22 @@ class _FreeVariableMemberAccessChainsVisitor(GenericBoundValuesScopedVisitor):
     def generic_visit(self, node):
         if self.exclude_predicate is None or not self.exclude_predicate(node):
             super(_FreeVariableMemberAccessChainsVisitor, self).generic_visit(node)
+
+def getFreeVariables(pyAstNode, isClassContext=None, getPositions=False):
+    pyAstNode = PyAstUtil.getRootInContext(pyAstNode, isClassContext)
+    freeVarsVisitor = _FreeVariableMemberAccessChainsVisitor()
+    freeVarsVisitor.visit(pyAstNode)
+    return freeVarsVisitor.getFreeVars(getPositions=getPositions)
+
+def getFreeVariableMemberAccessChains(pyAstNode,
+                                      isClassContext=None,
+                                      getPositions=False,
+                                      exclude_predicate=None):
+    pyAstNode = PyAstUtil.getRootInContext(pyAstNode, isClassContext)
+    vis = _FreeVariableMemberAccessChainsVisitor(exclude_predicate)
+    vis.visit(pyAstNode)
+    return vis.getFreeVariablesMemberAccessChains(getPositions)
+
 
 class _FreeVariableMemberAccessChainsCollapsingTransformer(ast.NodeTransformer):
     """Find free variable chains of the form x.y.z and replace them with single variable lookups"""
@@ -293,7 +273,7 @@ class _FreeVariableMemberAccessChainsCollapsingTransformer(ast.NodeTransformer):
         # create member access chains. To be correct, this should mimic the logic
         # that we see in the GenericBoundValuesScopedVisitor etc.
 
-        chainOrNone = _memberAccessChainOrNone(node)
+        (chainOrNone, _root) = _memberAccessChainWithLocOrNone(node)
         if chainOrNone is not None:
             # we ought to check 'if chainOrNone[0] not in self._boundValues' but we don't have that
             # because we're not descended from the right kind of visitor.
@@ -310,41 +290,36 @@ class _FreeVariableMemberAccessChainsCollapsingTransformer(ast.NodeTransformer):
 
 
 def _memberAccessChainOrNone(pyAstNode):
-    res = _memberAccessChainOrNoneImpl(pyAstNode)
+    return _memberAccessChainWithLocOrNone(pyAstNode)[0]
 
-    if len(res) == 0:
-        return None
+def _memberAccessChainWithLocOrNone(pyAstNode):
+    (chain, root) = _memberAccessChainWithLocImpl(pyAstNode)
 
-    return tuple(res)
+    if len(chain) == 0:
+        return (None, None)
+
+    return (tuple(chain), root)
 
 
-def _memberAccessChainOrNoneImpl(pyAstNode):
+def _memberAccessChainWithLocImpl(pyAstNode):
+    ''' Return a pair containing the access chain list and the root node.'''
     if isinstance(pyAstNode, ast.Name):
-        return [pyAstNode.id]
+        return ([pyAstNode.id], pyAstNode)
 
     if isinstance(pyAstNode, ast.Expr):
-        return _memberAccessChainOrNoneImpl(pyAstNode.value)
+        return _memberAccessChainWithLocImpl(pyAstNode.value)
 
     if isinstance(pyAstNode, ast.Attribute):
-        # Attribute(expr value, identifier attr, expr_context context)
-        prefix = _memberAccessChainOrNoneImpl(pyAstNode.value)
+        # expr.attr: Attribute(expr value, identifier attr, expr_context context)
+        (prefix, root) = _memberAccessChainWithLocImpl(pyAstNode.value)
         if len(prefix) == 0:
-            return []  # return empty list for unexpected node-type
+            return ([], None)  # return empty list for unexpected node-type
 
         prefix.append(pyAstNode.attr)
-        return prefix
+        return (prefix, root)
 
-    return []  # return empty list for unexpected node-type
+    return ([], None)  # return empty list for unexpected node-type
 
-
-def getFreeVariableMemberAccessChains(pyAstNode,
-                                      isClassContext=None,
-                                      getPositions=False,
-                                      exclude_predicate=None):
-    pyAstNode = PyAstUtil.getRootInContext(pyAstNode, isClassContext)
-    vis = _FreeVariableMemberAccessChainsVisitor(exclude_predicate)
-    vis.visit(pyAstNode)
-    return vis.getFreeVariablesMemberAccessChains(getPositions)
 
 def collapseFreeVariableMemberAccessChains(pyAstNode,
                                       chain_to_name,
