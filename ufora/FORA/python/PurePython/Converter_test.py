@@ -25,6 +25,8 @@ import pyfora.PureImplementationMappings as PureImplementationMappings
 import pyfora.PureImplementationMapping as PureImplementationMapping
 import pyfora.PyObjectWalker as PyObjectWalker
 import pyfora.ObjectRegistry as ObjectRegistry
+import pyfora.BinaryObjectRegistry as BinaryObjectRegistry
+import pyfora.BinaryObjectRegistryDeserializer as BinaryObjectRegistryDeserializer
 import pyfora.NamedSingletons as NamedSingletons
 import pyfora.PythonObjectRehydrator as PythonObjectRehydrator
 import pyfora
@@ -48,18 +50,17 @@ def roundtripConvert(toConvert, vdm, verbose=False):
     t0 = time.time()
 
     mappings = PureImplementationMappings.PureImplementationMappings()
-    registry = ObjectRegistry.ObjectRegistry(stringEncoder=lambda s:s)
+    binaryObjectRegistry = BinaryObjectRegistry.BinaryObjectRegistry()
 
     walker = PyObjectWalker.PyObjectWalker(
         purePythonClassMapping=mappings,
-        objectRegistry=registry
+        objectRegistry=binaryObjectRegistry
         )
 
     objId = walker.walkPyObject(toConvert)
 
-    if verbose:
-        for k,v in registry.objectIdToObjectDefinition.iteritems():
-            print k, repr(v)[:150]
+    registry = ObjectRegistry.ObjectRegistry(stringEncoder=lambda s:s)
+    BinaryObjectRegistryDeserializer.deserialize(binaryObjectRegistry.str(), registry, lambda x:x)
 
     t1 = time.time()
 
@@ -113,7 +114,14 @@ class ConverterTest(unittest.TestCase):
 
         self.assertEqual(sorted(registry.objectIdToObjectDefinition[objId].freeVariableMemberAccessChainsToId.keys()), ["multiprocessing"])
 
-    
+    def test_roundtrip_conversion(self):
+        vdm = FORANative.VectorDataManager(CallbackScheduler.singletonForTesting(), 10000000)
+
+        for obj in [10, 10.0, "asdf", None, False, True, 
+                [], (), [1,2], [1, [1]], (1,2), (1,2,[]), {1:2}
+                ]:
+            self.assertEqual(roundtripConvert(obj, vdm)[0], obj, obj)
+
     def test_conversion_metadata(self):
         for anInstance in [ThisIsAClass(), ThisIsAFunction]:
             mappings = PureImplementationMappings.PureImplementationMappings()

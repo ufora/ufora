@@ -15,6 +15,7 @@
 import logging
 import time
 import traceback
+import base64
 
 import ufora.BackendGateway.SubscribableWebObjects.Exceptions as Exceptions
 import ufora.BackendGateway.ComputedGraph.ComputedGraph as ComputedGraph
@@ -27,6 +28,31 @@ import ufora.FORA.python.ModuleDirectoryStructure as ModuleDirectoryStructure
 objectIdToIvc_ = {}
 converter_ = [None]
 objectRegistry_ = [None]
+
+
+def convertJsonToObject(val):
+    import ufora.BackendGateway.SubscribableWebObjects.AllObjectClassesToExpose as AllObjectClassesToExpose
+
+    if val is None:
+        return
+
+    if isinstance(val, unicode):
+        return str(val)
+
+    if isinstance(val, (list, tuple)):
+        return tuple(convertJsonToObject(x) for x in val)
+
+    if not isinstance(val, dict):
+        return val
+
+    definition = val.get('objectDefinition_')
+
+    if definition is None:
+        return {k: convertJsonToObject(v) for k, v in val.iteritems()}
+    
+    return (AllObjectClassesToExpose.classMap[definition['type']])(**convertJsonToObject(definition['args']))
+
+
 
 class PyforaObjectConverter(ComputedGraph.Location):
     @ComputedGraph.ExposedFunction(expandArgs=True)
@@ -67,9 +93,11 @@ class PyforaObjectConverter(ComputedGraph.Location):
         return converter_[0].unwrapPyforaTupleToTuple(tupleIVC)
 
     @ComputedGraph.ExposedFunction(expandArgs=True)
-    def convert(self, objectId, objectIdToObjectDefinition):
+    def convert(self, objectId, serializedBinaryObjectDefinition):
         import pyfora.TypeDescription as TypeDescription
         import pyfora.Exceptions as PyforaExceptions
+        import pyfora.BinaryObjectRegistryDeserializer as BinaryObjectRegistryDeserializer
+
 
         result = [None]
         def onConverted(r):
@@ -77,10 +105,11 @@ class PyforaObjectConverter(ComputedGraph.Location):
 
         t0 = time.time()
 
-        objectRegistry_[0].objectIdToObjectDefinition.update({
-            int(k): TypeDescription.deserialize(v)
-            for k, v in objectIdToObjectDefinition.iteritems()
-            })
+        BinaryObjectRegistryDeserializer.deserialize(
+            base64.b64decode(serializedBinaryObjectDefinition), 
+            objectRegistry_[0],
+            convertJsonToObject
+            )
 
         logging.info("Updated object registry in %s seconds.", time.time() - t0)
         t0 = time.time()

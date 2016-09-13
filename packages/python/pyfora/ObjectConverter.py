@@ -15,6 +15,7 @@
 import logging
 import pyfora.Exceptions as Exceptions
 import pyfora.TypeDescription as TypeDescription
+import base64
 
 class ObjectConverter(object):
     def __init__(self, webObjectFactory, purePythonMDSAsJson):
@@ -28,12 +29,9 @@ class ObjectConverter(object):
 
         self.remoteConverter.initialize({'purePythonMDSAsJson': purePythonMDSAsJson}, {'onSuccess':onSuccess, 'onFailure':onFailure})
 
-    def convert(self, objectId, objectRegistry, callback):
-        dependencyGraph = objectRegistry.computeDependencyGraph(objectId)
-        objectIdToObjectDefinition = {
-            objId: TypeDescription.serialize(objectRegistry.getDefinition(objId))
-            for objId in dependencyGraph.iterkeys()
-            }
+    def convert(self, objectId, binaryObjectRegistry, callback):
+        newData = binaryObjectRegistry.str()
+        binaryObjectRegistry.clear()
 
         def onSuccess(message):
             if 'isException' not in message:
@@ -44,7 +42,7 @@ class ObjectConverter(object):
         self.remoteConverter.convert(
             {
                 'objectId': objectId,
-                'objectIdToObjectDefinition': objectIdToObjectDefinition
+                'serializedBinaryObjectDefinition': base64.b64encode(newData)
             },
             {
                 'onSuccess': onSuccess,

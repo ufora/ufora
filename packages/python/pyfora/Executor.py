@@ -23,7 +23,7 @@ import pyfora.Future as Future
 import pyfora.Exceptions as Exceptions
 import pyfora.RemotePythonObject as RemotePythonObject
 import pyfora.PythonObjectRehydrator as PythonObjectRehydrator
-import pyfora.ObjectRegistry as ObjectRegistry
+import pyfora.BinaryObjectRegistry as BinaryObjectRegistry
 import pyfora.PyObjectWalker as PyObjectWalker
 import pyfora.WithBlockExecutor as WithBlockExecutor
 import pyfora.PureImplementationMappings as PureImplementationMappings
@@ -72,7 +72,7 @@ class Executor(object):
         self.stayOpenOnExit = False
         self.pureImplementationMappings = \
             pureImplementationMappings or PureImplementationMappings.PureImplementationMappings()
-        self.objectRegistry = ObjectRegistry.ObjectRegistry()
+        self.binaryObjectRegistry = BinaryObjectRegistry.BinaryObjectRegistry()
         self.objectRehydrator = PythonObjectRehydrator.PythonObjectRehydrator(
             self.pureImplementationMappings
             )
@@ -202,7 +202,7 @@ class Executor(object):
         try:
             objectId = PyObjectWalker.PyObjectWalker(
                 purePythonClassMapping=self.pureImplementationMappings,
-                objectRegistry=self.objectRegistry
+                objectRegistry=self.binaryObjectRegistry
                 ).walkPyObject(obj)
         except PyObjectWalker.UnresolvedFreeVariableExceptionWithTrace as e:
             logging.error(
@@ -216,7 +216,7 @@ class Executor(object):
                 result = RemotePythonObject.DefinedRemotePythonObject(objectId, self)
             self._resolve_future(future, result)
 
-        self.connection.convertObject(objectId, self.objectRegistry, onConverted)
+        self.connection.convertObject(objectId, self.binaryObjectRegistry, onConverted)
         return future
 
     def submit(self, fn, *args):

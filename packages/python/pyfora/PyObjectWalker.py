@@ -111,6 +111,9 @@ class _FileDescription(object):
         if fileText is None:
             fileText = "".join(PyforaInspect.getlines(fileName))
 
+        if isinstance(fileText, unicode):
+            fileText = fileText.encode("utf8")
+
         tr = cls(fileName, fileText)
         cls._fileTextCache[fileName] = tr
         return tr
