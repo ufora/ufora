@@ -22,8 +22,6 @@ import traceback
 
 import ufora.FORA.python.ModuleImporter as ModuleImporter
 
-import ufora.distributed.SharedState.ComputedGraph.SynchronousPropertyAccess as SynchronousPropertyAccess
-
 import ufora.BackendGateway.ComputedGraph.ComputedGraph as ComputedGraph
 
 import ufora.FORA.VectorDataManager.VectorDataManager as VectorDataManager
@@ -197,14 +195,6 @@ class OutgoingObjectCache(object):
 
         return None
 
-def simultaneously(*factories):
-    threads = [ManagedThread.ManagedThread(target=x) for x in factories]
-
-    for t in threads:
-        t.start()
-
-    for t in threads:
-        t.join()
 
 class MessageProcessor(object):
     '''
@@ -245,15 +235,10 @@ class MessageProcessor(object):
 
         logging.info("got shared state view factory: %s", sharedStateViewFactory)
 
-        def initValueGateway():
-            with self.graph:
-                self.computedValueGateway = computedValueGatewayFactory()
-                self.cumulusGatewayRemote = self.computedValueGateway.cumulusGateway
+        with self.graph:
+            self.computedValueGateway = computedValueGatewayFactory()
+            self.cumulusGatewayRemote = self.computedValueGateway.cumulusGateway
 
-
-        initValueGateway()
-
-        self.synchronousSharedStateScope = SynchronousPropertyAccess.SynchronousPropertyAccess()
 
         self.outstandingMessagesById = {}
         self.expectedMessageId = 0
@@ -649,10 +634,8 @@ class MessageProcessor(object):
         self.lock.__enter__()
         self.computedValueGateway.__enter__()
         self.graph.__enter__()
-        self.synchronousSharedStateScope.__enter__()
 
     def __exit__(self, type, value, tb):
-        self.synchronousSharedStateScope.__exit__(type, value, tb)
         self.graph.__exit__(type, value, tb)
         self.computedValueGateway.__exit__(type, value, tb)
         self.lock.__exit__(type, value, tb)

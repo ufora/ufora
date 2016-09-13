@@ -20,8 +20,7 @@ import time
 import unittest
 import threading
 
-import ufora.distributed.SharedState.ComputedGraph.SharedStateSynchronizer \
-                                                            as SharedStateSynchronizer
+import ufora.distributed.SharedState.SharedStateSynchronizer as SharedStateSynchronizer
 from ufora.distributed.SharedState.tests.SharedStateTestHarness import SharedStateTestHarness
 import ufora.BackendGateway.ComputedGraph.ComputedGraph as ComputedGraph
 import ufora.BackendGateway.ComputedGraph.ComputedGraphTestHarness as ComputedGraphTestHarness
