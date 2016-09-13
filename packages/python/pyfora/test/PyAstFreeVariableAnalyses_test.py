@@ -13,6 +13,7 @@
 #   limitations under the License.
 
 import pyfora.pyAst.PyAstFreeVariableAnalyses as PyAstFreeVariableAnalyses
+import pyfora.pyAst.NodeVisitorBases as NodeVisitorBases
 import pyfora.Exceptions as Exceptions
 import pyfora.pyAst.PyAstUtil as PyAstUtil
 import ast
@@ -1070,7 +1071,31 @@ class PyAstFreeVariableAnalyses_test(unittest.TestCase):
             res
             )
 
+    def test_SemanticOrderNodeTransformer(self):
+        tree = ast.parse(
+            textwrap.dedent(
+                """
+                def g(x):
+                    return x.y.z
+                """
+                )
+            )
+        noopTransformer = NodeVisitorBases.SemanticOrderNodeTransvisitor()
+        tree2 = noopTransformer.visit(tree)
 
+        self.assertTrue(tree2 is not None, 'tree2 is None')
+        self.assertTrue(tree is tree2)
+
+        scopeMgr = NodeVisitorBases.InScopeSaveRestoreValue(
+                    lambda :  True,
+                    lambda x: None)
+
+        noopTransformer = NodeVisitorBases.GenericScopedTransvisitor(scopeMgr)
+        tree2 = noopTransformer.visit(tree)
+
+        self.assertTrue(tree2 is not None, 'tree2 is None')
+        print ast.dump(tree2)
+        self.assertTrue(tree is tree2, ast.dump(tree2))
 
 if __name__ == "__main__":
     unittest.main()

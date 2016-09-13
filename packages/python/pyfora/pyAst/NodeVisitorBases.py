@@ -73,13 +73,13 @@ class ScopedSaveRestoreComputedValue(object):
 
 ##########################################################################
 # Visitor Base Classes
-class NodeVisitorBase(ast.NodeVisitor):
+class SemanticOrderNodeVisitor(ast.NodeVisitor):
     """Modifies ast.NodeVisitor visitation order and enables to visit lists of ast.Node."""
     def generic_visit(self, node):
         if isinstance(node, list):
             self._generic_visit_list(node)
         else:
-            super(NodeVisitorBase, self).generic_visit(node)
+            super(SemanticOrderNodeVisitor, self).generic_visit(node)
 
     def _generic_visit_list(self, node):
         for item in node:
@@ -112,8 +112,105 @@ class NodeVisitorBase(ast.NodeVisitor):
         self.visit(node.key)
         self.visit(node.value)
 
+class SemanticOrderNodeTransvisitor(ast.NodeTransformer):
+    """Modifies ast.NodeTransformer visitation order and enables to visit lists of ast.Node.
 
-class GenericInScopeVisitor(NodeVisitorBase):
+    It is called a 'transvisitor' because it implements a transformer but only
+    performs a visit (i.e., it does not modify the ast)
+    """
+    def generic_visit(self, node):
+        if isinstance(node, list):
+            return self._generic_visit_list(node)
+        else:
+            return super(SemanticOrderNodeTransvisitor, self).generic_visit(node)
+
+    def _generic_visit_list(self, node):
+        res = []
+        modified = False
+        for item in node:
+            if isinstance(item, ast.AST):
+                new_item = self.visit(item)
+                res.append(new_item)
+                if new_item is not item:
+                    modified = True
+        if not modified:
+            return node
+        else:
+            return res
+
+    # For assignments, visit RHS first
+    def visit_Assign(self, node):
+        value = self.visit(node.value)
+        targets = self.visit(node.targets)
+        if value is node.value and targets is node.targets:
+            return node
+        else:
+            return ast.copy_location(
+                        ast.Assign(targets=targets,
+                                   value=value),
+                        node)
+
+    def visit_AugAssign(self, node):
+        value = self.visit(node.value)
+        operator = self.visit(node.op)
+        target = self.visit(node.target)
+        if value is node.value and operator is node.op and target is node.target:
+            return node
+        else:
+            return ast.copy_location(
+                        ast.AugAssign(target=target,
+                                      operator=operator,
+                                      value=value),
+                        node)
+
+    def visit_ListComp(self, node):
+        generators = self.visit(node.generators)
+        elt = self.visit(node.elt)
+        if generators is node.generators and elt is node.elt:
+            return node
+        else:
+            return ast.copy_location(
+                        ast.ListComp(elt=elt,
+                                     generators=generators),
+                        node)
+
+    def visit_SetComp(self, node):
+        generators = self.visit(node.generators)
+        elt = self.visit(node.elt)
+        if generators is node.generators and elt is node.elt:
+            return node
+        else:
+            return ast.copy_location(
+                        ast.SetComp(elt=elt,
+                                    generators=generators),
+                        node)
+
+    def visit_GeneratorExp(self, node):
+        generators = self.visit(node.generators)
+        elt = self.visit(node.elt)
+        if generators is node.generators and elt is node.elt:
+            return node
+        else:
+            return ast.copy_location(
+                        ast.GeneratorExp(elt=elt,
+                                         generators=generators),
+                        node)
+
+
+    def visit_DictComp(self, node):
+        generators = self.visit(node.generators)
+        key = self.visit(node.key)
+        value = self.visit(node.value)
+        if key is node.key and value is node.value and generators is node.generators:
+            return node
+        else:
+            return ast.copy_location(
+                        ast.DictComp(key=key,
+                                     value=value,
+                                     generators=generators),
+                        node)
+
+class GenericInScopeVisitor(SemanticOrderNodeVisitor):
     """Shallow visitor that does not descend into sub-scopes.
 
     It is initialized with the root of the AST to visit, which must be
@@ -240,10 +337,10 @@ class GenericInScopeVisitor(NodeVisitorBase):
         self.visit(node.ifs)
 
 
-class GenericScopedVisitor(NodeVisitorBase):
+class GenericScopedTransvisitor(SemanticOrderNodeTransvisitor):
     """
-    Base class for two-pass visitors. 
-    
+    Base class for two-pass transformers.
+
     Before entering a new scope, update a value (e.g., bound values) by running a 
     visitor on the new scope and possibly taking account of the old value. Upon
     returning back to the outer scope, restore the value. All of this happens 
@@ -259,32 +356,82 @@ class GenericScopedVisitor(NodeVisitorBase):
     # VISITORS
     def visit_Module(self, node):
         with self._getScopeMgr(node):
-            self.visit(node.body)
+            body = self.visit(node.body)
+            if body is node.body:
+                return node
+            else:
+                print 'making a fresh Module node'
+                return ast.copy_location(
+                            ast.Module(body=body),
+                            node)
 
     def visit_FunctionDef(self, node):
         node.args.lineno = node.lineno
         node.args.col_offset = node.col_offset
-        self.visit(node.args.defaults)
+        defaults = self.visit(node.args.defaults)
+        if defaults is node.args.defaults:
+            args = node.args
+        else:
+            args = ast.arguments(args=node.args.args,
+                                 defaults=defaults,
+                                 vararg=node.args.vararg,
+                                 kwarg=node.args.kwarg)
         with self._getScopeMgr(node):
-            self.visit(node.body)
-            self.visit(node.decorator_list)
+            body = self.visit(node.body)
+            decorator_list = self.visit(node.decorator_list)
+            if body is node.body and decorator_list is node.decorator_list and args is node.args:
+                return node
+            else:
+                return ast.copy_location(
+                            ast.FunctionDef(name=node.name,
+                                            args=args,
+                                            body=body,
+                                            decorator_list=decorator_list),
+                            node)
 
     def visit_Lambda(self, node):
         node.args.lineno = node.lineno
         node.args.col_offset = node.col_offset
-        self.visit(node.args.defaults)
+        defaults = self.visit(node.args.defaults)
+        if defaults is node.args.defaults:
+            args = node.args
+        else:
+            args = ast.arguments(args=node.args.args,
+                                 defaults=defaults,
+                                 vararg=node.args.vararg,
+                                 kwarg=node.args.kwarg)
         with self._getScopeMgr(node):
-            self.visit(node.body)
+            body = self.visit(node.body)
+            if body is node.body and args is node.args:
+                return node
+            else:
+                return ast.copy_location(
+                            ast.Lambda(args=args,
+                                       body=body),
+                            node)
 
     def visit_GeneratorExp(self, node):
         with self._getScopeMgr(node):
-            self.visit(node.generators)
-            self.visit(node.elt)
+            generators = self.visit(node.generators)
+            elt = self.visit(node.elt)
+            if generators is node.generators and elt is node.elt:
+                return node
+            else:
+                return ast.copy_location(
+                            ast.GeneratorExp(elt=elt,
+                                             generators=generators),
+                            node)
 
     def visit_ClassDef(self, node):
-        self.visit(node.bases)
-        # Because we don't currently distinguish between self.m and m,
-        # for now we skip collecting class member names with the
-        # scoped visitor controlled by the context manager
-        self.visit(node.body)
-        self.visit(node.decorator_list)
+        bases = self.visit(node.bases)
+        body = self.visit(node.body)
+        decorator_list = self.visit(node.decorator_list)
+        if bases is node.bases and body is node.body and decorator_list is node.decorator_list:
+            return node
+        else:
+            return ast.copy_location(
+                        ast.ClassDef(name=node.name,
+                                     bases=bases,
+                                     body=body,
+                                     decorator_list=decorator_list),
+                        node)

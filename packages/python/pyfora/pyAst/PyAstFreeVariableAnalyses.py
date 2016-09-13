@@ -166,14 +166,14 @@ def collectBoundNamesInScope(pyAstNode):
     return vis.getBoundNames()
 
 
-class GenericBoundValuesScopedVisitor(NodeVisitorBases.GenericScopedVisitor):
-    """Extending GenericScopedVisitor by specializing the context manager to track bound values."""
+class GenericBoundValuesScopedTransvisitor(NodeVisitorBases.GenericScopedTransvisitor):
+    """Extending GenericScopedTransvisitor by specializing the context manager to track bound values."""
     def __init__(self):
         scopeMgr = NodeVisitorBases.ScopedSaveRestoreComputedValue(
             self.getBoundValues,
             self._setBoundValues,
-            GenericBoundValuesScopedVisitor._computeScopeBoundValues)
-        super(GenericBoundValuesScopedVisitor, self).__init__(scopeMgr)
+            GenericBoundValuesScopedTransvisitor._computeScopeBoundValues)
+        super(GenericBoundValuesScopedTransvisitor, self).__init__(scopeMgr)
         self._boundValues = set()
         self._boundInScopeSoFar = set()
 
@@ -189,13 +189,13 @@ class GenericBoundValuesScopedVisitor(NodeVisitorBases.GenericScopedVisitor):
 
     def visit_ClassDef(self, node):
         self._boundValues.add(node.name)
-        NodeVisitorBases.GenericScopedVisitor.visit_ClassDef(self, node)
+        return NodeVisitorBases.GenericScopedTransvisitor.visit_ClassDef(self, node)
 
 
-class _FreeVariableMemberAccessChainsVisitor(GenericBoundValuesScopedVisitor):
+class _FreeVariableMemberAccessChainsTransvisitor(GenericBoundValuesScopedTransvisitor):
     """Collect the free variable member access chains in a block of code."""
     def __init__(self, exclude_predicate=None):
-        super(_FreeVariableMemberAccessChainsVisitor, self).__init__()
+        super(_FreeVariableMemberAccessChainsTransvisitor, self).__init__()
         self._freeVariableMemberAccessChainsWithPos = set()
         self.exclude_predicate = exclude_predicate
 
@@ -220,10 +220,12 @@ class _FreeVariableMemberAccessChainsVisitor(GenericBoundValuesScopedVisitor):
             # _freeVariableMemberAccessChain was None, indicating that it
             # doesn't want to consume the whole expression
             self.generic_visit(node.value)
+        return node
 
     def visit_Name(self, node):
         identifier = node.id
         self.processChain((identifier,), node.ctx, node.lineno, node.col_offset)
+        return node
 
     def processChain(self, chain, ctx, lineno, col_offset):
         identifier = chain[0]
@@ -243,11 +245,12 @@ class _FreeVariableMemberAccessChainsVisitor(GenericBoundValuesScopedVisitor):
 
     def generic_visit(self, node):
         if self.exclude_predicate is None or not self.exclude_predicate(node):
-            super(_FreeVariableMemberAccessChainsVisitor, self).generic_visit(node)
+            super(_FreeVariableMemberAccessChainsTransvisitor, self).generic_visit(node)
+        return node
 
 def getFreeVariables(pyAstNode, isClassContext=None, getPositions=False):
     pyAstNode = PyAstUtil.getRootInContext(pyAstNode, isClassContext)
-    freeVarsVisitor = _FreeVariableMemberAccessChainsVisitor()
+    freeVarsVisitor = _FreeVariableMemberAccessChainsTransvisitor()
     freeVarsVisitor.visit(pyAstNode)
     return freeVarsVisitor.getFreeVars(getPositions=getPositions)
 
@@ -256,22 +259,22 @@ def getFreeVariableMemberAccessChains(pyAstNode,
                                       getPositions=False,
                                       exclude_predicate=None):
     pyAstNode = PyAstUtil.getRootInContext(pyAstNode, isClassContext)
-    vis = _FreeVariableMemberAccessChainsVisitor(exclude_predicate)
+    vis = _FreeVariableMemberAccessChainsTransvisitor(exclude_predicate)
     vis.visit(pyAstNode)
     return vis.getFreeVariablesMemberAccessChains(getPositions)
 
 
-class _FreeVariableMemberAccessChainsCollapsingTransformer(ast.NodeTransformer):
+class _FreeVariableMemberAccessChainsCollapsingTransformer(GenericBoundValuesScopedTransvisitor):
     """Find free variable chains of the form x.y.z and replace them with single variable lookups"""
     def __init__(self, chain_to_new_name):
-        ast.NodeTransformer.__init__(self)
+        super(_FreeVariableMemberAccessChainsCollapsingTransformer, self).__init__()
         self.chain_to_new_name = chain_to_new_name
 
     def visit_Attribute(self, node):
         # note that because this class is not tracking bound variables above, this
         # analysis could be wrong, since there are some scopes that may not
         # create member access chains. To be correct, this should mimic the logic
-        # that we see in the GenericBoundValuesScopedVisitor etc.
+        # that we see in the GenericBoundValuesScopedTransvisitor etc.
 
         (chainOrNone, _root) = _memberAccessChainWithLocOrNone(node)
         if chainOrNone is not None:
