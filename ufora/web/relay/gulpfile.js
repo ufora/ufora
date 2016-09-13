@@ -24,9 +24,9 @@ gulp.task('modules', function() {
 
 gulp.task('src', function() {
     return gulp.src(paths.src)
-        .pipe(coffee({bare: true}))
         .pipe(sourcemaps.init())
-            .pipe(uglify({mangle: false}))
+            .pipe(coffee({bare: true}))
+            //.pipe(uglify({mangle: false}))
             .pipe(concat('all.min.js'))
         .pipe(sourcemaps.write())
         .pipe(gulp.dest('public/js'));

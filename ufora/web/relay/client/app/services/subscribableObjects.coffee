@@ -29,7 +29,10 @@ class SocketIoJson
 
 
 class SubscribablesService
-    constructor: (@subscribableWebObjects) ->
+    @mappings:
+      cumulus: "ViewOfEntireCumulusSystem"
+
+    constructor: (@subscribableWebObjects, @valueStreams) ->
         @cache = {}
 
     newInterface: (inter, args) ->
@@ -41,15 +44,19 @@ class SubscribablesService
             onFailure: (msg) ->
               $log.error(msg)
             onSuccess: () ->
-        subscribe: (prop) ->
-          self._streams[prop] ||= valueStreams.empty()
+        subscribe: (prop, resubscribe) =>
+          self._streams[prop] ||= @valueStreams.empty()
           self._raw["subscribe_#{prop}"]
             onFailure: (msg) ->
               $log.error(msg)
             onSuccess: (data) ->
               self._streams[prop].notify(data)
+            onChanged: (data) ->
+              self._streams[prop].notify(data)
+              resubscribe()
           self._streams[prop]
         unsubscribe: (prop) ->
+          console.trace("unsubscribing")
           self._raw["unsubscribe_#{prop}"]
             onFailure: (msg) ->
             onSuccess: () ->
@@ -65,15 +72,18 @@ class SubscribablesService
 
     getInterfaceInstance: (name, args) ->
       key = @getKey(name, args)
+      name = SubscribablesService.mappings[name] or name
       @cache[key] ||= @newInterface(@subscribableWebObjects[name], args)
 
-    subscribeProperty: (portal, propName) ->
-      portal._interface.subscribe(propName).each (value) ->
+    subscribeProperty: (portal, propName) =>
+      resubscribe = () => @subscribeProperty(portal, propName)
+      portal._interface.subscribe(propName, resubscribe).each (value) ->
         portal[propName] = value
         portal._scope.$digest() if !portal._scope.$$phase
       portal[propName] = null
 
     unsubscribeProperty: (portal, propName) ->
+      console.trace("unsubscribing #{propName}")
       portal._interface.unsubscribe(propName)
 
     set: (portal, propName, value) ->
@@ -92,7 +102,7 @@ class SubscribablesService
       settables = _.chain(interfaceInstance._raw)
         .keys()
         .filter((k) -> k.match(/\bset_/))
-        .map((k) -> k.replace(/set_/, '') )
+        .map((k) -> k.replace(/set_/, ''))
         .value()
       portal =
         _defs:  defs
@@ -105,7 +115,7 @@ class SubscribablesService
       portal
 
     link: (def, scope) ->
-      _build = (memo, defs, name) ->
+      _build = (memo, defs, name) =>
         memo[name] = @getPortal(name, defs, scope)
         memo
       _.inject def, _build, {}
@@ -117,7 +127,7 @@ angular.module('pyfora')
         socketIo.then (socket) ->
             socketIoJson = new SocketIoJson(socket)
             subscribables = SubscribableWebObjects(socketIoJson)
-            resolve(new SubscribablesService(subscribables))
+            resolve(new SubscribablesService(subscribables, valueStreams))
         .catch (err) ->
             reject(err)
 

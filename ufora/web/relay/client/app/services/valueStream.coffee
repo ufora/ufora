@@ -8,13 +8,11 @@ angular.module('pyfora')
 
       notify: (value) ->
         @appendValue(value)
-        return
 
       each: (handler) ->
         @handlers.unshift handler
-        return
 
-      last: () -> return @lastValue || _.last(@values)
+      last: () -> @lastValue || _.last(@values)
 
       appendValue: (value) ->
         @values.push value
