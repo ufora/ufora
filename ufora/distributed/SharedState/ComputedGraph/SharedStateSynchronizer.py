@@ -14,10 +14,7 @@
 
 """A simplified view into SharedState for use by the tsunami GUI"""
 
-import cPickle as pickle
 import logging
-import threading
-import traceback
 
 import ufora.util.ThreadLocalStack as ThreadLocalStack
 import ufora.distributed.SharedState.SharedState as SharedState
@@ -32,14 +29,6 @@ def getView():
 def isConnected():
     return getView() is not None
 
-
-class SharedStateKeyspaceListener(object):
-    def keysLoaded(self, keyValueDict, isInitialLoad):
-        """called when keys are loaded.
-
-        keyValueDict - a dict from string to string
-        """
-        assert False, "Subclasses should override"
 
 
 class SharedStateSynchronizer(ThreadLocalStack.ThreadLocalStackPushable):
@@ -62,16 +51,14 @@ class SharedStateSynchronizer(ThreadLocalStack.ThreadLocalStackPushable):
     def __del__(self):
         if self.pendingWrites_:
             logging.critical("SharedStateSynchronizer destroyed with %s pending writes",
-                    len(self.pendingWrites_)
-                    )
+                             len(self.pendingWrites_))
 
     def addKeyspaceListener(self,
-                keyspaceName,
-                keyspaceListener,
-                keyPrefix,
-                blockUntilLoaded = False,
-                assertAlreadyLoaded = False
-                ):
+                            keyspaceName,
+                            keyspaceListener,
+                            keyPrefix,
+                            blockUntilLoaded=False,
+                            assertAlreadyLoaded=False):
         """Add a keyspace listener to the synchronizer."""
         assert isinstance(keyPrefix, NativeJson.Json)
         assert keyPrefix.isArray()
@@ -142,7 +129,9 @@ class SharedStateSynchronizer(ThreadLocalStack.ThreadLocalStackPushable):
         if (keyspaceName, keyPrefix) not in self.loadedKeyspacesAndPrefixes_:
             if (keyspaceName, keyPrefix) not in self.unwrittenValuesByKeyspaceAndPrefix_:
                 self.unwrittenValuesByKeyspaceAndPrefix_[(keyspaceName, keyPrefix)] = []
-            self.unwrittenValuesByKeyspaceAndPrefix_[(keyspaceName, keyPrefix)].append((keyspaceName, keyName, value))
+            self.unwrittenValuesByKeyspaceAndPrefix_[(keyspaceName, keyPrefix)].append(
+                (keyspaceName, keyName, value)
+                )
         else:
             self.pendingWrites_.append((keyspaceName, keyName, value))
 
@@ -197,7 +186,10 @@ class SharedStateSynchronizer(ThreadLocalStack.ThreadLocalStackPushable):
         for prefix in self.keyspaceNameToPrefixes_[keyspaceName]:
             if keyName.arrayStartswith(prefix):
                 return prefix
-        assert False, "Couldn't find a prefix for %s in %s" % (keyName, self.keyspaceNameToPrefixes_[keyspaceName])
+        assert False, "Couldn't find a prefix for %s in %s" % (
+            keyName,
+            self.keyspaceNameToPrefixes_[keyspaceName]
+            )
 
     def waitForKeyspaceAndPrefix(self, keyspaceName, prefixName):
         self.update()
@@ -271,7 +263,9 @@ class SharedStateSynchronizer(ThreadLocalStack.ThreadLocalStackPushable):
                         isFirstLoad
                         )
 
-                self.valuesByKeyspaceAndPrefix_[keyspaceNameAndPrefix].update(valueDict[keyspaceNameAndPrefix])
+                self.valuesByKeyspaceAndPrefix_[keyspaceNameAndPrefix].update(
+                    valueDict[keyspaceNameAndPrefix]
+                    )
 
     def ensureMarkedLoaded(self, lookupKey):
         if lookupKey not in self.keyspaceListenersHaveHadFirstLoad_:
@@ -287,7 +281,7 @@ class SharedStateSynchronizer(ThreadLocalStack.ThreadLocalStackPushable):
         while self.unwrittenValuesByKeyspaceAndPrefix_:
             for pair in self.unwrittenValuesByKeyspaceAndPrefix_:
                 break
-            self.waitForKeyspaceAndPrefix(pair[0],pair[1])
+            self.waitForKeyspaceAndPrefix(pair[0], pair[1])
 
         self.commitPendingWrites()
         self.view_.flush()

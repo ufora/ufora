@@ -15,22 +15,12 @@
 import ufora.BackendGateway.SubscribableWebObjects.Decorators as Decorators
 import ufora.BackendGateway.SubscribableWebObjects.Exceptions as Exceptions
 import ufora.BackendGateway.ComputedGraph.ComputedGraph as ComputedGraph
-import ufora.distributed.SharedState.ComputedGraph as CGSS
-import ufora.distributed.SharedState.ComputedGraph.Node
-import ufora.distributed.SharedState.ComputedGraph.Property
 import time
 import threading
 
 class TestCGLocation(ComputedGraph.Location):
     definition = ComputedGraph.Key(object)
     aValue = ComputedGraph.Mutable(lambda: None, exposeToProtocol = True)
-
-    def sharedStateSubspace(self):
-        return CGSS.Node.Keyspace(keyspacePath=("public", "writeable", "TestCGLocation")).subspace
-
-    aValueInSharedState = CGSS.Property.Property(default = lambda: False, exposeToProtocol = True)
-    bValueInSharedState = CGSS.Property.Property(default = lambda: False, exposeToProtocol = True)
-    cValueInSharedState = CGSS.Property.Property(default = lambda: False, exposeToProtocol = True)
 
     @ComputedGraph.ExposedProperty()
     def depth(self):
@@ -136,29 +126,3 @@ class Test(object):
     @Decorators.Function()
     def aFunctionThrowingASpecificException(self, jsonArgs):
         raise Exceptions.SubscribableWebObjectsException("swo exception: function call")
-
-    def setAValueInSharedState(self, value):
-        self.location.aValueInSharedState = value
-
-    @Decorators.Field(setter=setAValueInSharedState)
-    def aValueInSharedState(self):
-        """a mutable value held in shared state"""
-        return self.location.aValueInSharedState
-
-    def setBValueInSharedState(self, value):
-        self.location.bValueInSharedState = value
-
-    @Decorators.Field(setter=setBValueInSharedState)
-    def bValueInSharedState(self):
-        """a mutable value held in shared state"""
-        return self.location.bValueInSharedState
-
-    def setCValueInSharedState(self, value):
-        self.location.cValueInSharedState = value
-
-    @Decorators.Field(setter=setCValueInSharedState)
-    def cValueInSharedState(self):
-        """a mutable value held in shared state"""
-        return self.location.cValueInSharedState
-
-

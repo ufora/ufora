@@ -92,9 +92,6 @@ module.exports = (webObjects) ->
         it 'should allow us to access aValue', (done)->
             testCgLocationObject.get_aValue expectAnyResultImmediately(done)
 
-        it 'should allow us to access aValueInSharedState', (done)->
-            testCgLocationObject.get_aValueInSharedState expectAnyResultImmediately(done)
-
         it 'should allow us to access depth', (done)->
             testCgLocationObject.get_depth expectResultImmediately(0, done)
 
@@ -156,15 +153,6 @@ module.exports = (webObjects) ->
                     done(Error("Expected exception. got #{JSON.stringify(response)}"))
                 else
                     done()
-
-        it 'should allow us to set "aValueInSharedState"', (done) ->
-            testCgLocationObject.set_aValueInSharedState 'new value', expectSuccess(done)
-
-        it 'should return "new value" from "aValueInSharedState"', (done) ->
-            testCgLocationObject.get_aValueInSharedState expectResultImmediately('new value', done)
-
-        it 'should allow us to reset "aValueInSharedState"', (done) ->
-            testCgLocationObject.set_aValueInSharedState false, expectSuccess(done)
 
 
 
@@ -245,55 +233,6 @@ module.exports = (webObjects) ->
             testObject.set_mutableValue 'changed value',
                 onSuccess: ->
 
-        it 'should now have the value "false" in aValueInSharedState', (done) ->
-            testObject.get_aValueInSharedState
-                onSuccess: (value) ->
-                    value.should.not.be.null
-                    value.should.equal false
-                    done()
-
-        it 'should accept writes to aValueInSharedState', (done) ->
-            testObject.set_aValueInSharedState "hello", expectSuccess(done)
-
-        it 'should now have the value "hello" in aValueInSharedState', (done) ->
-            testObject.get_aValueInSharedState
-                onSuccess: (value) ->
-                    value.should.not.be.null
-                    value.should.equal "hello"
-                    done()
-
-        it 'should be able to subscribe to bValueInSharedState', (done) ->
-            testObject.subscribe_bValueInSharedState
-                onSuccess: (value) ->
-                    value.should.not.be.null
-                    value.should.equal false
-                onChanged: (value) ->
-                    value.should.equal 'changed value'
-                    done()
-
-            testObject.set_bValueInSharedState 'changed value',
-                onSuccess: ->
-
-        # Testing to make sure we can subscribe to more than one SharedState property at a time.
-        it 'should allow us to subscribe to multiple shared state values', (done) ->
-            valuesSeen = 0
-            seen = ->
-                valuesSeen += 1
-                if valuesSeen == 2
-                    done()
-
-            testObject.subscribe_aValueInSharedState
-                onSuccess: (value) ->
-                onChanged: seen
-
-            testObject.subscribe_bValueInSharedState
-                onSuccess: (value) ->
-                onChanged: seen
-
-            testObject.set_aValueInSharedState 'changed value 2',
-                onSuccess: ->
-            testObject.set_bValueInSharedState 'changed value 2',
-                onSuccess: ->
 
         it ('should give us an error when we access a property ' + 
                                 'that throws an exception in python'), (done) ->
@@ -423,14 +362,6 @@ module.exports = (webObjects) ->
                     value.message.should.contain 'Guid'
                     done()
 
-        it 'should allow us to reset the value of aValueInSharedState', (done) ->
-            testObject.set_aValueInSharedState false,
-                onSuccess: () ->
-                    done()
-
-        it 'should allow us to reset the value of bValueInSharedState', (done)->
-            testObject.set_bValueInSharedState false,
-                onSuccess: -> done()
 
         it 'should be recursively constructible', (done)->
             aTest = new Test(new Test(new Test(new Test({}))))
