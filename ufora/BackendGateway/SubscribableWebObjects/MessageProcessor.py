@@ -22,7 +22,6 @@ import traceback
 
 import ufora.FORA.python.ModuleImporter as ModuleImporter
 
-import ufora.distributed.SharedState.ComputedGraph.SharedStateSynchronizer as SharedStateSynchronizer
 import ufora.distributed.SharedState.ComputedGraph.SynchronousPropertyAccess as SynchronousPropertyAccess
 
 import ufora.BackendGateway.ComputedGraph.ComputedGraph as ComputedGraph
@@ -252,21 +251,7 @@ class MessageProcessor(object):
                 self.cumulusGatewayRemote = self.computedValueGateway.cumulusGateway
 
 
-        def initSynchronizer():
-            self.synchronizer = SharedStateSynchronizer.SharedStateSynchronizer()
-
-            logging.info("created a SharedStateSynchronizer")
-
-            self.synchronizer.attachView(
-                sharedStateViewFactory.createView()
-                )
-
-            logging.info("attached shared state view.")
-
-        simultaneously(
-            initSynchronizer,
-            initValueGateway
-            )
+        initValueGateway()
 
         self.synchronousSharedStateScope = SynchronousPropertyAccess.SynchronousPropertyAccess()
 
@@ -285,12 +270,9 @@ class MessageProcessor(object):
 
         self.subscriptions = Subscriptions.Subscriptions(
             self.graph,
-            self.computedValueGateway,
-            self.synchronizer
+            self.computedValueGateway
             )
 
-    def isDisconnectedFromSharedState(self):
-        return self.subscriptions.isDisconnectedFromSharedState()
 
     def handleIncomingMessage(self, message):
         responses = []
@@ -665,7 +647,6 @@ class MessageProcessor(object):
 
     def __enter__(self):
         self.lock.__enter__()
-        self.synchronizer.__enter__()
         self.computedValueGateway.__enter__()
         self.graph.__enter__()
         self.synchronousSharedStateScope.__enter__()
@@ -674,13 +655,10 @@ class MessageProcessor(object):
         self.synchronousSharedStateScope.__exit__(type, value, tb)
         self.graph.__exit__(type, value, tb)
         self.computedValueGateway.__exit__(type, value, tb)
-        self.synchronizer.__exit__(type, value, tb)
         self.lock.__exit__(type, value, tb)
 
     def teardown(self):
-        self.synchronizer.flush()
         self.computedValueGateway.teardown()
-        self.synchronizer = None
         self.graph = None
         self.computedValueGateway = None
 

@@ -63,9 +63,6 @@ class InMemorySocketIoJsonInterface(object):
 
                     responses += self.messageProcessor.extractPendingMessages()
 
-                    if self.messageProcessor.isDisconnectedFromSharedState():
-                        logging.critical("BackendGateway disconnected from SharedState. Exiting.")
-                        return
 
                     for jsonMessage in responses:
                         try:

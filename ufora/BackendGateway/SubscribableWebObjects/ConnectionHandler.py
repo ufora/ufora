@@ -80,10 +80,6 @@ class ConnectionHandler:
                     responses = messageProcessor.handleIncomingMessage(message)
                     responses += messageProcessor.extractPendingMessages()
 
-                    if messageProcessor.isDisconnectedFromSharedState():
-                        logging.critical("BackendGateway disconnected from SharedState. Exiting.")
-                        return
-
                     for jsonMessage in responses:
                         try:
                             channel.write(json.dumps(jsonMessage))

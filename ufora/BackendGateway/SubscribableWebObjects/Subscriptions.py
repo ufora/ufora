@@ -14,7 +14,6 @@
 
 import ufora.BackendGateway.ComputedGraph.ComputedGraph as ComputedGraph
 import ufora.BackendGateway.control.Control as Control
-import ufora.distributed.SharedState.ComputedGraph.SharedStateSynchronizer as SharedStateSynchronizer
 import ufora.BackendGateway.ComputedGraph.BackgroundUpdateQueue as BackgroundUpdateQueue
 import ufora.BackendGateway.SubscribableWebObjects.Exceptions as Exceptions
 
@@ -32,7 +31,7 @@ class Subscriptions(object):
 
     We use the control framework. This is a hack for expediency.
     """
-    def __init__(self, computedGraph, computedValueGateway, sharedStateSynchronizer):
+    def __init__(self, computedGraph, computedValueGateway):
         self.controlRoot = Control.root(
             Control.overlayGenerated(
                 lambda: SubscriptionKeys().keys,
@@ -43,21 +42,16 @@ class Subscriptions(object):
             )
         self.computedGraph = computedGraph
         self.computedValueGateway = computedValueGateway
-        self.sharedStateSynchronizer = sharedStateSynchronizer
 
         self.subscriptionGetters = {}
         self.subscriptionValues = {}
         self.changedSubscriptions = set()
 
-    def isDisconnectedFromSharedState(self):
-        return self.sharedStateSynchronizer.isSharedStateDisconnected()
 
     def subscriptionCount(self):
         return len(self.subscriptionGetters)
 
     def updateComputedGraph_(self):
-        self.sharedStateSynchronizer.update()
-
         BackgroundUpdateQueue.moveNextFrameToCurFrame()
         BackgroundUpdateQueue.pullAll()
 
@@ -69,7 +63,6 @@ class Subscriptions(object):
 
         #self.controlRoot.display()
 
-        self.sharedStateSynchronizer.commitPendingWrites()
 
     def updateAndReturnChangedSubscriptionIds(self):
         self.updateComputedGraph_()
