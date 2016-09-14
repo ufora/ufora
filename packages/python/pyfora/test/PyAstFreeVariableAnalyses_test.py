@@ -12,17 +12,30 @@
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
 
+import ast
+import copy
+import os
+import textwrap
+import unittest
+
 import pyfora.pyAst.PyAstFreeVariableAnalyses as PyAstFreeVariableAnalyses
 import pyfora.pyAst.NodeVisitorBases as NodeVisitorBases
 import pyfora.Exceptions as Exceptions
 import pyfora.pyAst.PyAstUtil as PyAstUtil
 
-import ast
-import copy
-import textwrap
-import unittest
-
 class PyAstFreeVariableAnalyses_test(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        filename = \
+            os.path.abspath(
+                os.path.join(
+                    os.path.dirname(__file__), # the path of this module
+                    '../pyAst/PyAstUtil.py'
+                    )
+                )
+        with open(filename) as fhandle:
+            cls.some_python_code = fhandle.read()
+
     def test_multiple_assignment(self):
         tree = ast.parse(
             textwrap.dedent(
@@ -1074,14 +1087,7 @@ class PyAstFreeVariableAnalyses_test(unittest.TestCase):
             )
 
     def test_TransvisitorsDontModifyTree(self):
-        tree = ast.parse(
-            textwrap.dedent(
-                """
-                def g(x):
-                    return x.y.z
-                """
-                )
-            )
+        tree = ast.parse(self.some_python_code)
         tree1 = copy.deepcopy(tree)
         noopTransformer = NodeVisitorBases.SemanticOrderNodeTransvisitor()
         tree2 = noopTransformer.visit(tree1)
@@ -1097,6 +1103,13 @@ class PyAstFreeVariableAnalyses_test(unittest.TestCase):
 
         self.assertTrue(tree3 is not None, 'tree3 is None')
         self.assertTrue(PyAstUtil.areAstsIdentical(tree, tree3))
+
+        freeVarsVisitor = PyAstFreeVariableAnalyses._FreeVariableMemberAccessChainsTransvisitor()
+        tree4 = freeVarsVisitor.visit(tree1)
+
+        self.assertTrue(tree4 is not None, 'tree4 is None')
+        self.assertTrue(PyAstUtil.areAstsIdentical(tree, tree4))
+
 
     def test_FreeVariableTransformer_1(self):
         tree = ast.parse(
