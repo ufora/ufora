@@ -1156,5 +1156,58 @@ class PyAstFreeVariableAnalyses_test(unittest.TestCase):
         self.assertTrue(tree2 is not None)
         self.assertTrue(not PyAstUtil.areAstsIdentical(tree, tree2))
 
+    def test_FreeVariableTransformer_4(self):
+        tree = ast.parse(
+            textwrap.dedent(
+                """
+                def f(x,y):
+                    def g(x):
+                        return x.y.z
+                    return x.y.z, g(y)
+                """
+                )
+            )
+        tree1 = copy.deepcopy(tree)
+        tree2 = PyAstFreeVariableAnalyses.collapseFreeVariableMemberAccessChains(
+                        tree1, {('x', 'y', 'z'):'x_y_z'}, isClassContext=False)
+        self.assertTrue(tree2 is not None)
+        self.assertTrue(PyAstUtil.areAstsIdentical(tree, tree2))
+
+    def test_FreeVariableTransformer_5(self):
+        tree = ast.parse(
+            textwrap.dedent(
+                """
+                def f(x,y):
+                    def g(z):
+                        return x.y.z
+                    return x.y.z, g(y)
+                """
+                )
+            )
+        tree1 = copy.deepcopy(tree)
+        tree2 = PyAstFreeVariableAnalyses.collapseFreeVariableMemberAccessChains(
+                        tree1, {('x', 'y', 'z'):'x_y_z'}, isClassContext=False)
+        self.assertTrue(tree2 is not None)
+        self.assertTrue(PyAstUtil.areAstsIdentical(tree, tree2))
+
+    def test_FreeVariableTransformer_6(self):
+        tree = ast.parse(
+            textwrap.dedent(
+                """
+                def f(y,z):
+                    def g(x):
+                        return x.y.z
+                    return x.y.z, g(y)
+                """
+                )
+            )
+        tree1 = copy.deepcopy(tree)
+        tree2 = PyAstFreeVariableAnalyses.collapseFreeVariableMemberAccessChains(
+                        tree1, {('x', 'y', 'z'):'x_y_z'}, isClassContext=False)
+        self.assertTrue(tree2 is not None)
+        self.assertTrue(not PyAstUtil.areAstsIdentical(tree, tree2))
+
+
+
 if __name__ == "__main__":
     unittest.main()
