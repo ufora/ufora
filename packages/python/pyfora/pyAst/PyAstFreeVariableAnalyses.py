@@ -165,17 +165,20 @@ def collectBoundNamesInScope(pyAstNode):
     vis = _CollectBoundValuesInScopeVisitor(pyAstNode)
     return vis.getBoundNames()
 
-
-class GenericBoundValuesScopedTransvisitor(NodeVisitorBases.GenericScopedTransvisitor):
-    """Extending GenericScopedTransvisitor by specializing the context manager to track bound values."""
-    def __init__(self):
+class _FreeVariableMemberAccessChainsTransvisitor(NodeVisitorBases.GenericScopedTransvisitor):
+    """Collect the free variable member access chains in a block of code."""
+    def __init__(self, exclude_predicate=None):
         scopeMgr = NodeVisitorBases.ScopedSaveRestoreComputedValue(
             self.getBoundValues,
             self._setBoundValues,
-            GenericBoundValuesScopedTransvisitor._computeScopeBoundValues)
-        super(GenericBoundValuesScopedTransvisitor, self).__init__(scopeMgr)
+            _FreeVariableMemberAccessChainsTransvisitor._computeScopeBoundValues)
+        super(_FreeVariableMemberAccessChainsTransvisitor, self).__init__(scopeMgr)
         self._boundValues = set()
         self._boundInScopeSoFar = set()
+
+        self._freeVariableMemberAccessChainsWithPos = set()
+        self._freeVariablesWithPos = set()
+        self.exclude_predicate = exclude_predicate
 
     def getBoundValues(self):
         return (self._boundValues, self._boundInScopeSoFar)
@@ -186,29 +189,13 @@ class GenericBoundValuesScopedTransvisitor(NodeVisitorBases.GenericScopedTransvi
         return (oldValueSets[0].union(collectBoundValuesInScope(node)), set())
     def isBoundSoFar(self, name):
         return name in self._boundValues or name in self._boundInScopeSoFar
-
-    def visit_ClassDef(self, node):
-        self._boundValues.add(node.name)
-        return NodeVisitorBases.GenericScopedTransvisitor.visit_ClassDef(self, node)
-
-
-class _FreeVariableMemberAccessChainsTransvisitor(GenericBoundValuesScopedTransvisitor):
-    """Collect the free variable member access chains in a block of code."""
-    def __init__(self, exclude_predicate=None):
-        super(_FreeVariableMemberAccessChainsTransvisitor, self).__init__()
-        self._freeVariableMemberAccessChainsWithPos = set()
-        self._freeVariablesWithPos = set()
-        self.exclude_predicate = exclude_predicate
-
+    def isFree(self, var):
+        return any(var == free_var for (free_var, _pos) in self._freeVariablesWithPos)
     def getFreeVars(self, getPositions=False):
         if getPositions:
             return self._freeVariablesWithPos
         else:
             return {var for (var, _) in self._freeVariablesWithPos}
-
-    def isFree(self, var):
-        return any(var == free_var for (free_var, _pos) in self._freeVariablesWithPos)
-
     def getFreeVariablesMemberAccessChains(self, getPositions=False):
         if getPositions:
             return self._freeVariableMemberAccessChainsWithPos
@@ -252,6 +239,10 @@ class _FreeVariableMemberAccessChainsTransvisitor(GenericBoundValuesScopedTransv
         identifier = node.id
         self.processChain((identifier,), node.ctx, node.lineno, node.col_offset)
         return node
+
+    def visit_ClassDef(self, node):
+        self._boundValues.add(node.name)
+        return NodeVisitorBases.GenericScopedTransvisitor.visit_ClassDef(self, node)
 
     def generic_visit(self, node):
         if self.exclude_predicate is None or not self.exclude_predicate(node):
