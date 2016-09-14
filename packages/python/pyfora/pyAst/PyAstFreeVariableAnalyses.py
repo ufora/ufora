@@ -285,7 +285,6 @@ class _FreeVariableMemberAccessChainsCollapsingTransformer(_FreeVariableMemberAc
                     ast.Name(self.chain_to_new_name[chain], node.ctx),
                     node
                     )
-            return node
         return self.generic_visit(node)
 
 

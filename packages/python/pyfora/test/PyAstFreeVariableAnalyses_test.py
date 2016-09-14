@@ -1128,5 +1128,20 @@ class PyAstFreeVariableAnalyses_test(unittest.TestCase):
         self.assertTrue(tree2 is not None)
         self.assertTrue(not PyAstUtil.areAstsIdentical(tree, tree2))
 
+    def test_FreeVariableTransformer_3(self):
+        tree = ast.parse(
+            textwrap.dedent(
+                """
+                def g(y):
+                    return x.y.z.__str__()
+                """
+                )
+            )
+        tree1 = copy.deepcopy(tree)
+        tree2 = PyAstFreeVariableAnalyses.collapseFreeVariableMemberAccessChains(
+                        tree1, {('x', 'y', 'z'):'x_y_z'}, isClassContext=False)
+        self.assertTrue(tree2 is not None)
+        self.assertTrue(not PyAstUtil.areAstsIdentical(tree, tree2))
+
 if __name__ == "__main__":
     unittest.main()
