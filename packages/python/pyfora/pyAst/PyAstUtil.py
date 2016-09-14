@@ -24,6 +24,9 @@ import textwrap
 
 LINENO_ATTRIBUTE_NAME = 'lineno'
 
+def areAstsIdentical(ast1, ast2):
+    return ast.dump(ast1) == ast.dump(ast2)
+
 def CachedByArgs(f):
     """Function decorator that adds a simple memo to 'f' on its arguments"""
     cache = {}

@@ -197,13 +197,17 @@ class _FreeVariableMemberAccessChainsTransvisitor(GenericBoundValuesScopedTransv
     def __init__(self, exclude_predicate=None):
         super(_FreeVariableMemberAccessChainsTransvisitor, self).__init__()
         self._freeVariableMemberAccessChainsWithPos = set()
+        self._freeVariablesWithPos = set()
         self.exclude_predicate = exclude_predicate
 
     def getFreeVars(self, getPositions=False):
         if getPositions:
-            return {(chain[0], pos) for (chain, pos) in self._freeVariableMemberAccessChainsWithPos}
+            return self._freeVariablesWithPos
         else:
-            return {chain[0] for (chain, _) in self._freeVariableMemberAccessChainsWithPos}
+            return {var for (var, _) in self._freeVariablesWithPos}
+
+    def isFree(self, var):
+        return any(var == free_var for (free_var, _pos) in self._freeVariablesWithPos)
 
     def getFreeVariablesMemberAccessChains(self, getPositions=False):
         if getPositions:
@@ -211,11 +215,33 @@ class _FreeVariableMemberAccessChainsTransvisitor(GenericBoundValuesScopedTransv
         else:
             return {chain for (chain, _) in self._freeVariableMemberAccessChainsWithPos}
 
-    def visit_Attribute(self, node):
+    def addFreeVariableMemberAccessChain(self, chain, lineno, col_offset):
+        pos = NodeVisitorBases.PositionInFile(
+                    lineno=lineno,
+                    col_offset=col_offset
+                    )
+        self._freeVariableMemberAccessChainsWithPos.add(
+            VarWithPosition(var=chain, pos=pos))
+        self._freeVariablesWithPos.add(
+            VarWithPosition(var=chain[0], pos=pos))
+
+    def processChain(self, chain, ctx, lineno, col_offset):
+        '''Updates bound and free variables and returns isBoundSoFar before call.'''
+        identifier = chain[0]
+        if self.isBoundSoFar(identifier):
+            return True
+        else:
+            if isinstance(ctx, ast.Store):
+                self._boundInScopeSoFar.add(identifier)
+            elif isinstance(ctx, ast.Load):
+                self.addFreeVariableMemberAccessChain(chain, lineno, col_offset)
+            return False
+
+    def visit_Attribute(self, node, allow_recursion=True):
         (chainOrNone, root) = _memberAccessChainWithLocOrNone(node)
         if chainOrNone is not None:
             self.processChain(chainOrNone, root.ctx, root.lineno, root.col_offset)
-        else:
+        elif allow_recursion is True:
             # required to recurse deeper into the AST, but only do it if
             # _freeVariableMemberAccessChain was None, indicating that it
             # doesn't want to consume the whole expression
@@ -226,22 +252,6 @@ class _FreeVariableMemberAccessChainsTransvisitor(GenericBoundValuesScopedTransv
         identifier = node.id
         self.processChain((identifier,), node.ctx, node.lineno, node.col_offset)
         return node
-
-    def processChain(self, chain, ctx, lineno, col_offset):
-        identifier = chain[0]
-        if isinstance(ctx, ast.Store) and not self.isBoundSoFar(identifier):
-            self._boundInScopeSoFar.add(identifier)
-        elif not self.isBoundSoFar(identifier) and \
-           isinstance(ctx, ast.Load):
-            self._freeVariableMemberAccessChainsWithPos.add(
-                VarWithPosition(
-                    var=chain,
-                    pos=NodeVisitorBases.PositionInFile(
-                        lineno=lineno,
-                        col_offset=col_offset
-                        )
-                    )
-                )
 
     def generic_visit(self, node):
         if self.exclude_predicate is None or not self.exclude_predicate(node):
@@ -264,31 +274,27 @@ def getFreeVariableMemberAccessChains(pyAstNode,
     return vis.getFreeVariablesMemberAccessChains(getPositions)
 
 
-class _FreeVariableMemberAccessChainsCollapsingTransformer(GenericBoundValuesScopedTransvisitor):
+class _FreeVariableMemberAccessChainsCollapsingTransformer(_FreeVariableMemberAccessChainsTransvisitor):
     """Find free variable chains of the form x.y.z and replace them with single variable lookups"""
     def __init__(self, chain_to_new_name):
         super(_FreeVariableMemberAccessChainsCollapsingTransformer, self).__init__()
         self.chain_to_new_name = chain_to_new_name
 
     def visit_Attribute(self, node):
-        # note that because this class is not tracking bound variables above, this
-        # analysis could be wrong, since there are some scopes that may not
-        # create member access chains. To be correct, this should mimic the logic
-        # that we see in the GenericBoundValuesScopedTransvisitor etc.
+        _FreeVariableMemberAccessChainsTransvisitor.visit_Attribute(
+                                                    self, node, allow_recursion=False)
 
         (chainOrNone, _root) = _memberAccessChainWithLocOrNone(node)
-        if chainOrNone is not None:
-            # we ought to check 'if chainOrNone[0] not in self._boundValues' but we don't have that
-            # because we're not descended from the right kind of visitor.
 
+        if chainOrNone is not None:
             chain = tuple(chainOrNone)
-            if chain in self.chain_to_new_name:
+            identifier = chain[0]
+            if chain in self.chain_to_new_name and self.isFree(identifier):
                 return ast.copy_location(
                     ast.Name(self.chain_to_new_name[chain], node.ctx),
                     node
                     )
             return node
-
         return self.generic_visit(node)
 
 

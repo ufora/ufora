@@ -16,7 +16,9 @@ import pyfora.pyAst.PyAstFreeVariableAnalyses as PyAstFreeVariableAnalyses
 import pyfora.pyAst.NodeVisitorBases as NodeVisitorBases
 import pyfora.Exceptions as Exceptions
 import pyfora.pyAst.PyAstUtil as PyAstUtil
+
 import ast
+import copy
 import textwrap
 import unittest
 
@@ -1071,7 +1073,7 @@ class PyAstFreeVariableAnalyses_test(unittest.TestCase):
             res
             )
 
-    def test_SemanticOrderNodeTransformer(self):
+    def test_TransvisitorsDontModifyTree(self):
         tree = ast.parse(
             textwrap.dedent(
                 """
@@ -1080,22 +1082,51 @@ class PyAstFreeVariableAnalyses_test(unittest.TestCase):
                 """
                 )
             )
+        tree1 = copy.deepcopy(tree)
         noopTransformer = NodeVisitorBases.SemanticOrderNodeTransvisitor()
-        tree2 = noopTransformer.visit(tree)
+        tree2 = noopTransformer.visit(tree1)
 
         self.assertTrue(tree2 is not None, 'tree2 is None')
-        self.assertTrue(tree is tree2)
+        self.assertTrue(PyAstUtil.areAstsIdentical(tree, tree2))
 
         scopeMgr = NodeVisitorBases.InScopeSaveRestoreValue(
                     lambda :  True,
                     lambda x: None)
-
         noopTransformer = NodeVisitorBases.GenericScopedTransvisitor(scopeMgr)
-        tree2 = noopTransformer.visit(tree)
+        tree3 = noopTransformer.visit(tree1)
 
-        self.assertTrue(tree2 is not None, 'tree2 is None')
-        print ast.dump(tree2)
-        self.assertTrue(tree is tree2, ast.dump(tree2))
+        self.assertTrue(tree3 is not None, 'tree3 is None')
+        self.assertTrue(PyAstUtil.areAstsIdentical(tree, tree3))
+
+    def test_FreeVariableTransformer_1(self):
+        tree = ast.parse(
+            textwrap.dedent(
+                """
+                def g(x):
+                    return x.y.z
+                """
+                )
+            )
+        tree1 = copy.deepcopy(tree)
+        tree2 = PyAstFreeVariableAnalyses.collapseFreeVariableMemberAccessChains(
+                        tree1, {('x', 'y', 'z'):'x_y_z'}, isClassContext=False)
+        self.assertTrue(tree2 is not None)
+        self.assertTrue(PyAstUtil.areAstsIdentical(tree, tree2))
+
+    def test_FreeVariableTransformer_2(self):
+        tree = ast.parse(
+            textwrap.dedent(
+                """
+                def g(y):
+                    return x.y.z
+                """
+                )
+            )
+        tree1 = copy.deepcopy(tree)
+        tree2 = PyAstFreeVariableAnalyses.collapseFreeVariableMemberAccessChains(
+                        tree1, {('x', 'y', 'z'):'x_y_z'}, isClassContext=False)
+        self.assertTrue(tree2 is not None)
+        self.assertTrue(not PyAstUtil.areAstsIdentical(tree, tree2))
 
 if __name__ == "__main__":
     unittest.main()
