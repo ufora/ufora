@@ -253,7 +253,7 @@ class WithBlockExecutor(object):
         proxy_trace = tuple_of_proxies[1]
         trace = proxy_trace.toLocal().resultWithWakeup()
 
-        if isinstance(trace, tuple):
+        if isinstance(trace, (tuple, list)):
             self.traceAndException = (trace, tuple_of_proxies[2].toLocal().resultWithWakeup())
 
         proxy_dict = tuple_of_proxies[0]

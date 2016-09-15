@@ -297,19 +297,20 @@ def completeMultipartS3Upload(s3InterfaceFactory,
                                           outputCallback)
 
 class OutOfProcessPythonCallExecutor:
-    def __init__(self, objAsJson):
-        self.objAsJson = objAsJson
+    def __init__(self, datastream, root_id):
+        self.datastream = datastream
+        self.root_id = root_id
 
     def __call__(self, data):
         mappings = PureImplementationMappings.PureImplementationMappings()
         mappings.load_pure_modules()
 
-        rehydrator = PythonObjectRehydrator.PythonObjectRehydrator(mappings, allowUserCodeModuleLevelLookups=False,stringDecoder=lambda s:s)
-        convertedInstance = rehydrator.convertJsonResultToPythonObject(self.objAsJson)
+        rehydrator = PythonObjectRehydrator.PythonObjectRehydrator(mappings, allowUserCodeModuleLevelLookups=False)
+        convertedInstance = rehydrator.convertJsonResultToPythonObject(self.datastream, self.root_id)
 
         result = convertedInstance()
 
-        registry = ObjectRegistry.ObjectRegistry(stringEncoder=lambda s:s)
+        registry = ObjectRegistry.ObjectRegistry()
 
         walker = PyObjectWalker.PyObjectWalker(
             purePythonClassMapping=mappings,
@@ -326,8 +327,8 @@ class OutOfProcessPythonCallExecutor:
 
 
 
-def outOfProcessPythonCall(downloaderPool, vdm, objectAsJson):
-    writer = OutOfProcessPythonCallExecutor(objectAsJson)
+def outOfProcessPythonCall(downloaderPool, vdm, root_id, datastream):
+    writer = OutOfProcessPythonCallExecutor(datastream, root_id)
 
     result = [None]
     def outputCallback(response):
@@ -340,11 +341,11 @@ def outOfProcessPythonCall(downloaderPool, vdm, objectAsJson):
     downloaderPool.getDownloader() \
             .executeAndCallbackWithString(writer, outputCallback, inputCallback)
 
-    objectRegistry = ObjectRegistry.ObjectRegistry(stringEncoder=lambda s:s)
+    objectRegistry = ObjectRegistry.ObjectRegistry()
 
     objId, objectRegistry.objectIdToObjectDefinition = pickle.loads(result[0])
 
-    converter = Converter.constructConverter(Converter.canonicalPurePythonModule(), vdm, stringDecoder=lambda s:s)
+    converter = Converter.constructConverter(Converter.canonicalPurePythonModule(), vdm)
 
     anObjAsImplval = converter.convertDirectly(objId, objectRegistry)
 

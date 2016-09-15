@@ -20,6 +20,8 @@ import pyfora.PyAbortSingletons as PyAbortSingletons
 import pyfora.ModuleLevelObjectIndex as ModuleLevelObjectIndex
 import pyfora.pyAst.PyAstFreeVariableAnalyses as PyAstFreeVariableAnalyses
 import pyfora.TypeDescription as TypeDescription
+import pyfora.ObjectRegistry as ObjectRegistry
+import pyfora.BinaryObjectRegistryDeserializer as BinaryObjectRegistryDeserializer
 import pyfora
 import cPickle as pickle
 import sys
@@ -64,13 +66,12 @@ def updatePyAstMemberChains(pyAst, variablesInScope, isClassContext):
 class PythonObjectRehydrator(object):
     """PythonObjectRehydrator - responsible for building local copies of objects
                                 produced by the server."""
-    def __init__(self, purePythonClassMapping, allowUserCodeModuleLevelLookups=True, stringDecoder=base64.b64decode):
+    def __init__(self, purePythonClassMapping, allowUserCodeModuleLevelLookups=True):
         self.allowUserCodeModuleLevelLookups = allowUserCodeModuleLevelLookups
         self.moduleClassesAndFunctionsByPath = {}
         self.pathsToModules = {}
         self.purePythonClassMapping = purePythonClassMapping
         self.loadPathsToModules()
-        self.stringDecoder=stringDecoder
 
     def loadPathsToModules(self):
         for module in list(sys.modules.itervalues()):
@@ -162,9 +163,15 @@ class PythonObjectRehydrator(object):
                     targetDict[magicVar] = getattr(actualModule, magicVar)
 
 
-    def convertJsonResultToPythonObject(self, json):
-        root_id = json['root_id']
-        definitions = json['obj_definitions']
+    def convertJsonResultToPythonObject(self, binarydata, root_id):
+        registry = ObjectRegistry.ObjectRegistry()
+
+        def noConversion(*args):
+            assert False, "Not implemented yet"
+
+        BinaryObjectRegistryDeserializer.deserialize(binarydata, registry, noConversion)
+        
+        definitions = registry.objectIdToObjectDefinition
         converted = {}
 
         def convert(objectId,retainHomogenousListsAsNumpy=False):
@@ -174,71 +181,43 @@ class PythonObjectRehydrator(object):
             return converted[objectId]
 
         def convertInner(objectDef, retainHomogenousListsAsNumpy=False):
-            if 'primitive' in objectDef:
-                res = objectDef['primitive']
-                if isinstance(res, str):
-                    return intern(self.stringDecoder(res))
-                else:
-                    return res
+            if isinstance(objectDef, (list,float,int,bool,long,str)):
+                return objectDef
 
-            if 'tuple' in objectDef:
-                return tuple([convert(x) for x in objectDef['tuple']])
-            if 'list' in objectDef:
-                return [convert(x) for x in objectDef['list']]
-            if 'dict' in objectDef:
+            if objectDef is None:
+                return None
+
+            if isinstance(objectDef, TypeDescription.Tuple):
+                return tuple([convert(x) for x in objectDef.memberIds])
+            if isinstance(objectDef, TypeDescription.List):
+                return [convert(x) for x in objectDef.memberIds]
+            if isinstance(objectDef, TypeDescription.Dict):
                 return {
                     convert(key): convert(val)
-                    for key, val in zip(objectDef['dict']['keys'], objectDef['dict']['values'])
+                    for key, val in zip(objectDef.keyIds, objectDef.valueIds)
                     }
-            if 'untranslatableException' in objectDef:
-                return Exceptions.ForaToPythonConversionError(
-                    "untranslatable FORA exception: %s" % objectDef['untranslatableException']
-                    )
-            if 'singleton' in objectDef:
-                singletonName = objectDef['singleton']
-                return NamedSingletons.singletonNameToObject[singletonName]
-            if 'InvalidPyforaOperation' in objectDef:
-                return Exceptions.InvalidPyforaOperation(objectDef['InvalidPyforaOperation'])
-            if 'homogenousListNumpyDataStringsAndSizes' in objectDef:
-                stringsAndSizes = objectDef['homogenousListNumpyDataStringsAndSizes']
-
-                dtype = cPickle.loads(self.stringDecoder(objectDef['dtype']))
-                data = numpy.zeros(shape=objectDef['length'], dtype=dtype)
-
-                curOffset = 0
-                for dataAndSize in stringsAndSizes:
-                    arrayText = dataAndSize['data']
-                    size = dataAndSize['length']
-                    data[curOffset:curOffset+size] = numpy.ndarray(shape=size,
-                                                                   dtype=dtype,
-                                                                   buffer=self.stringDecoder(arrayText))
-                    curOffset += size
-
-                #we use the first element as a prototype when decoding
-                firstElement = convert(objectDef['firstElement'])
+            if isinstance(objectDef, TypeDescription.NamedSingleton):
+                return NamedSingletons.singletonNameToObject[objectDef.singletonName]
+            if isinstance(objectDef, TypeDescription.PackedHomogenousData):
+                array = numpy.fromstring(objectDef.dataAsBytes, dtype=TypeDescription.primitiveToDtype(objectDef.dtype))
 
                 if retainHomogenousListsAsNumpy:
-                    return TypeDescription.HomogenousListAsNumpyArray(data)
+                    return TypeDescription.HomogenousListAsNumpyArray(array)
                 else:
-                    data = data.tolist()
+                    return array.tolist()
 
-                    assert isinstance(data[0], type(firstElement)), "%s of type %s is not %s" % (
-                        data[0], type(data[0]), type(firstElement)
-                        )
-                    return data
-
-            if 'builtinException' in objectDef:
-                builtinExceptionTypeName = objectDef['builtinException']
+            if isinstance(objectDef, TypeDescription.BuiltinExceptionInstance):
+                builtinExceptionTypeName = objectDef.builtinExceptionTypeName
                 builtinExceptionType = NamedSingletons.singletonNameToObject[builtinExceptionTypeName]
-                args = convert(objectDef['args'])
+                args = convert(objectDef.argsId)
                 return builtinExceptionType(*args)
-            if 'classInstance' in objectDef:
-                classObject = convert(objectDef['classInstance'])
+            if isinstance(objectDef, TypeDescription.ClassInstanceDescription):
+                classObject = convert(objectDef.classId)
 
                 if self.purePythonClassMapping.canInvertInstancesOf(classObject):
                     members = {
                         k: convert(v,retainHomogenousListsAsNumpy=True)
-                        for k, v in objectDef['members'].iteritems()
+                        for k, v in objectDef.classMemberNameToClassMemberId.iteritems()
                         }
                     return self.purePythonClassMapping.pureInstanceToMappable(
                         self._instantiateClass(classObject, members)
@@ -246,63 +225,78 @@ class PythonObjectRehydrator(object):
                 else:
                     members = {
                         k: convert(v)
-                        for k, v in objectDef['members'].iteritems()
+                        for k, v in objectDef.classMemberNameToClassMemberId.iteritems()
                         }
                     return self._invertPureClassInstanceIfNecessary(
                         self._instantiateClass(classObject, members)
                         )
-            if 'pyAbortException' in objectDef:
-                pyAbortExceptionTypeName = objectDef['pyAbortException']
+            if isinstance(objectDef, TypeDescription.PyAbortException):
+                pyAbortExceptionTypeName = objectDef.typename
                 pyAbortExceptionType = PyAbortSingletons.singletonNameToObject[
-                    pyAbortExceptionTypeName]
-                args = convert(objectDef['args'])
+                    pyAbortExceptionTypeName
+                    ]
+
+                args = convert(objectDef.argsId)
                 return pyAbortExceptionType(*args)
-            if 'boundMethodOn' in objectDef:
-                instance = convert(objectDef['boundMethodOn'])
+
+            if isinstance(objectDef, TypeDescription.InstanceMethod):
+                instance = convert(objectDef.instanceId)
                 try:
-                    return getattr(instance, objectDef['methodName'])
+                    return getattr(instance, objectDef.methodName)
                 except AttributeError:
                     raise Exceptions.ForaToPythonConversionError(
                         "Expected %s to have a method of name %s which it didn't" % (
                             instance,
                             objectDef['methodName'])
                         )
-            if 'moduleLevelObject' in objectDef:
-                return ModuleLevelObjectIndex.ModuleLevelObjectIndex.singleton().getObjectFromPath(objectDef['moduleLevelObject'])
+            if isinstance(objectDef, TypeDescription.Unconvertible):
+                return ModuleLevelObjectIndex.ModuleLevelObjectIndex.singleton().getObjectFromPath(objectDef.module_path)
 
-            if 'functionInstance' in objectDef:
+            if isinstance(objectDef, TypeDescription.FunctionDefinition):
                 members = {
                     k: convert(v)
-                    for k, v in objectDef['members'].iteritems()
+                    for k, v in objectDef.freeVariableMemberAccessChainsToId.iteritems()
                     }
-                return self._instantiateFunction(objectDef['functionInstance'][0],
-                                                 objectDef['functionInstance'][1],
+                fileDesc = convert(objectDef.sourceFileId)
+                return self._instantiateFunction(fileDesc.path,
+                                                 objectDef.lineNumber,
                                                  members,
-                                                 convert(objectDef['file_text'])
+                                                 fileDesc.text
                                                  )
-            if 'withBlock' in objectDef:
+            if isinstance(objectDef, TypeDescription.WithBlockDescription):
                 members = {
                     k: convert(v)
-                    for k, v in objectDef['members'].iteritems()
+                    for k, v in objectDef.freeVariableMemberAccessChainsToId.iteritems()
                     }
-                return self._withBlockAsClassObjectFromFilenameAndLine(objectDef['classObject'][0],
-                                                            objectDef['classObject'][1],
+
+                fileDesc = convert(objectDef.sourceFileId)
+
+                return self._withBlockAsClassObjectFromFilenameAndLine(
+                                                            fileDesc.path,
+                                                            objectDef.lineNumber,
                                                             members,
-                                                            convert(objectDef['file_text'])
+                                                            fileDesc.text
                                                             )
 
-            if 'classObject' in objectDef:
+            if isinstance(objectDef, TypeDescription.ClassDefinition):
                 members = {
                     k: convert(v)
-                    for k, v in objectDef['members'].iteritems()
+                    for k, v in objectDef.freeVariableMemberAccessChainsToId.iteritems()
                     }
-                return self._classObjectFromFilenameAndLine(objectDef['classObject'][0],
-                                                            objectDef['classObject'][1],
+                fileDesc = convert(objectDef.sourceFileId)
+                return self._classObjectFromFilenameAndLine(fileDesc.path,
+                                                            objectDef.lineNumber,
                                                             members,
-                                                            convert(objectDef['file_text'])
+                                                            fileDesc.text
                                                             )
-            if 'stacktrace' in objectDef:
-                return objectDef['stacktrace']
+            if isinstance(objectDef, TypeDescription.StackTraceAsJson):
+                return objectDef.trace
+
+            if isinstance(objectDef, TypeDescription.File):
+                return objectDef
+
+            if isinstance(objectDef, TypeDescription.RemotePythonObject):
+                return objectDef
 
             raise Exceptions.ForaToPythonConversionError(
                 "not implemented: cant convert %s" % objectDef

@@ -232,13 +232,13 @@ class PurePythonNumpyArrayMapping(PureImplementationMapping):
 
     def mapPythonInstanceToPyforaInstance(self, numpyArray):
         flattened = numpyArray.flatten()
-        dtypeStr = str(flattened.dtype)
+        dtypeAsPrim = TypeDescription.dtypeToPrimitive(numpyArray.dtype)
 
-        if TypeDescription.isValidPackedHomogenousDataType(dtypeStr):
+        if dtypeAsPrim is not None:
             return PurePythonNumpyArray(
                 numpyArray.shape,
                 TypeDescription.PackedHomogenousData(
-                    str(flattened.dtype),
+                    dtypeAsPrim,
                     flattened.tostring()
                     )
                 )

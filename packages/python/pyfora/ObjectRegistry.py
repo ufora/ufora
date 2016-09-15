@@ -16,9 +16,8 @@ import pyfora.TypeDescription as TypeDescription
 import base64
 
 class ObjectRegistry(object):
-    def __init__(self, stringEncoder=base64.b64encode):
+    def __init__(self):
         self._nextObjectID = 0
-        self.stringEncoder = stringEncoder
         self.objectIdToObjectDefinition = {}
 
     def getDefinition(self, objectId):
@@ -31,18 +30,12 @@ class ObjectRegistry(object):
         return objectId
 
     def definePrimitive(self, objectId, primitive):
-        if isinstance(primitive, str):
-            primitive = self.stringEncoder(primitive)
         self.objectIdToObjectDefinition[objectId] = primitive
 
     def defineTuple(self, objectId, memberIds):
         self.objectIdToObjectDefinition[objectId] = TypeDescription.Tuple(memberIds)
 
     def definePackedHomogenousData(self, objectId, homogenousData):
-        homogenousData = TypeDescription.PackedHomogenousData(
-            homogenousData.dtype, 
-            self.stringEncoder(homogenousData.dataAsBytes)
-            )
         self.objectIdToObjectDefinition[objectId] = homogenousData
 
     def defineList(self, objectId, memberIds):
@@ -128,6 +121,13 @@ class ObjectRegistry(object):
                 instanceId=instanceId,
                 methodName=methodName
                 )
+    
+    def defineStacktrace(self, objectId, stacktraceAsJson):
+        self.objectIdToObjectDefinition[objectId] = \
+            TypeDescription.StackTraceAsJson(stacktraceAsJson)
+
+    def definePyAbortException(self, objectId, typename, argsId):
+        self.objectIdToObjectDefinition[objectId] = TypeDescription.PyAbortException(typename, argsId)
 
     def defineWithBlock(self,
                         objectId,

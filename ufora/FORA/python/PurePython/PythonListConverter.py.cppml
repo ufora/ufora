@@ -14,6 +14,7 @@
    limitations under the License.
 ****************************************************************************/
 #include "PythonListConverter.hppml"
+#include "PythonTupleConverter.hppml"
 #include "PythonConstantConverter.hppml"
 
 #include "../../../native/Registrar.hpp"
@@ -181,28 +182,65 @@ public:
         }
 
 
+    static ImplValContainer dtypeAsPrimitiveInstance(
+                    PolymorphicSharedPtr<Fora::PythonConstantConverter>& constantConverter,
+                    PolymorphicSharedPtr<Fora::PythonTupleConverter>& tupleConverter,
+                    boost::python::object dtype
+                    )
+        {
+        using namespace boost::python;
+
+        extract<std::string> checkString(dtype);
+        if (checkString.check())
+            {
+            if (checkString() == "<f8")
+                return constantConverter->convertFloat((double)0);
+            if (checkString() == "<i8")
+                return constantConverter->convertInt(0);
+            if (checkString() == "|b1")
+                return constantConverter->convertBoolean(0);
+
+            lassert_dump(false, "Didn't understand type. See types in pyfora.TypeDescription.");
+            }
+
+        extract<boost::python::tuple> checkTuple(dtype);
+        if (checkTuple.check())
+            {
+            auto tup = checkTuple();
+
+            //tuples like ('f1', ...) we just unwrap the ...
+            if (len(tup) == 2 && extract<std::string>(tup[0]).check())
+                {
+                return dtypeAsPrimitiveInstance(constantConverter, tupleConverter, tup[1]);
+                }
+
+            ImmutableTreeVector<ImplValContainer> subelts;
+
+            for (long k = 0; k < boost::python::len(tup); k++)
+                subelts = subelts + dtypeAsPrimitiveInstance(constantConverter, tupleConverter, tup[k]);
+
+            return tupleConverter->createTuple(subelts);
+            }
+
+        lassert_dump(false, "Didn't understand type. See types in pyfora.TypeDescription.");
+        }
+                                
     static ImplValContainer createListFromPackedData(
                                 PolymorphicSharedPtr<Fora::PythonListConverter>& converter,
                                 PolymorphicSharedPtr<Fora::PythonConstantConverter>& constantConverter,
-                                const string& dType, 
+                                PolymorphicSharedPtr<Fora::PythonTupleConverter>& tupleConverter,
+                                boost::python::object dTypeAsPrimitive, 
                                 const string& dataAsBytes
                                 )
         {
-        if (dType == "float64")
-            {
-            Type t = constantConverter->convertFloat((double)0).type();
-            lassert(t.size() == sizeof(double));
+        Type t = dtypeAsPrimitiveInstance(constantConverter, tupleConverter, dTypeAsPrimitive).type();
 
-            return converter->createListOfPrimitives(
-                (const uint8_t*)&dataAsBytes[0], 
-                dataAsBytes.size() / sizeof(double), 
-                t
-                );
-            }
-        
-        lassert_dump(false, dType << " is not an understood type. See types in pyfora.TypeDescription.");
+        return converter->createListOfPrimitives(
+            (const uint8_t*)&dataAsBytes[0], 
+            dataAsBytes.size() / t.size(), 
+            t
+            );
         }
-
 
     static PolymorphicSharedPtr<Fora::PythonListConverter>
     makePythonListConverter(ImplValContainer& pyListClass)

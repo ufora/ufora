@@ -56,7 +56,7 @@ class StringBuilder:
         self._add(struct.pack("<d", index))
 
     def addString(self, s):
-        assert isinstance(s, str)
+        assert isinstance(s, str), type(s)
         self.addInt32(len(s))
         self._add(s)
 
@@ -87,6 +87,8 @@ CODE_UNCONVERTIBLE=18
 CODE_CLASS_INSTANCE=19
 CODE_INSTANCE_METHOD=20
 CODE_WITH_BLOCK=21
+CODE_PY_ABORT_EXCEPTION=22
+CODE_STACKTRACE_AS_JSON=23
 
 class BinaryObjectRegistry(object):
     """Plugin for the PyObjectWalker to push python objects into. Converts directly into a binary format."""
@@ -94,6 +96,9 @@ class BinaryObjectRegistry(object):
         self._nextObjectID = 0
         self._builder = StringBuilder()
         self.unconvertibleIndices = set()
+
+    def bytecount(self):
+        return self._builder.bytecount
 
     def str(self):
         return self._builder.str()
@@ -150,11 +155,40 @@ class BinaryObjectRegistry(object):
         self._builder.addByte(CODE_TUPLE)
         self._builder.addInt64s(memberIds)
 
-    def definePackedHomogenousData(self, objectId, homogenousData):
+    def definePackedHomogenousData(self, objectId, packedData):
         self._builder.addInt64(objectId)
         self._builder.addByte(CODE_PACKED_HOMOGENOUS_DATA)
-        self._builder.addString(homogenousData.dtype)
-        self._builder.addString(homogenousData.dataAsBytes)
+        def write(val):
+            if val is None:
+                self._builder.addByte(CODE_NONE)
+            elif isinstance(val, int):
+                self._builder.addByte(CODE_INT)
+                self._builder.addInt64(val)
+            elif isinstance(val, str):
+                self._builder.addByte(CODE_STR)
+                self._builder.addString(val)
+            elif isinstance(val, tuple):
+                self._builder.addByte(CODE_TUPLE)
+                self._builder.addInt32(len(val))
+                for v in val:
+                    write(v)
+            elif isinstance(val, list):
+                self._builder.addByte(CODE_LIST)
+                self._builder.addInt32(len(val))
+                for v in val:
+                    write(v)
+            elif isinstance(val, dict):
+                self._builder.addByte(CODE_DICT)
+                self._builder.addInt32(len(val))
+                for k,v in val.iteritems():
+                    write(k)
+                    write(v)
+            else:
+                assert False, "unknown primitive in dtype: " + str(val)
+
+        write(packedData.dtype)
+
+        self._builder.addString(packedData.dataAsBytes)
 
     def defineList(self, objectId, memberIds):
         self._builder.addInt64(objectId)
@@ -279,5 +313,16 @@ class BinaryObjectRegistry(object):
         self._writeDottedScopeIds(freeVariableMemberAccessChainsToId)
         self._builder.addInt64(sourceFileId)
         self._builder.addInt32(lineNumber)
-        
+    
+    def definePyAbortException(self, objectId, typename, argsId):
+        self._builder.addInt64(objectId)
+        self._builder.addByte(CODE_PY_ABORT_EXCEPTION)
+        self._builder.addString(typename)
+        self._builder.addInt64(argsId)
+
+    def defineStacktrace(self, objectId, stacktraceAsJson):
+        self._builder.addInt64(objectId)
+        self._builder.addByte(CODE_STACKTRACE_AS_JSON)
+        self._builder.addString(json.dumps(stacktraceAsJson))
+
 

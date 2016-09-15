@@ -17,11 +17,14 @@ import ufora.FORA.python.ModuleImporter as ModuleImporter
 import ufora.FORA.python.PurePython.NativeConverterAdaptor as NativeConverterAdaptor
 import ufora.FORA.python.ModuleDirectoryStructure as ModuleDirectoryStructure
 import ufora.FORA.python.PurePython.PyforaSingletonAndExceptionConverter as PyforaSingletonAndExceptionConverter
+import ufora.FORA.python.PurePython.PyforaToJsonTransformer as PyforaToJsonTransformer
 import ufora.native.FORA as ForaNative
 
 import pyfora.ModuleLevelObjectIndex as ModuleLevelObjectIndex
 import pyfora.TypeDescription as TypeDescription
 import pyfora.StronglyConnectedComponents as StronglyConnectedComponents
+import pyfora.BinaryObjectRegistry as BinaryObjectRegistry
+
 import pyfora
 import base64
 import os
@@ -62,11 +65,8 @@ class Converter(object):
                  singletonAndExceptionConverter=None,
                  vdmOverride=None,
                  purePythonModuleImplVal=None,
-                 foraBuiltinsImplVal=None,
-                 stringDecoder=base64.b64decode
+                 foraBuiltinsImplVal=None
                  ):
-        self.stringDecoder = stringDecoder
-        
         self.convertedValues = {}
 
         self.singletonAndExceptionConverter = singletonAndExceptionConverter
@@ -74,6 +74,8 @@ class Converter(object):
         self.pyforaBoundMethodClass = purePythonModuleImplVal.getObjectMember("PyBoundMethod")
 
         self.nativeConstantConverter = nativeConstantConverter
+        self.nativeListConverter = nativeListConverter
+        self.nativeTupleConverter = nativeTupleConverter
         
         builtinMemberMapping = Converter.computeBuiltinMemberMapping(
             purePythonModuleImplVal=purePythonModuleImplVal,
@@ -283,9 +285,6 @@ class Converter(object):
         if isinstance(value, list):
             return self.nativeConverterAdaptor.createListOfPrimitives(value)
 
-        if isinstance(value, str):
-            value = self.stringDecoder(value)
-
         return self.nativeConverterAdaptor.convertConstant(value)
 
     def _assertContainerDoesNotReferenceItself(self,
@@ -305,8 +304,9 @@ class Converter(object):
 
         return self.nativeConverterAdaptor.createListFromPackedData(
             self.nativeConstantConverter,
+            self.nativeTupleConverter,
             packedData.dtype, 
-            self.stringDecoder(packedData.dataAsBytes)
+            packedData.dataAsBytes
             )
 
     def convertList(self, listId, dependencyGraph, objectIdToObjectDefinition):
@@ -590,34 +590,41 @@ class Converter(object):
         res = tuple([pyforaValue for pyforaValue in pyforaTuple])
         return res
 
-    def transformPyforaImplval(self, implval, transformer, vectorContentsExtractor):
-        objectDefinitions = {}
+    def transformPyforaImplval(self, implval, stream, vectorContentsExtractor, maxBytecount=None):
         hashToObjectId = {}
+        fileToObjectId = {}
+        anyNeedLoading = [False]
 
         def transform(implval):
-            """Walk an implval that represents a pyfora value and unwrap it, passing data to the transformer.
-
-            implval - the pyfora value we want to visit
-            transformer - an instance of PyforaToJsonTransformer that receives data and builds the relevant
-                representation that we will return.
-            """
             if implval.hash in hashToObjectId:
                 return hashToObjectId[implval.hash]
 
-            newId = str(len(objectDefinitions))
-            objectDefinitions[newId] = None
+            objId = stream.allocateObject()
+            hashToObjectId[implval.hash] = objId
 
-            hashToObjectId[implval.hash] = newId
+            transformBody(objId, implval)
 
-            objectDefinitions[newId] = transformBody(implval)
+            if maxBytecount is not None and stream.bytecount() > maxBytecount:
+                raise PyforaToJsonTransformer.HaltTransformationException()
 
-            return newId
+            return objId
 
-        def transformBody(implval):
+        def transformFile(path, text):
+            if (path,text) in fileToObjectId:
+                return fileToObjectId[(path,text)]
+
+            objId = stream.allocateObject()
+            fileToObjectId[(path,text)] = objId
+
+            stream.defineFile(objId, text, path)
+
+            return objId
+
+        def transformBody(objId, implval):
             if isUnconvertibleValueTuple(implval):
                 path = implval[0].pyval
-
-                return transformer.transformModuleLevelObject(path)
+                stream.defineUnconvertible(objId, path)
+                return objId
 
             if implval.isString():
                 value = (implval.pyval,)
@@ -627,75 +634,94 @@ class Converter(object):
             if value is not None:
                 if isinstance(value, tuple):
                     #this is a simple constant
-                    return transformer.transformPrimitive(value[0])
+                    stream.definePrimitive(objId, value[0])
+                    return objId
                 else:
-                    #this is a vector
+                    #this is a vector that represents a string
                     assert isinstance(value, ForaNative.ImplValContainer)
 
                     if len(value) == 0:
-                        return transformer.transformPrimitive("")
+                        stream.definePrimitive(objId, "")
+                        return objId
 
                     assert value.isVectorOfChar(), value
 
                     contents = vectorContentsExtractor(value)
 
                     if contents is None:
-                        return transformer.transformStringThatNeedsLoading(len(value))
+                        anyNeedLoading[0] = True
+                        stream.definePrimitive(objId, "")
+                        return objId
                     else:
                         assert 'string' in contents
-                        return transformer.transformPrimitive(contents['string'])
+                        stream.definePrimitive(objId, contents['string'])
+                        return objId
 
             if self.singletonAndExceptionConverter is not None:
                 value = self.singletonAndExceptionConverter.convertInstanceToSingletonName(implval)
                 if value is not None:
-                    return transformer.transformSingleton(value)
+                    stream.defineNamedSingleton(objId, value)
+                    return objId
 
                 value = self.singletonAndExceptionConverter.convertExceptionInstance(implval)
                 if value is not None:
-                    return transformer.transformBuiltinException(
-                        value[0],
-                        transform(value[1])
-                        )
+                    stream.defineBuiltinExceptionInstance(objId, value[0], transform(value[1]))
+                    return objId
 
                 value = self.singletonAndExceptionConverter.convertPyAbortExceptionInstance(
                     implval
                     )
                 if value is not None:
-                    return transformer.transformPyAbortException(
-                        value[0],
-                        transform(value[1])
-                        )
+                    stream.definePyAbortException(objId, value[0], transform(value[1]))
+                    return objId
 
             value = self.nativeConverterAdaptor.invertTuple(implval)
             if value is not None:
-                return transformer.transformTuple([transform(x) for x in value])
+                tupleIds = [transform(x) for x in value]
+                stream.defineTuple(objId, tupleIds)
+                return objId
 
             value = self.nativeConverterAdaptor.invertDict(implval)
             if value is not None:
-                return transformer.transformDict(
-                    keys=[transform(k) for k in value.keys()],
-                    values=[transform(v) for v in value.values()]
+                stream.defineDict(
+                    objId,
+                    [transform(k) for k in value.keys()],
+                    [transform(v) for v in value.values()]
                     )
+                return objId
 
             listItemsAsVector = self.nativeConverterAdaptor.invertList(implval)
             if listItemsAsVector is not None:
                 contents = vectorContentsExtractor(listItemsAsVector)
 
                 if contents is None:
-                    return transformer.transformListThatNeedsLoading(len(listItemsAsVector))
+                    stream.defineList(objId, [])
+                    anyNeedLoading[0] = True
+                    return objId
                 elif 'listContents' in contents:
-                    return transformer.transformList([transform(x) for x in contents['listContents']])
+                    stream.defineList(objId, [transform(x) for x in contents['listContents']])
+                    return objId
                 else:
-                    assert 'firstElement' in contents
-                    firstElement = contents['firstElement']
-                    contentsAsNumpy = contents['contentsAsNumpyArrays']
+                    assert 'contentsAsNumpyArray' in contents
+                    contentsAsNumpy = contents['contentsAsNumpyArray']
 
-                    return transformer.transformHomogenousList(transform(firstElement), contentsAsNumpy)
+                    stream.definePackedHomogenousData(
+                        objId,
+                        TypeDescription.PackedHomogenousData(
+                            TypeDescription.dtypeToPrimitive(contentsAsNumpy.dtype),
+                            contentsAsNumpy.tostring()
+                            )
+                        )
+
+                    return objId
 
             if implval.isTuple():
                 stackTraceAsJsonOrNone = self.getStackTraceAsJsonOrNone(implval)
                 if stackTraceAsJsonOrNone is not None:
-                    return stackTraceAsJsonOrNone
+                    stream.defineStacktrace(objId, stackTraceAsJsonOrNone)
+                    return objId
+                else:
+                    assert False, "unknown tuple, but not a stacktra"
 
             if implval.isObject():
                 objectClass = implval.getObjectClass()
@@ -708,16 +734,17 @@ class Converter(object):
                                 % (nameAsImplval, nameAsImplval.type)
                             )
 
-                    return transformer.transformBoundMethod(
+                    stream.defineInstanceMethod(
+                        objId,
                         transform(implval.getObjectLexicalMember("@self")[0]),
                         nameAsImplval.pyval[1:]
                         )
-
+                    return objId
 
                 defPoint = implval.getObjectDefinitionPoint()
                 if defPoint is not None:
                     if objectClass is not None:
-                        classObject = transform(objectClass)
+                        classObjectId = transform(objectClass)
                         members = {}
 
                         for memberName in objectClass.objectMembers:
@@ -735,7 +762,9 @@ class Converter(object):
                                         if result is not UnconvertibleToken:
                                             members[str(name)] = transform(membersTuple[i])
 
-                        return transformer.transformClassInstance(classObject, members)
+                        stream.defineClassInstance(objId, classObjectId, members)
+
+                        return objId
                     else:
                         members = {}
                         lexicalMembers = implval.objectLexicalMembers
@@ -756,12 +785,16 @@ class Converter(object):
                             om = om['classMetadata']
                         om = om['sourceText'].objectMetadata
 
-                        return transformer.transformFunctionInstance(
-                            defPoint.defPoint.asExternal.paths[0],
+                        sourceFileId = transformFile(defPoint.defPoint.asExternal.paths[0], om.pyval)
+
+                        stream.defineFunction(
+                            objId,
+                            sourceFileId,
                             defPoint.range.start.line,
-                            members,
-                            transform(om)
+                            members
                             )
+
+                        return objId
 
             elif implval.isClass():
                 members = {}
@@ -784,12 +817,20 @@ class Converter(object):
                 if 'classMetadata' in om:
                     om = om['classMetadata']
                 om = om['sourceText'].objectMetadata
+
+                sourceFileId = transformFile(defPoint.defPoint.asExternal.paths[0], om.pyval)
                 
-                return transformer.transformClassObject(sourcePath,
-                                                        defPoint.range.start.line,
-                                                        members,
-                                                        transform(om)
-                                                        )
+                stream.defineClass( 
+                    objId,
+                    sourceFileId,
+                    defPoint.range.start.line,
+                    members,
+                    #this is a little wrong. When going python->binary, we would have
+                    #a list of base classes. When going pyfora->binary, we're holding the
+                    #base classes by name as free variables.
+                    []
+                    )
+                return objId
 
             logging.error("Failed to convert %s of type %s back to python", implval, str(implval.type))
 
@@ -800,8 +841,7 @@ class Converter(object):
 
         root_id = transform(implval)
 
-        return {'obj_definitions': objectDefinitions, 'root_id': root_id}
-
+        return root_id, anyNeedLoading[0]
 
     def getStackTraceAsJsonOrNone(self, implval):
         tup = implval.getTuple()
@@ -837,11 +877,9 @@ class Converter(object):
                     }
                 }
 
-        return {
-            'stacktrace': [
+        return tuple(
                 x for x in [formatCodeLocation(c) for c in codeLocations] if x is not None
-                ]
-            }
+                )
 
 
 canonicalPurePythonModuleCache_ = [None]
@@ -860,9 +898,9 @@ def canonicalPurePythonModule():
     return canonicalPurePythonModuleCache_[0]
 
 
-def constructConverter(purePythonModuleImplval, vdm, stringDecoder=base64.b64decode):
+def constructConverter(purePythonModuleImplval, vdm):
     if purePythonModuleImplval is None:
-        return Converter(vdmOverride=vdm,stringDecoder=stringDecoder)
+        return Converter(vdmOverride=vdm)
     else:
         singletonAndExceptionConverter = \
             PyforaSingletonAndExceptionConverter.PyforaSingletonAndExceptionConverter(
@@ -904,7 +942,6 @@ def constructConverter(purePythonModuleImplval, vdm, stringDecoder=base64.b64dec
             singletonAndExceptionConverter=singletonAndExceptionConverter,
             vdmOverride=vdm,
             purePythonModuleImplVal=purePythonModuleImplval,
-            foraBuiltinsImplVal=foraBuiltinsImplVal,
-            stringDecoder=stringDecoder
+            foraBuiltinsImplVal=foraBuiltinsImplVal
             )
 

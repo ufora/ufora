@@ -55,12 +55,33 @@ class StringDeserializer:
         self.index += length
         return res
 
-def deserialize(data, objectWalker, convertJsonToObject):
+def deserialize(data, objectVisitor, convertJsonToObject):
     stream = StringDeserializer(data)
 
     while not stream.finished():
         objectId = stream.readInt64()
         code = stream.readByte()
+
+        def readSimplePrimitive():
+            code = stream.readByte()
+            if code == BinaryObjectRegistry.CODE_NONE:
+                return None
+            if code == BinaryObjectRegistry.CODE_INT:
+                return stream.readInt64()
+            if code == BinaryObjectRegistry.CODE_STR:
+                return stream.readString()
+            if code == BinaryObjectRegistry.CODE_TUPLE:
+                ct = stream.readInt32()
+                return tuple([readSimplePrimitive() for _ in xrange(ct)])
+            if code == BinaryObjectRegistry.CODE_LIST:
+                ct = stream.readInt32()
+                return [readSimplePrimitive() for _ in xrange(ct)]
+            if code == BinaryObjectRegistry.CODE_DICT:
+                ct = stream.readInt32()
+                return dict([(readSimplePrimitive(),readSimplePrimitive()) for _ in xrange(ct)])
+            else:
+                assert False, "unknown code: " + str(code)
+            
 
         def readInt64s():
             return [stream.readInt64() for _ in xrange(stream.readInt64())]
@@ -111,49 +132,56 @@ def deserialize(data, objectWalker, convertJsonToObject):
                 code == BinaryObjectRegistry.CODE_BOOL or
                 code == BinaryObjectRegistry.CODE_STR or
                 code == BinaryObjectRegistry.CODE_LIST_OF_PRIMITIVES):
-            objectWalker.definePrimitive(objectId, readPrimitive(code))
+            objectVisitor.definePrimitive(objectId, readPrimitive(code))
         elif code == BinaryObjectRegistry.CODE_TUPLE:
-            objectWalker.defineTuple(objectId, readInt64s())
+            objectVisitor.defineTuple(objectId, readInt64s())
         elif code == BinaryObjectRegistry.CODE_PACKED_HOMOGENOUS_DATA:
-            dtype = stream.readString()
+            dtype = readSimplePrimitive()
             packedBytes = stream.readString()
-            objectWalker.definePackedHomogenousData(objectId, TypeDescription.PackedHomogenousData(dtype, packedBytes))
+            objectVisitor.definePackedHomogenousData(objectId, TypeDescription.PackedHomogenousData(dtype, packedBytes))
         elif code == BinaryObjectRegistry.CODE_LIST:
-            objectWalker.defineList(objectId, readInt64s())
+            objectVisitor.defineList(objectId, readInt64s())
         elif code == BinaryObjectRegistry.CODE_FILE:
             path = stream.readString()
             text = stream.readString()
-            objectWalker.defineFile(objectId, text, path)
+            objectVisitor.defineFile(objectId, text, path)
         elif code == BinaryObjectRegistry.CODE_DICT:
-            objectWalker.defineDict(objectId, readInt64s(), readInt64s())
+            objectVisitor.defineDict(objectId, readInt64s(), readInt64s())
         elif code == BinaryObjectRegistry.CODE_REMOTE_PY_OBJECT:
             jsonRepresentation = json.loads(stream.readString())
-            objectWalker.defineRemotePythonObject(objectId, convertJsonToObject(jsonRepresentation))
+            objectVisitor.defineRemotePythonObject(objectId, convertJsonToObject(jsonRepresentation))
         elif code == BinaryObjectRegistry.CODE_BUILTIN_EXCEPTION_INSTANCE:
-            objectWalker.defineBuiltinExceptionInstance(objectId, stream.readString(), stream.readInt64())
+            objectVisitor.defineBuiltinExceptionInstance(objectId, stream.readString(), stream.readInt64())
         elif code == BinaryObjectRegistry.CODE_NAMED_SINGLETON:
-            objectWalker.defineNamedSingleton(objectId, stream.readString())
+            objectVisitor.defineNamedSingleton(objectId, stream.readString())
         elif code == BinaryObjectRegistry.CODE_FUNCTION:
-            objectWalker.defineFunction(objectId, stream.readInt64(), stream.readInt32(), readDottedScopeIds())
+            objectVisitor.defineFunction(objectId, stream.readInt64(), stream.readInt32(), readDottedScopeIds())
         elif code == BinaryObjectRegistry.CODE_CLASS:
-            objectWalker.defineClass(objectId, stream.readInt64(), stream.readInt32(), readDottedScopeIds(), readInt64s())
+            objectVisitor.defineClass(objectId, stream.readInt64(), stream.readInt32(), readDottedScopeIds(), readInt64s())
         elif code == BinaryObjectRegistry.CODE_UNCONVERTIBLE:
             if stream.readByte() != 0:
-                objectWalker.defineUnconvertible(objectId, readStringTuple())
+                objectVisitor.defineUnconvertible(objectId, readStringTuple())
             else:
-                objectWalker.defineUnconvertible(objectId, None)
+                objectVisitor.defineUnconvertible(objectId, None)
         elif code == BinaryObjectRegistry.CODE_CLASS_INSTANCE:
             classId = stream.readInt64()
             classMembers = {}
             for _ in xrange(stream.readInt32()):
                 memberName = stream.readString()
                 classMembers[memberName] = stream.readInt64()
-            objectWalker.defineClassInstance(objectId, classId, classMembers)
+            objectVisitor.defineClassInstance(objectId, classId, classMembers)
         elif code == BinaryObjectRegistry.CODE_INSTANCE_METHOD:
-            objectWalker.defineInstanceMethod(objectId, stream.readInt64(), stream.readString())
+            objectVisitor.defineInstanceMethod(objectId, stream.readInt64(), stream.readString())
         elif code == BinaryObjectRegistry.CODE_WITH_BLOCK:
             scopes = readDottedScopeIds()
-            objectWalker.defineWithBlock(objectId, scopes, stream.readInt64(), stream.readInt32())
+            objectVisitor.defineWithBlock(objectId, scopes, stream.readInt64(), stream.readInt32())
+        elif code == BinaryObjectRegistry.CODE_PY_ABORT_EXCEPTION:
+            typename = stream.readString()
+            argsId = stream.readInt64()
+            objectVisitor.definePyAbortException(objectId, typename, argsId)
+        elif code == BinaryObjectRegistry.CODE_STACKTRACE_AS_JSON:
+            stackAsJson = stream.readString()
+            objectVisitor.defineStacktrace(objectId, json.loads(stackAsJson))
         else:
             assert False, "unknown code: " + str(code)
 

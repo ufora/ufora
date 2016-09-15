@@ -30,6 +30,7 @@ import ufora.native.ImmutableTreeVector as NativeImmutableTreeVector
 import ufora.FORA.python.PurePython.Converter as Converter
 import ufora.FORA.python.PurePython.PyforaToJsonTransformer as PyforaToJsonTransformer
 import ufora.FORA.python.ModuleDirectoryStructure as ModuleDirectoryStructure
+import pyfora.BinaryObjectRegistry as BinaryObjectRegistry
 import pyfora
 
 class PythonIoTaskService(object):
@@ -324,22 +325,25 @@ class PythonIoTaskService(object):
                 return message
 
     def handleOutOfProcessPythonCall(self, request):
-        converter = Converter.constructConverter(Converter.canonicalPurePythonModule(), self.vdm_, stringDecoder=lambda s:s)
+        converter = Converter.constructConverter(Converter.canonicalPurePythonModule(), self.vdm_)
 
-        transformer = PyforaToJsonTransformer.PyforaToJsonTransformer(stringEncoder=lambda s:s)
+        stream = BinaryObjectRegistry.BinaryObjectRegistry()
 
         assert self.vdm_ is not None
 
-        anObjAsJson = converter.transformPyforaImplval(
+        root_id, needs_loading = converter.transformPyforaImplval(
             request.asOutOfProcessPythonCall.toCall,
-            transformer,
+            stream,
             PyforaToJsonTransformer.ExtractVectorContents(self.vdm_)
             )
+
+        assert not needs_loading, "can't handle this yet"
 
         result = PythonIoTasks.outOfProcessPythonCall(
             self.outOfProcessDownloaderPool,
             self.vdm_,
-            anObjAsJson
+            root_id,
+            stream.str()
             )
 
         self.datasetRequestChannel_.write(

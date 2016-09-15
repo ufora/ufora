@@ -14,8 +14,7 @@
 
 
 import collections
-
-
+import numpy
 
 NoneType = type(None)
 primitiveTypes = (NoneType, int, float, str, bool)
@@ -30,9 +29,36 @@ def type_description(typename, field_names):
     T.__new__.__defaults__ = tuple(prototype)
     return T
 
+def isValidPrimitiveDtypeElement(elt):
+    return elt in ('<f8', '<i8', '|b1')
 
-def isValidPackedHomogenousDataType(dtypeStr):
-    return dtypeStr == "float64"
+def dtypeToPrimitive(dtype):
+    #map dtype for primitives and packed-tuples-of-primitives to a valid dtype constructor
+    descr = dtype.descr
+
+    if len(descr) == 1 and descr[0][0] == '' and isValidPrimitiveDtypeElement(descr[0][1]):
+        return descr[0][1]
+
+    res = []
+    for elt in descr:
+        if len(elt) > 2:
+            return None
+        if isinstance(elt[1], str):
+            if not isValidPrimitiveDtypeElement(elt[1]):
+                return None
+            prim = elt[1]
+        else:
+            prim = dtypeToPrimitive(elt[1])
+        if prim is None:
+            return None
+        res.append( (elt[0], prim) )
+
+    return res
+
+def primitiveToDtype(primitive):
+    if primitive is None:
+        return None
+    return numpy.dtype(primitive)
 
 def fromDict(value_dict):
     return globals()[value_dict["typeName"]](**value_dict)
@@ -123,3 +149,7 @@ PackedHomogenousData = type_description(
     )
 
 HomogenousListAsNumpyArray = type_description("HomogenousListAsNumpyArray", "array")
+
+StackTraceAsJson = type_description("StackTraceAsJson", "trace")
+
+PyAbortException = type_description("PyAbortException", "typename, argsId")

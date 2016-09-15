@@ -30,7 +30,7 @@ import pyfora.PureImplementationMappings as PureImplementationMappings
 import traceback
 import logging
 import threading
-
+import base64
 
 class Executor(object):
     """Submits computations to a pyfora cluster and marshals data to/from the local Python.
@@ -350,9 +350,15 @@ class Executor(object):
             if 'maxBytesExceeded' in jsonResult:
                 return Exceptions.ResultExceededBytecountThreshold()
             else:
-                return self.objectRehydrator.convertJsonResultToPythonObject(jsonResult['result'])
+                return self.objectRehydrator.convertJsonResultToPythonObject(
+                    base64.b64decode(jsonResult['result']['data']), 
+                    jsonResult['result']['root_id']
+                    )
 
-        result = self.objectRehydrator.convertJsonResultToPythonObject(jsonResult['result'])
+        result = self.objectRehydrator.convertJsonResultToPythonObject(
+            base64.b64decode(jsonResult['result']['data']), 
+            jsonResult['result']['root_id']
+            )
         return Exceptions.ComputationError(result, jsonResult['trace'])
 
     def _expandComputedValueToDictOfAssignedVarsToProxyValues(self, computedValue):
@@ -363,7 +369,10 @@ class Executor(object):
             if not isinstance(jsonResult, Exception):
                 if jsonResult['isException']:
                     result = Exceptions.ComputationError(
-                        self.objectRehydrator.convertJsonResultToPythonObject(jsonResult['result']),
+                        self.objectRehydrator.convertJsonResultToPythonObject(
+                            base64.b64decode(jsonResult['result']['data']),
+                            jsonResult['result']['root_id']
+                            ),
                         jsonResult['trace']
                         )
                 else:
@@ -389,7 +398,8 @@ class Executor(object):
                 if jsonResult['isException']:
                     result = Exceptions.ComputationError(
                         self.objectRehydrator.convertJsonResultToPythonObject(
-                            jsonResult['result']
+                            base64.b64decode(jsonResult['result']['data']),
+                            jsonResult['result']['root_id']
                             ),
                         jsonResult['trace']
                         )

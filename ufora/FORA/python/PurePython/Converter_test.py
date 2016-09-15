@@ -29,6 +29,7 @@ import pyfora.BinaryObjectRegistry as BinaryObjectRegistry
 import pyfora.BinaryObjectRegistryDeserializer as BinaryObjectRegistryDeserializer
 import pyfora.NamedSingletons as NamedSingletons
 import pyfora.PythonObjectRehydrator as PythonObjectRehydrator
+import pyfora.TypeDescription as TypeDescription
 import pyfora
 import ufora.FORA.python.PurePython.Converter as Converter
 import ufora.FORA.python.PurePython.PyforaToJsonTransformer as PyforaToJsonTransformer
@@ -46,7 +47,7 @@ def ThisIsAFunction():
 def ThisFunctionIsImpure():
     return multiprocessing.cpu_count()
 
-def roundtripConvert(toConvert, vdm, verbose=False):
+def roundtripConvert(toConvert, vdm, allowUserCodeModuleLevelLookups = False, verbose=False):
     t0 = time.time()
 
     mappings = PureImplementationMappings.PureImplementationMappings()
@@ -59,7 +60,7 @@ def roundtripConvert(toConvert, vdm, verbose=False):
 
     objId = walker.walkPyObject(toConvert)
 
-    registry = ObjectRegistry.ObjectRegistry(stringEncoder=lambda s:s)
+    registry = ObjectRegistry.ObjectRegistry()
     BinaryObjectRegistryDeserializer.deserialize(binaryObjectRegistry.str(), registry, lambda x:x)
 
     t1 = time.time()
@@ -68,28 +69,30 @@ def roundtripConvert(toConvert, vdm, verbose=False):
 
     t2 = time.time()
 
-    converter = Converter.constructConverter(Converter.canonicalPurePythonModule(), vdm, stringDecoder=lambda s:s)
+    converter = Converter.constructConverter(Converter.canonicalPurePythonModule(), vdm)
     anObjAsImplval = converter.convertDirectly(objId, registry)
 
     t3 = time.time()
 
-    transformer = PyforaToJsonTransformer.PyforaToJsonTransformer(stringEncoder=lambda s:s)
+    outputStream = BinaryObjectRegistry.BinaryObjectRegistry()
 
-    anObjAsJson = converter.transformPyforaImplval(
+    root_id, needsLoad = converter.transformPyforaImplval(
         anObjAsImplval,
-        transformer,
+        outputStream,
         PyforaToJsonTransformer.ExtractVectorContents(vdm)
         )
+
+    needsLoad = False
+    result = {'data': outputStream.str(), 'root_id': root_id}
 
     t4 = time.time()
 
     rehydrator = PythonObjectRehydrator.PythonObjectRehydrator(
         mappings, 
-        allowUserCodeModuleLevelLookups=False,
-        stringDecoder=lambda s:s
+        allowUserCodeModuleLevelLookups=allowUserCodeModuleLevelLookups
         )
 
-    finalResult = rehydrator.convertJsonResultToPythonObject(anObjAsJson)
+    finalResult = rehydrator.convertJsonResultToPythonObject(outputStream.str(), root_id)
 
     t5 = time.time()
 
@@ -114,13 +117,31 @@ class ConverterTest(unittest.TestCase):
 
         self.assertEqual(sorted(registry.objectIdToObjectDefinition[objId].freeVariableMemberAccessChainsToId.keys()), ["multiprocessing"])
 
-    def test_roundtrip_conversion(self):
+    def test_roundtrip_conversion_simple(self):
         vdm = FORANative.VectorDataManager(CallbackScheduler.singletonForTesting(), 10000000)
 
         for obj in [10, 10.0, "asdf", None, False, True, 
                 [], (), [1,2], [1, [1]], (1,2), (1,2,[]), {1:2}
                 ]:
             self.assertEqual(roundtripConvert(obj, vdm)[0], obj, obj)
+
+    def test_roundtrip_convert_function(self):
+        vdm = FORANative.VectorDataManager(CallbackScheduler.singletonForTesting(), 10000000)
+
+        self.assertTrue(
+            roundtripConvert(ThisIsAFunction, vdm, allowUserCodeModuleLevelLookups=True)[0] 
+                is ThisIsAFunction
+            )
+        self.assertTrue(
+            roundtripConvert(ThisIsAClass, vdm, allowUserCodeModuleLevelLookups=True)[0] 
+                is ThisIsAClass
+            )
+        self.assertTrue(
+            isinstance(
+                roundtripConvert(ThisIsAClass(), vdm, allowUserCodeModuleLevelLookups=True)[0],
+                ThisIsAClass
+                )
+            )
 
     def test_conversion_metadata(self):
         for anInstance in [ThisIsAClass(), ThisIsAFunction]:
@@ -137,32 +158,20 @@ class ConverterTest(unittest.TestCase):
             converter = Converter.constructConverter(Converter.canonicalPurePythonModule(), None)
             anObjAsImplval = converter.convertDirectly(objId, registry)
 
-            transformer = PyforaToJsonTransformer.PyforaToJsonTransformer()
+            stream = BinaryObjectRegistry.BinaryObjectRegistry()
 
-            anObjAsJson = converter.transformPyforaImplval(
+            root_id, needsLoading = converter.transformPyforaImplval(
                 anObjAsImplval,
-                transformer,
+                stream,
                 PyforaToJsonTransformer.ExtractVectorContents(None)
                 )
+            assert not needsLoading
 
             rehydrator = PythonObjectRehydrator.PythonObjectRehydrator(mappings, allowUserCodeModuleLevelLookups=False)
 
-            convertedInstance = rehydrator.convertJsonResultToPythonObject(anObjAsJson)
+            convertedInstance = rehydrator.convertJsonResultToPythonObject(stream.str(), root_id)
 
-            def walkJsonObject(o):
-                if isinstance(o, str):
-                    try:
-                        o_decoded = base64.b64decode(o)
-                        return base64.b64encode(o_decoded.replace("100", "200"))
-                    except:
-                        return o
-                if isinstance(o, dict):
-                    return {k:walkJsonObject(o[k]) for k in o}
-                if isinstance(o, tuple):
-                    return tuple([walkJsonObject(x) for x in o])
-                return o
-
-            convertedInstanceModified = rehydrator.convertJsonResultToPythonObject(walkJsonObject(anObjAsJson))
+            convertedInstanceModified = rehydrator.convertJsonResultToPythonObject(stream.str().replace("return 100", "return 200"), root_id)
 
             if anInstance is ThisIsAFunction:
                 self.assertEqual(anInstance(), 100)
@@ -173,6 +182,16 @@ class ConverterTest(unittest.TestCase):
                 self.assertEqual(convertedInstance.f(), 100)
                 self.assertEqual(convertedInstanceModified.f(), 200)
 
+    def test_numpy_dtype_conversion(self):
+        for array in [
+                numpy.array([1.0,2.0]),
+                numpy.zeros(2, dtype=[('f0','<f8'), ('f1','<f8')]),
+                numpy.array([1]),
+                numpy.array([False])
+                ]:
+            dt = array.dtype
+            dt2 = TypeDescription.primitiveToDtype(TypeDescription.dtypeToPrimitive(array.dtype))
+            self.assertEqual(str(dt.descr), str(dt2.descr))
 
     @PerformanceTestReporter.PerfTest("pyfora.ConvertionSpeed.strings_100k")
     def test_conversion_performance_strings(self):
