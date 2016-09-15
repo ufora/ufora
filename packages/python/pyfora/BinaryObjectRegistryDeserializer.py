@@ -58,8 +58,13 @@ class StringDeserializer:
 def deserialize(data, objectVisitor, convertJsonToObject):
     stream = StringDeserializer(data)
 
-    while not stream.finished():
+    while True:
         objectId = stream.readInt64()
+
+        #this is the termination condition
+        if objectId == -1:
+            return
+
         code = stream.readByte()
 
         def readSimplePrimitive():

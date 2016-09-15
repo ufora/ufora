@@ -844,6 +844,8 @@ class Converter(object):
 
         root_id = transform(implval)
 
+        stream.defineEndOfStream()
+
         return root_id, anyNeedLoading[0]
 
     def getStackTraceAsJsonOrNone(self, implval):

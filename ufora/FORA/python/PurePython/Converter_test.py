@@ -60,6 +60,8 @@ def roundtripConvert(toConvert, vdm, allowUserCodeModuleLevelLookups = False, ve
 
     objId = walker.walkPyObject(toConvert)
 
+    binaryObjectRegistry.defineEndOfStream()
+
     registry = ObjectRegistry.ObjectRegistry()
     BinaryObjectRegistryDeserializer.deserialize(binaryObjectRegistry.str(), registry, lambda x:x)
 

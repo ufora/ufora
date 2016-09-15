@@ -1,0 +1,128 @@
+/***************************************************************************
+    Copyright 2016 Ufora Inc.
+
+    Licensed under the Apache License, Version 2.0 (the "License");
+    you may not use this file except in compliance with the License.
+    You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+    Unless required by applicable law or agreed to in writing, software
+    distributed under the License is distributed on an "AS IS" BASIS,
+    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    See the License for the specific language governing permissions and
+    limitations under the License.
+****************************************************************************/
+
+#include "PythonBinaryStreamToImplval.hppml"
+#include "../../../core/Logging.hpp"
+
+namespace Fora {
+
+PythonBinaryStreamToImplval::PythonBinaryStreamToImplval(
+            PolymorphicSharedPtr<VectorDataManager> inVDM,
+            PolymorphicSharedPtr<PythonConstantConverter> inConstantConverter,
+            PolymorphicSharedPtr<PythonListConverter> inPyListConverter
+            ) :
+        mVDM(inVDM),
+        mConstantConverter(inConstantConverter),
+        mListConverter(inPyListConverter)
+    {
+    }
+
+ImplValContainer PythonBinaryStreamToImplval::readPrimitive(IBinaryStream& stream, uint8_t code)
+    {        
+    if (code == CODE_NONE)
+        return mConstantConverter->noneValue();
+        else
+    if (code == CODE_INT)
+        {
+        int64_t value;
+        stream >> value;
+        return mConstantConverter->convertInt(value);
+        }
+        else
+    if (code == CODE_LONG)
+        {
+        std::string value;
+        stream >> value;
+        lassert_dump(false, "can't convert 'long' yet");
+        }
+        else
+    if (code == CODE_FLOAT)
+        {
+        double value;
+        stream >> value;
+        return mConstantConverter->convertFloat(value);
+        }
+        else
+    if (code == CODE_BOOL)
+        {
+        uint8_t value;
+        stream >> value;
+        return mConstantConverter->convertBoolean(value);
+        }
+        else
+    if (code == CODE_STR)
+        {
+        std::string value;
+        stream >> value;
+        return mConstantConverter->convertString(value);
+        }
+        else
+    if (code == CODE_LIST_OF_PRIMITIVES)
+        {
+        int64_t count;
+        stream >> count;
+
+        ImmutableTreeVector<ImplValContainer> values;
+        for (long k = 0; k < count; k++)
+            {
+            uint8_t subcode;
+            stream >> subcode;
+            values = values + readPrimitive(stream, subcode);
+            }
+
+        return mListConverter->createList(values, mVDM);
+        }
+
+    lassert_dump(false, 
+        "invalid code " << (int)code << " passed. Should be a code for a primitive."
+        );
+    }
+
+void PythonBinaryStreamToImplval::read(IBinaryStream& stream)
+    {
+    BinaryStreamDeserializer deserializer(stream);
+
+    while (true)
+        {
+        int64_t objectId;
+        stream >> objectId;
+
+        if (objectId == -1)
+            return;
+
+        uint8_t code;
+        stream >> code;
+
+        if (code >= CODE_NONE && code <= CODE_LIST_OF_PRIMITIVES)
+            mValues[objectId] = readPrimitive(stream, code);
+        else
+            {
+            lassert_dump(false, "Invalid code " << (int)code << " encountered");
+            }
+        }
+    }
+
+Nullable<ImplValContainer> PythonBinaryStreamToImplval::getObjectById(int64_t id) const
+    {
+    auto it = mValues.find(id);
+    
+    if (it != mValues.end())
+        return null() << it->second;
+
+    return null();
+    }
+
+}

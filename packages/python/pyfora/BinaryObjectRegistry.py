@@ -150,6 +150,9 @@ class BinaryObjectRegistry(object):
         else:
             assert False, "Expected a primitive (none, bool, float, int, str)"
 
+    def defineEndOfStream(self):
+        self._builder.addInt64(-1)
+
     def defineTuple(self, objectId, memberIds):
         self._builder.addInt64(objectId)
         self._builder.addByte(CODE_TUPLE)

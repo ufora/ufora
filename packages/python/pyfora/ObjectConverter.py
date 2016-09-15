@@ -30,6 +30,7 @@ class ObjectConverter(object):
         self.remoteConverter.initialize({'purePythonMDSAsJson': purePythonMDSAsJson}, {'onSuccess':onSuccess, 'onFailure':onFailure})
 
     def convert(self, objectId, binaryObjectRegistry, callback):
+        binaryObjectRegistry.defineEndOfStream()
         newData = binaryObjectRegistry.str()
         binaryObjectRegistry.clear()
 
