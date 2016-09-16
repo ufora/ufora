@@ -76,8 +76,9 @@ class Converter(object):
         self.nativeConstantConverter = nativeConstantConverter
         self.nativeListConverter = nativeListConverter
         self.nativeTupleConverter = nativeTupleConverter
-        
-        builtinMemberMapping = Converter.computeBuiltinMemberMapping(
+        self.nativeDictConverter = nativeDictConverter
+        self.purePythonModuleImplVal = purePythonModuleImplVal
+        self.builtinMemberMapping = Converter.computeBuiltinMemberMapping(
             purePythonModuleImplVal=purePythonModuleImplVal,
             foraBuiltinsImplVal=foraBuiltinsImplVal
             )
@@ -88,7 +89,7 @@ class Converter(object):
             nativeTupleConverter=nativeTupleConverter,
             nativeListConverter=nativeListConverter,
             vdmOverride=vdmOverride,
-            builtinMemberMapping=builtinMemberMapping,
+            builtinMemberMapping=self.builtinMemberMapping,
             purePythonModuleImplVal=purePythonModuleImplVal
             )
 

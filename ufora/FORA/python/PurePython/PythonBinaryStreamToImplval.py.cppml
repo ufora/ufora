@@ -37,6 +37,8 @@ public:
 
     static void read(PolymorphicSharedPtr<Fora::PythonBinaryStreamToImplval>& converter, std::string s)
         {
+        ScopedPyThreads releaseTheGil;
+
         IMemProtocol protocol(s);
         IBinaryStream stream(protocol);
 
@@ -49,21 +51,64 @@ public:
 
         if (!nObject)
             return boost::python::object();
+
         return boost::python::object(*nObject);
+        }
+
+    static boost::function<PythonParseResult (std::string)> makePyAstParserFromPyObject(boost::python::object parser)
+        {
+        return boost::function<PythonParseResult (std::string)>(
+            [=](std::string text) {
+                ScopedPyThreadsReacquire reacquireTheGil;
+        
+                try{
+                    boost::python::object result = parser(text);
+                    
+                    boost::python::extract<PythonAstModule> checkModule(result);
+                    if (checkModule.check())
+                        return PythonParseResult::Result(checkModule());
+
+                    boost::python::extract<PythonParseError> checkErr(result);
+                    if (checkErr.check())
+                        return PythonParseResult::Error(checkErr());
+
+                    LOG_ERROR << "makePyAstParserFromPyObject got an unexpected python result.";
+
+                    return PythonParseResult::Error(PythonParseError::TypeError());
+                    }
+                catch(...) {
+                    LOG_ERROR << "makePyAstParserFromPyObject got an unexpected exception.";
+                    
+                    return PythonParseResult::Error(PythonParseError::TypeError());
+                    }
+                }
+            );
         }
 
     static PolymorphicSharedPtr<PythonBinaryStreamToImplval>* makePythonBinaryStreamToImplval(
                 PolymorphicSharedPtr<VectorDataManager> inVDM,
+                ImplValContainer inPyforaBuiltins,
+                boost::python::dict builtinMemberMapping,
                 PolymorphicSharedPtr<Fora::PythonConstantConverter> constantConverter,
-                PolymorphicSharedPtr<Fora::PythonListConverter> listConverter
+                PolymorphicSharedPtr<Fora::PythonListConverter> listConverter,
+                PolymorphicSharedPtr<PythonTupleConverter> tupleConverter,
+                PolymorphicSharedPtr<PythonDictConverter> dictConverter,
+                PolymorphicSharedPtr<PyforaSingletonAndExceptionConverter> singletonConverter,
+                boost::python::object pyAstParser
                 )
         {
         return new PolymorphicSharedPtr<PythonBinaryStreamToImplval>(
             PolymorphicSharedPtr<PythonBinaryStreamToImplval>(
                 new PythonBinaryStreamToImplval(
                     inVDM,
+                    inPyforaBuiltins,
+                    Fora::freeVariableListFromPython(builtinMemberMapping),
                     constantConverter,
-                    listConverter
+                    listConverter,
+                    tupleConverter,
+                    dictConverter,
+                    singletonConverter,
+                    makePyAstParserFromPyObject(pyAstParser)
                     )
                 )
             );

@@ -1,0 +1,114 @@
+/***************************************************************************
+    Copyright 2016 Ufora Inc.
+ 
+    Licensed under the Apache License, Version 2.0 (the "License");
+    you may not use this file except in compliance with the License.
+    You may obtain a copy of the License at
+ 
+        http://www.apache.org/licenses/LICENSE-2.0
+ 
+    Unless required by applicable law or agreed to in writing, software
+    distributed under the License is distributed on an "AS IS" BASIS,
+    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    See the License for the specific language governing permissions and
+    limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include <map>
+#include "../../../core/PolymorphicSharedPtr.hpp"
+#include "../../../core/containers/ImmutableTreeMap.hppml"
+#include "../../Core/ImplValContainerUtilities.hppml"
+#include "../../Language/FunctionStage1Simulation.hppml"
+
+class ImplValContainer;
+
+template<class T>
+class Nullable;
+
+namespace FunctionStage1 {
+class ExpressionEvaluationResult;
+}
+
+namespace Fora {
+
+class PythonConstantType;
+
+class PyforaSingletonAndExceptionConverter :
+        public PolymorphicSharedPtrBase<PyforaSingletonAndExceptionConverter> {
+public:
+    PyforaSingletonAndExceptionConverter(
+                ImplValContainer inPyforaBuiltins,
+                ImmutableTreeMap<std::string, ImplValContainer> namedSingletons
+                ) :
+            mPyforaBuiltins(inPyforaBuiltins)
+        {
+        for (auto kv: namedSingletons)
+            mNamesToInstances[kv.first] = kv.second;
+
+        for (auto kv: namedSingletons)
+            mHashesToNames[kv.second.hash()] = kv.first;
+
+        mPyExceptionClass = *simulateApply(
+            emptyTreeVec() + 
+                mPyforaBuiltins + 
+                ImplValContainerUtilities::createSymbol(Symbol("Member")) + 
+                ImplValContainerUtilities::createSymbol(Symbol("PyException"))
+            );
+        }
+
+    Nullable<ImplValContainer> instantiateException(std::string name, ImplValContainer args)
+        {
+        auto nTypeInstance = convertSingleton(name);
+
+        if (!nTypeInstance)
+            return null();
+
+        return simulateApply(emptyTreeVec() + 
+                mPyExceptionClass + 
+                ImplValContainerUtilities::createSymbol(Symbol("CreateInstance")) + 
+                *nTypeInstance + 
+                args
+                );
+        }
+
+    Nullable<ImplValContainer> convertSingleton(std::string name)
+        {
+        auto it = mNamesToInstances.find(name);
+
+        if (it != mNamesToInstances.end())
+            return null() << it->second;
+
+        return null();
+        }
+    
+private:
+    Nullable<ImplValContainer> simulateApply(ImmutableTreeVector<ImplValContainer> applyArgs)
+        {
+        const static int32_t DEFAULT_FUNCTION_STAGE_1_SIMULATION_STEPS = 100;
+
+        FunctionStage1::Simulation simulation(
+            DEFAULT_FUNCTION_STAGE_1_SIMULATION_STEPS
+            );
+
+        FunctionStage1::ExpressionEvaluationResult result =
+            simulation.evaluateApply(applyArgs);
+
+        if (result.isResult())
+            return null() << result.getResult().val();
+
+        return null();
+        }
+
+    ImplValContainer mPyforaBuiltins;
+
+    ImplValContainer mPyExceptionClass;
+
+    map<std::string, ImplValContainer> mNamesToInstances;
+
+    map<hash_type, std::string> mHashesToNames;
+
+};
+
+}
+

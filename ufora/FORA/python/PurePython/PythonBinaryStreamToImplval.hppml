@@ -21,17 +21,37 @@
 #include "../../../core/PolymorphicSharedPtr.hpp"
 #include "PythonConstantConverter.hppml"
 #include "PythonListConverter.hppml"
+#include "PythonTupleConverter.hppml"
+#include "PythonDictConverter.hppml"
+#include "PythonAstConverter.hppml"
+#include "PyforaSingletonAndExceptionConverter.hppml"
+#include "../../Language/FreeVariableListFromPython.hpp"
 #include "../../VectorDataManager/VectorDataManager.hppml"
+#include "PythonParseResult.hppml"
 
 namespace Fora {
+
+@type FileDescription = std::string path, std::string text;
+
+@type PythonAstStatementOrExpr = 
+   -| Expr of PythonAstExpr e
+   -| Statement of PythonAstStatement s
+   -| None of ()
+   ;
 
 class PythonBinaryStreamToImplval :
         public PolymorphicSharedPtrBase<PythonBinaryStreamToImplval> {
 public:
     PythonBinaryStreamToImplval(
             PolymorphicSharedPtr<VectorDataManager> inVDM,
+            ImplValContainer inPyforaBuiltins,
+            ImmutableTreeMap<Symbol, pair<ImplValContainer, Nullable<Symbol> > > builtinSymbolMapping,
             PolymorphicSharedPtr<PythonConstantConverter> inConstantConverter,
-            PolymorphicSharedPtr<PythonListConverter> inPyListConverter
+            PolymorphicSharedPtr<PythonListConverter> inPyListConverter,
+            PolymorphicSharedPtr<PythonTupleConverter> inPyTupleConverter,
+            PolymorphicSharedPtr<PythonDictConverter> inPyDictConverter,
+            PolymorphicSharedPtr<PyforaSingletonAndExceptionConverter> inSingletonAndExceptionConverter,
+            boost::function<PythonParseResult (std::string)> pyAstParser
             );
 
     void read(IBinaryStream& stream);
@@ -63,15 +83,61 @@ public:
     const static uint8_t CODE_STACKTRACE_AS_JSON=23;
 
 protected:
+    void assertHasObject(int64_t object);
+
+    Expression replaceUnconvertiblesWithThrows(Expression expr, const map<string, ImplValContainer>& vars);
+
+    ImplValContainer encodeImplvalAsEmptyObjectMetadata(ImplValContainer value);
+
+    PythonAstStatementOrExpr functionClassOrLambdaDefAtLine(PythonAstModule module, int64_t line);
+
     ImplValContainer readPrimitive(IBinaryStream& stream, uint8_t code);
+
+    ImplValContainer readDtypeToTypeInstance(IBinaryStream& stream);
+
+    ImmutableTreeVector<ImplValContainer> readValuesFromIds(IBinaryStream& stream);
+
+    ImplValContainer bindValuesAndEvaluate(Expression expr, const std::map<string, ImplValContainer>& arguments);
+
+    ImplValContainer evaluateRootLevelCreateObjectExpression(
+                                                    Expression expr,
+                                                    ImmutableTreeMap<Symbol, pair<ImplValContainer, Nullable<Symbol> > > freeVars,
+                                                    bool bindCSTValuesDirectlyInCode
+                                                    );
+
+    static Nullable<ImplValContainer> simulateApply(ImmutableTreeVector<ImplValContainer> args);
+
+    static Nullable<ImplValContainer> simulateApply(ImplValContainer a1, ImplValContainer a2, ImplValContainer a3);
+
+    void tryToConvertPendingObject(int64_t objectId);
 
     std::map<int64_t, ImplValContainer> mValues;
 
+    std::map<int64_t, FileDescription> mFiles;
+
+    ImplValContainer mPyforaBuiltins;
+
     PolymorphicSharedPtr<VectorDataManager> mVDM;
+
+    PolymorphicSharedPtr<PythonAstConverter> mAstConverter;
 
     PolymorphicSharedPtr<PythonConstantConverter> mConstantConverter;
 
     PolymorphicSharedPtr<PythonListConverter> mListConverter;
+
+    PolymorphicSharedPtr<PythonTupleConverter> mTupleConverter;
+
+    PolymorphicSharedPtr<PythonDictConverter> mDictConverter;
+
+    PolymorphicSharedPtr<PyforaSingletonAndExceptionConverter> mSingletonAndExceptionConverter;
+
+    ImmutableTreeMap<Symbol, pair<ImplValContainer, Nullable<Symbol> > > mBuiltinSymbolMapping;
+
+    boost::function<PythonParseResult (std::string)> mPyAstParser;
+
+    map<hash_type, hash_type> mAlreadyBoundExpressionToValueHashes;
+
+    map<int64_t, pair<Expression, map<std::string, int64_t> > > mPendingObjectConversions;
 };
 
 }

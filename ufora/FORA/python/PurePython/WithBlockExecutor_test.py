@@ -257,6 +257,15 @@ class WithBlockExecutors_test(unittest.TestCase):
             self.assertIsInstance(smallString, str)
             self.assertIsInstance(largeString, RemotePythonObject.ComputedRemotePythonObject)
 
+    def test_with_block_on_recursive_lists_fails(self):
+        l = [1,2,3]
+        l.append(l)
+
+        fora = self.create_executor()
+        with fora:
+            with self.assertRaises(Exceptions.PythonToForaConversionError):
+                with fora.remotely.remoteAll():
+                    x = l[0]
 
     def test_with_block_exception_in_with_block(self):
         fora = self.create_executor()
