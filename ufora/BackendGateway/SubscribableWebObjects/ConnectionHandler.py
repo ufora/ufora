@@ -63,7 +63,6 @@ class ConnectionHandler:
 
         messageProcessor = MessageProcessor.MessageProcessor(
             self.callbackScheduler,
-            self.sharedStateViewFactory,
             createCumulusComputedValueGateway
             )
 

@@ -30,7 +30,6 @@ import ufora.BackendGateway.SubscribableWebObjects.AllObjectClassesToExpose as A
 import ufora.BackendGateway.SubscribableWebObjects.Exceptions as Exceptions
 import ufora.BackendGateway.SubscribableWebObjects.Decorators as Decorators
 import ufora.BackendGateway.SubscribableWebObjects.Subscriptions as Subscriptions
-import ufora.util.ManagedThread as ManagedThread
 
 import ufora.util.Unicode as Unicode
 
@@ -203,7 +202,6 @@ class MessageProcessor(object):
     # Must be locked before use except where noted
     def __init__(self,
                  callbackScheduler,
-                 sharedStateViewFactory,
                  computedValueGatewayFactory):
         self.lock = threading.Lock()
         self.cacheLoadEvents = {}
@@ -232,8 +230,6 @@ class MessageProcessor(object):
         self.VDM = VectorDataManager.constructVDM(callbackScheduler)
         self.VDM.setDropUnreferencedPagesWhenFull(True)
         logging.info("created a VDM")
-
-        logging.info("got shared state view factory: %s", sharedStateViewFactory)
 
         with self.graph:
             self.computedValueGateway = computedValueGatewayFactory()
