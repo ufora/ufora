@@ -31,6 +31,7 @@ class SocketIoJson
 class SubscribablesService
     @mappings:
       cumulus: "ViewOfEntireCumulusSystem"
+      cluster: "PyforaCluster"
 
     constructor: (@subscribableWebObjects, @valueStreams) ->
         @cache = {}

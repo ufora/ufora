@@ -24,11 +24,10 @@ import ufora.FORA.python.ModuleImporter as ModuleImporter
 
 import ufora.BackendGateway.ComputedGraph.ComputedGraph as ComputedGraph
 
-import ufora.FORA.VectorDataManager.VectorDataManager as VectorDataManager
-
-import ufora.BackendGateway.SubscribableWebObjects.AllObjectClassesToExpose as AllObjectClassesToExpose
+import ufora.BackendGateway.SubscribableWebObjects.AllObjectClassesToExpose \
+    as AllObjectClassesToExpose
 import ufora.BackendGateway.SubscribableWebObjects.Exceptions as Exceptions
-import ufora.BackendGateway.SubscribableWebObjects.Decorators as Decorators
+import ufora.BackendGateway.SubscribableWebObjects.SubscribableObject as SubscribableObject
 import ufora.BackendGateway.SubscribableWebObjects.Subscriptions as Subscriptions
 
 import ufora.util.Unicode as Unicode
@@ -128,13 +127,20 @@ class OutgoingObjectCache(object):
             def raiseException():
                 guid = uuid.uuid4()
 
-                logging.error("%s of type %s is not valid json. guid = %s", jsonCandidate, type(jsonCandidate), guid)
-                raise Exceptions.SubscribableWebObjectsException("result was not valid json. Guid = %s" % guid)
+                logging.error(
+                    "%s of type %s is not valid json. guid = %s",
+                    jsonCandidate,
+                    type(jsonCandidate),
+                    guid
+                    )
+                raise Exceptions.SubscribableWebObjectsException(
+                    "result was not valid json. Guid = %s" % guid
+                    )
 
             if jsonCandidate is None:
                 return jsonCandidate
 
-            if isinstance(jsonCandidate, (int,str,unicode,float,bool,long)):
+            if isinstance(jsonCandidate, (int, str, unicode, float, bool, long)):
                 return jsonCandidate
 
             if isinstance(jsonCandidate, (list, tuple)):
@@ -142,8 +148,8 @@ class OutgoingObjectCache(object):
 
             if isinstance(jsonCandidate, dict):
                 newDict = {}
-                for k,v in jsonCandidate.iteritems():
-                    if not isinstance(k,str):
+                for k, v in jsonCandidate.iteritems():
+                    if not isinstance(k, str):
                         raiseException()
                     newDict[k] = self.convertResponseToJson(v)
 
@@ -200,20 +206,16 @@ class MessageProcessor(object):
     Message processor for a single SubscribableWebObjects session.
     '''
     # Must be locked before use except where noted
-    def __init__(self,
-                 callbackScheduler,
-                 computedValueGatewayFactory):
+    def __init__(self, cumulus_gateway, cache_loader):
+        self.cumulus_gateway = cumulus_gateway
+        self.cache_loader = cache_loader
+
         self.lock = threading.Lock()
         self.cacheLoadEvents = {}
 
         self.resultsById_ = {}
         self.eventsById_ = {}
-
-        logging.info("created a component host")
-
-        self.graph = ComputedGraph.ComputedGraph()
-
-        logging.info("created a ComputedGraph")
+        self.active_objects = {}
 
         Runtime.initialize()
         logging.info("Runtime initialized")
@@ -221,19 +223,18 @@ class MessageProcessor(object):
         ModuleImporter.initialize()
         logging.info("Module importer initialized")
 
-
         Fora._builtin = ForaValue.FORAValue(ModuleImporter.builtinModuleImplVal())
 
         self.incomingObjectCache = IncomingObjectCache()
         self.outgoingObjectCache = OutgoingObjectCache()
 
-        self.VDM = VectorDataManager.constructVDM(callbackScheduler)
-        self.VDM.setDropUnreferencedPagesWhenFull(True)
-        logging.info("created a VDM")
+        #self.VDM = VectorDataManager.constructVDM(callbackScheduler)
+        #self.VDM.setDropUnreferencedPagesWhenFull(True)
+        #logging.info("created a VDM")
 
-        with self.graph:
-            self.computedValueGateway = computedValueGatewayFactory()
-            self.cumulusGatewayRemote = self.computedValueGateway.cumulusGateway
+        #with self.graph:
+            #self.computedValueGateway = computedValueGatewayFactory()
+            #self.cumulusGatewayRemote = self.computedValueGateway.cumulusGateway
 
 
         self.outstandingMessagesById = {}
@@ -242,17 +243,13 @@ class MessageProcessor(object):
         self.messageTypeHandlers = {}
 
         self.messageTypeHandlers["Read"] = self.handleReadMessage
-        self.messageTypeHandlers["Assign"] = self.handleAssignMessage
         self.messageTypeHandlers["Subscribe"] = self.handleSubscribeMessage
         self.messageTypeHandlers["Execute"] = self.handleExecuteMessage
         self.messageTypeHandlers["ServerFlushObjectIdsBelow"] = self.handleFlushObjectIds
 
         self.pendingObjectQueue = []
 
-        self.subscriptions = Subscriptions.Subscriptions(
-            self.graph,
-            self.computedValueGateway
-            )
+        self.subscriptions = Subscriptions.Subscriptions()
 
 
     def handleIncomingMessage(self, message):
@@ -303,16 +300,17 @@ class MessageProcessor(object):
             if not 'objectDefinition' in incomingJsonMessage:
                 raise MalformedMessageException("No object definition given")
 
+            obj = None
             if incomingJsonMessage["messageType"] != "ServerFlushObjectIdsBelow":
                 obj = self.extractObjectDefinition(incomingJsonMessage['objectDefinition'])
-            else:
-                obj = None
 
-            return self.messageTypeHandlers[incomingJsonMessage["messageType"]](incomingJsonMessage, obj)
+            return self.messageTypeHandlers[incomingJsonMessage["messageType"]](incomingJsonMessage,
+                                                                                obj)
         except MalformedMessageException:
             raise
         except Exception as e:
-            return [unexpectedExceptionJson(incomingJsonMessage, Exceptions.wrapException(e).message)]
+            return [unexpectedExceptionJson(incomingJsonMessage,
+                                            Exceptions.wrapException(e).message)]
 
     def tryFlushObjectIdCache(self):
         objectId = self.outgoingObjectCache.tryFlushObjectIdCache()
@@ -320,7 +318,7 @@ class MessageProcessor(object):
             return [{'responseType': 'ClientFlushObjectIdsBelow', 'value':objectId}]
         return []
 
-    def handleFlushObjectIds(self, incomingJsonMessage, object):
+    def handleFlushObjectIds(self, incomingJsonMessage, obj):
         if not 'value' in incomingJsonMessage:
             raise MalformedMessageException("missing 'value'")
 
@@ -332,9 +330,9 @@ class MessageProcessor(object):
         self.incomingObjectCache.flushIdsBelow(threshold)
 
         return [{
-                "messageId": incomingJsonMessage["messageId"],
-                "responseType": "OK"
-                }]
+            "messageId": incomingJsonMessage["messageId"],
+            "responseType": "OK"
+            }]
 
     def extractObjectDefinition(self, objDefJson):
         if 'objectId_' in objDefJson or 'objectDefinition_' in objDefJson:
@@ -349,14 +347,16 @@ class MessageProcessor(object):
         objectArgs = self.convertObjectArgs(objectArgs)
 
         if objType not in AllObjectClassesToExpose.classMap:
-            raise InvalidObjectDefinitionException("Unknown object type")
+            raise InvalidObjectDefinitionException("Unknown object type: %s" % objType)
 
         try:
             objectCls = AllObjectClassesToExpose.classMap[objType]
-            result = objectCls(objectArgs)
-
-            if not ComputedGraph.isLocation(result):
-                result.__dict__['objectDefinition_'] = objDefJson
+            result = objectCls(uuid.uuid4().hex,
+                               self.cumulus_gateway,
+                               self.cache_loader,
+                               objectArgs)
+            result.__dict__['objectDefinition_'] = objDefJson
+            self.active_objects[result.id] = result
 
             return result
         except Exceptions.SubscribableWebObjectsException as e:
@@ -368,17 +368,14 @@ class MessageProcessor(object):
 
         if isinstance(objectArgs, dict):
             if 'objectDefinition_' in objectArgs:
-                obj = self.extractObjectDefinition(objectArgs['objectDefinition_'])
-                if 'objectId_' in objectArgs:
-                    self.incomingObjectCache.addObjectById(objectArgs['objectId_'], obj)
-                return obj
+                return self.extractObjectDefinition(objectArgs['objectDefinition_'])
 
             if 'objectId_' in objectArgs:
                 obj = self.incomingObjectCache.lookupObjectById(objectArgs['objectId_'])
                 return obj
 
             tr = {}
-            for k,v in objectArgs.iteritems():
+            for k, v in objectArgs.iteritems():
                 tr[k] = self.convertObjectArgs(v)
 
             return tr
@@ -401,7 +398,7 @@ class MessageProcessor(object):
         except:
             raise InvalidFieldException()
 
-        if not Decorators.isPropertyToExpose(fieldDef):
+        if not SubscribableObject.isPropertyToExpose(fieldDef):
             raise InvalidFieldException()
 
         def getter(x):
@@ -420,44 +417,33 @@ class MessageProcessor(object):
         field = intern(field)
 
         try:
-            funDef = getattr(getObjectClass(objectToRead), field)
+            funDef = getattr(objectToRead.__class__, field)
         except:
             raise InvalidFieldException()
 
-        funDef = getattr(getObjectClass(objectToRead), field)
 
-        if not Decorators.isFunctionToExpose(funDef):
+        if not SubscribableObject.isFunctionToExpose(funDef):
             raise InvalidFunctionException()
 
-        if Decorators.functionExpectsCallback(funDef):
-            if Decorators.functionExpectsExpandedArgs(funDef):
-                def caller(x, callback, arg):
-                    if isinstance(arg, list):
-                        return getattr(x,field)(callback, *arg)
-                    else:
-                        return getattr(x,field)(callback, **arg)
-                return caller
-            else:
-                return lambda x, callback, *args: getattr(x, field)(callback, *args)
-        else:
-            if Decorators.functionExpectsExpandedArgs(funDef):
-                def caller(x, callback, arg):
-                    try:
-                        if isinstance(arg, list):
-                            callback(getattr(x,field)(*arg))
-                        else:
-                            callback(getattr(x,field)(**arg))
-                    except Exception as e:
-                        callback(e)
 
-                return caller
-            else:
-                def caller(x, callback, *args):
-                    try:
-                        callback(getattr(x, field)(*args))
-                    except Exception as e:
-                        callback(e)
-                return caller
+        if SubscribableObject.functionExpectsExpandedArgs(funDef):
+            def caller(x, callback, arg):
+                try:
+                    if isinstance(arg, list):
+                        callback(getattr(x, field)(*arg))
+                    else:
+                        callback(getattr(x, field)(**arg))
+                except Exception as e:
+                    callback(e)
+
+            return caller
+        else:
+            def caller(x, callback, *args):
+                try:
+                    callback(getattr(x, field)(*args))
+                except Exception as e:
+                    callback(e)
+            return caller
 
     def addResultToQueue(self, messageCreator):
         self.pendingObjectQueue.append(messageCreator)
@@ -468,7 +454,8 @@ class MessageProcessor(object):
         def callback(result):
             if isinstance(result, Exception):
                 def creator():
-                    return unexpectedExceptionJson(jsonMessage, Exceptions.wrapException(result).message)
+                    return unexpectedExceptionJson(jsonMessage,
+                                                   Exceptions.wrapException(result).message)
                 self.addResultToQueue(creator)
             else:
                 def creator():
@@ -479,12 +466,12 @@ class MessageProcessor(object):
                             "result": self.outgoingObjectCache.convertResponseToJson(result)
                             }
                     except Exception as e:
-                        return unexpectedExceptionJson(jsonMessage, Exceptions.wrapException(e).message)
+                        return unexpectedExceptionJson(jsonMessage,
+                                                       Exceptions.wrapException(e).message)
                 self.addResultToQueue(creator)
 
         try:
             objectArgs = self.convertObjectArgs(jsonMessage['args'])
-
             funImplementation(objectToExecuteOn, callback, objectArgs)
             return []
         except Exception as e:
@@ -503,20 +490,23 @@ class MessageProcessor(object):
 
         except Exception as e:
             try:
-                objectType = objectToRead.__location_class__ if ComputedGraph.isLocation(objectToRead) else str(objectToRead)
+                objectType = (objectToRead.__location_class__
+                              if ComputedGraph.isLocation(objectToRead)
+                              else str(objectToRead))
                 logging.info("converting %s of type %s", fieldFun(objectToRead), objectType)
             except:
                 pass
             return [unexpectedExceptionJson(jsonMessage, Exceptions.wrapException(e).message)]
 
+
     def handleSubscribeMessage(self, jsonMessage, objectToRead):
         fieldFun = self.getFieldExtractorForReadMessage(jsonMessage, objectToRead)
+        value = fieldFun(objectToRead)
 
-        getValueFun = lambda: fieldFun(objectToRead)
-
-        value, otherSubscriptionChanges = self.subscriptions.addSubscription(
+        otherSubscriptionChanges = self.subscriptions.addSubscription(
             jsonMessage['messageId'],
-            getValueFun
+            objectToRead,
+            jsonMessage['field']
             )
 
         if isinstance(value, Exceptions.SubscribableWebObjectsException):
@@ -529,8 +519,8 @@ class MessageProcessor(object):
                 }
 
         return ([valueResponseJson] +
-                    self.encodeSubscriptionChangesAsJsonAndDrop(otherSubscriptionChanges)
-                    )
+                self.encodeSubscriptionChangesAsJsonAndDrop(otherSubscriptionChanges))
+
 
     def encodeSubscriptionChangesAsJsonAndDrop(self, changedSubscriptionIds):
         result = []
@@ -580,64 +570,13 @@ class MessageProcessor(object):
         return tr
 
 
-
-    def handleAssignMessage(self, jsonMessage, objectToRead):
-        if 'field' not in jsonMessage:
-            raise MalformedMessageException(
-                "incoming message missing 'field' field: " + str(jsonMessage)
-                )
-
-        if 'value' not in jsonMessage:
-            raise MalformedMessageException(
-                "incoming message missing 'value' field: " + str(jsonMessage)
-                )
-
-        field = jsonMessage['field']
-
-        if not isinstance(field, str):
-            raise MalformedMessageException(
-                "incoming 'field' not a string: " + str(jsonMessage))
-
-        field = intern(field)
-
-        try:
-            fieldDef = getattr(getObjectClass(objectToRead), field)
-        except:
-            raise InvalidFieldException()
-
-        fieldDef = getattr(getObjectClass(objectToRead), field)
-
-        if not Decorators.isPropertyToExpose(fieldDef):
-            raise InvalidFieldException()
-
-        if not Decorators.propertyHasSetter(fieldDef):
-            return InvalidFieldException()
-
-        try:
-            setter = Decorators.getSetter(field, fieldDef)
-
-            setter(objectToRead, jsonMessage['value'])
-
-            return [{
-                "messageId": jsonMessage["messageId"],
-                "responseType": "OK"
-                }]
-        except Exception as e:
-            return [unexpectedExceptionJson(jsonMessage, Exceptions.wrapException(e).message)]
-
-
     def __enter__(self):
         self.lock.__enter__()
-        self.computedValueGateway.__enter__()
-        self.graph.__enter__()
 
     def __exit__(self, type, value, tb):
-        self.graph.__exit__(type, value, tb)
-        self.computedValueGateway.__exit__(type, value, tb)
         self.lock.__exit__(type, value, tb)
 
     def teardown(self):
-        self.computedValueGateway.teardown()
-        self.graph = None
-        self.computedValueGateway = None
+        pass
+        #self.computedValueGateway = None
 

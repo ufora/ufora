@@ -12,109 +12,50 @@
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
 
-import ufora.BackendGateway.ComputedGraph.ComputedGraph as ComputedGraph
-import ufora.BackendGateway.control.Control as Control
-import ufora.BackendGateway.ComputedGraph.BackgroundUpdateQueue as BackgroundUpdateQueue
-import ufora.BackendGateway.SubscribableWebObjects.Exceptions as Exceptions
-
-
-class SubscriptionKeys(ComputedGraph.Location):
-    subscriptionKeys = ComputedGraph.Mutable(object)
-
-    def keys(self):
-        if self.subscriptionKeys is None:
-            return []
-        return self.subscriptionKeys
 
 class Subscriptions(object):
     """Manage a set of "Subscriptions" into the ComputedGraph.
 
     We use the control framework. This is a hack for expediency.
     """
-    def __init__(self, computedGraph, computedValueGateway):
-        self.controlRoot = Control.root(
-            Control.overlayGenerated(
-                lambda: SubscriptionKeys().keys,
-                self.controlForKey_
-                ),
-            computedGraph,
-            self
-            )
-        self.computedGraph = computedGraph
-        self.computedValueGateway = computedValueGateway
-
-        self.subscriptionGetters = {}
+    def __init__(self):
+        self.cancellation_funcs = {}
         self.subscriptionValues = {}
         self.changedSubscriptions = set()
 
 
     def subscriptionCount(self):
-        return len(self.subscriptionGetters)
+        return len(self.cancellation_funcs)
 
-    def updateComputedGraph_(self):
-        BackgroundUpdateQueue.moveNextFrameToCurFrame()
-        BackgroundUpdateQueue.pullAll()
 
-        self.computedGraph.flushOrphans()
-        self.computedGraph.flush()
+    def addSubscription(self, subscription_id, observable, field_name):
+        def observer(observable_id, field, new_value, old_value):
+            assert observable_id == observable.id
+            assert field == field_name
+            if new_value != old_value:
+                self.subscriptionValues[subscription_id] = new_value
+                self.changedSubscriptions.add(subscription_id)
 
-        self.controlRoot.pruneDirtyChildren()
-        self.controlRoot.update()
+        def unobserve():
+            observable.unobserve(field_name, observer)
 
-        #self.controlRoot.display()
+        observable.observe(field_name, observer)
+        self.cancellation_funcs[subscription_id] = unobserve
 
 
     def updateAndReturnChangedSubscriptionIds(self):
-        self.updateComputedGraph_()
-
         result = self.changedSubscriptions
         self.changedSubscriptions = set()
-
         return sorted(list(result))
+
 
     def getValueAndDropSubscription(self, subscriptionId):
         result = self.subscriptionValues[subscriptionId]
         self.removeSubscription(subscriptionId)
         return result
 
+
     def removeSubscription(self, subscriptionId):
-        del self.subscriptionGetters[subscriptionId]
+        self.cancellation_funcs[subscriptionId]()
+        del self.cancellation_funcs[subscriptionId]
         del self.subscriptionValues[subscriptionId]
-
-    def addSubscription(self, subscriptionId, resultGetter):
-        self.subscriptionGetters[subscriptionId] = resultGetter
-
-        SubscriptionKeys().subscriptionKeys = list(self.subscriptionGetters.keys())
-
-        changedSubscriptions = self.updateAndReturnChangedSubscriptionIds()
-
-        return self.subscriptionValues[subscriptionId], changedSubscriptions
-
-    def recomputeSubscription_(self, subscriptionId):
-        if subscriptionId not in self.subscriptionGetters:
-            return
-
-        try:
-            newValue = self.subscriptionGetters[subscriptionId]()
-        except Exception as e:
-            e = Exceptions.wrapException(e)
-            newValue = e
-
-        if subscriptionId not in self.subscriptionValues:
-            self.subscriptionValues[subscriptionId] = newValue
-            return
-
-        existingValue = self.subscriptionValues[subscriptionId]
-
-        if existingValue != newValue:
-            self.changedSubscriptions.add(subscriptionId)
-            self.subscriptionValues[subscriptionId] = newValue
-
-
-    def controlForKey_(self, subscriptionId):
-        def gen(parent):
-            self.recomputeSubscription_(subscriptionId)
-            return Control.empty()
-
-        return Control.generated(gen)
-

@@ -12,7 +12,7 @@
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
 
-import ufora.BackendGateway.SubscribableWebObjects.Decorators as Decorators
+import ufora.BackendGateway.SubscribableWebObjects.SubscribableObject as SubscribableObject
 import cStringIO as StringIO
 
 def addSpaces(lineWriter):
@@ -271,12 +271,7 @@ def generatePythonWrapperForClass(lineWriter, className, classObj):
 
 
     for memberName, memberDef in getClassMember(classObj).iteritems():
-        if Decorators.isPropertyToExpose(memberDef):
-            if Decorators.propertyHasSetter(memberDef):
-                lineWriter("def set_%s(self, value, callbacks):" % memberName)
-                lineWriter("    self.set('%s', value, callbacks)" %  memberName)
-                lineWriter('')
-
+        if SubscribableObject.isPropertyToExpose(memberDef):
             lineWriter("def get_%s(self, callbacks):" % memberName)
             lineWriter("    self.get('%s', callbacks)" % memberName)
             lineWriter('')
@@ -285,7 +280,7 @@ def generatePythonWrapperForClass(lineWriter, className, classObj):
             lineWriter("    self.subscribe('%s', callbacks)" % memberName)
             lineWriter('')
 
-        if Decorators.isFunctionToExpose(memberDef):
+        if SubscribableObject.isFunctionToExpose(memberDef):
             lineWriter("def %s(self, args, callbacks):" % memberName)
             lineWriter("    self.invoke('%s', args, callbacks)" % memberName)
             lineWriter('')

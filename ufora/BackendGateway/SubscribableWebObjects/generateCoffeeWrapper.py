@@ -12,10 +12,9 @@
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
 
-import ufora.BackendGateway.SubscribableWebObjects.Decorators as Decorators
+import ufora.BackendGateway.SubscribableWebObjects.SubscribableObject as SubscribableObject
 
 import cStringIO as StringIO
-import json
 
 def addSpaces(lineWriter):
     return lambda s: lineWriter("    " + s)
@@ -28,7 +27,7 @@ def getClassMember(cls):
 
     for c in reversed(cls.mro()):
         if c is not object:
-            for x,val in c.__dict__.items():
+            for x, val in c.__dict__.items():
                 prior[x] = val
 
     return prior
@@ -145,21 +144,7 @@ def generateCoffeeWrapperForClass(lineWriter, className, classObj):
     lineWriter("")
 
     for memberName, memberDef in getClassMember(classObj).iteritems():
-        if Decorators.isPropertyToExpose(memberDef):
-            if Decorators.propertyHasSetter(memberDef):
-                lineWriter("set_%s: (value, callbacks) -> " % memberName)
-                lineWriter("    req = ")
-                lineWriter("        objectDefinition: @toJSONWireFormat()")
-                lineWriter("        messageType: 'Assign'")
-                lineWriter("        field: '%s'" % memberName)
-                lineWriter("        value: value")
-                lineWriter("    jsonInterface.request req, (response) -> ")
-                lineWriter("        if response.responseType == 'OK'")
-                lineWriter("            callbacks.onSuccess()")
-                lineWriter("        else")
-                lineWriter("            if callbacks.onFailure? then callbacks.onFailure (response)")
-                lineWriter("    updateObjectIdThreshold()")
-
+        if SubscribableObject.isPropertyToExpose(memberDef):
             lineWriter("get_%s: (callbacks) -> " % memberName)
             lineWriter("    req = ")
             lineWriter("        objectDefinition: @toJSONWireFormat()")
@@ -186,7 +171,7 @@ def generateCoffeeWrapperForClass(lineWriter, className, classObj):
             lineWriter("            if callbacks.onFailure? then callbacks.onFailure (response)")
             lineWriter("    updateObjectIdThreshold()")
 
-        if Decorators.isFunctionToExpose(memberDef):
+        if SubscribableObject.isFunctionToExpose(memberDef):
             lineWriter("%s: (args, callbacks) -> " % memberName)
             lineWriter("    req = ")
             lineWriter("        objectDefinition: @toJSONWireFormat()")

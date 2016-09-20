@@ -19,7 +19,7 @@ import traceback
 import time
 
 import ufora.BackendGateway.SubscribableWebObjects.MessageProcessor as MessageProcessor
-
+import ufora.config.Setup as Setup
 import ufora.cumulus.distributed.CumulusActiveMachines as CumulusActiveMachines
 import ufora.cumulus.distributed.CumulusGatewayRemote as CumulusGatewayRemote
 import ufora.BackendGateway.ComputedValue.ComputedValueGateway as ComputedValueGateway
@@ -43,27 +43,39 @@ class ConnectionHandler:
         logging.info("Initiating ConnectionHandler: %s", jsonRequest)
         t0 = time.time()
 
-        def createCumulusComputedValueGateway():
-            def createCumulusGateway(callbackScheduler, vdm):
-                result = CumulusGatewayRemote.RemoteGateway(
-                    callbackScheduler,
-                    vdm,
-                    self.channelFactoryFactory(),
-                    CumulusActiveMachines.CumulusActiveMachines(self.sharedStateViewFactory),
-                    self.sharedStateViewFactory
-                    )
-                logging.info("Returing %s as createCumulusGateway", result)
-                return result
+        cache_loader = ComputedValueGateway.CacheLoader(
+            self.callbackScheduler,
+            Setup.config().computedValueGatewayRAMCacheMB * 1024 * 1024
+            )
+        cumulus_gateway = CumulusGatewayRemote.RemoteGateway(
+            self.callbackScheduler,
+            cache_loader.vdm,
+            self.channelFactoryFactory(),
+            CumulusActiveMachines.CumulusActiveMachines(self.sharedStateViewFactory),
+            self.sharedStateViewFactory
+            )
 
-            return ComputedValueGateway.CumulusComputedValueGateway(
-                self.callbackScheduler.getFactory(),
-                self.callbackScheduler,
-                createCumulusGateway
-                )
+        #def createCumulusComputedValueGateway():
+            #def createCumulusGateway(callbackScheduler, vdm):
+                #result = CumulusGatewayRemote.RemoteGateway(
+                    #callbackScheduler,
+                    #vdm,
+                    #self.channelFactoryFactory(),
+                    #CumulusActiveMachines.CumulusActiveMachines(self.sharedStateViewFactory),
+                    #self.sharedStateViewFactory
+                    #)
+                #logging.info("Returing %s as createCumulusGateway", result)
+                #return result
+
+            #return ComputedValueGateway.CumulusComputedValueGateway(
+                #self.callbackScheduler.getFactory(),
+                #self.callbackScheduler,
+                #createCumulusGateway
+                #)
 
         messageProcessor = MessageProcessor.MessageProcessor(
-            self.callbackScheduler,
-            createCumulusComputedValueGateway
+            cumulus_gateway,
+            cache_loader
             )
 
         logging.info("Initialized MessageProcessor in %s seconds", time.time() - t0)

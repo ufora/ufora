@@ -29,20 +29,20 @@ import ufora.BackendGateway.ComputedValue.PersistentCacheIndex as PersistentCach
 import ufora.BackendGateway.ComputedValue.ViewOfEntireCumulusSystem as ViewOfEntireCumulusSystem
 
 classMap = {
-    "Test": Test.Test,
-    "TestCGLocation": Test.TestCGLocation,
-    "ComputedValue": ComputedValue.ComputedValue,
-    "ComputedValueForMember": ComputedValue.ComputedValueForMember,
-    "ComputedValueVectorFromComputedValue": ComputedValue.ComputedValueVectorFromComputedValue,
-    "ComputedValueVectorSlice": ComputedValue.ComputedValueVectorSlice,
-    "PersistentCacheIndex": PersistentCacheIndex.PersistentCacheIndex,
-    "PyforaObjectConverter": PyforaObjectConverter.PyforaObjectConverter,
-    "PyforaComputedValue": PyforaComputedValue.PyforaComputedValue,
-    "ViewOfEntireCumulusSystem": ViewOfEntireCumulusSystem.ViewOfEntireCumulusSystem,
-    "WriteToS3Task": WriteToS3Task.WriteToS3Task,
-    "PyforaDictionaryElement": PyforaComputedValue.PyforaDictionaryElement,
-    "PyforaTupleElement": PyforaComputedValue.PyforaTupleElement,
-    "PyforaResultAsJson": PyforaComputedValue.PyforaResultAsJson,
+    #"Test": Test.Test,
+    #"TestCGLocation": Test.TestCGLocation,
+    #"ComputedValue": ComputedValue.ComputedValue,
+    #"ComputedValueForMember": ComputedValue.ComputedValueForMember,
+    #"ComputedValueVectorFromComputedValue": ComputedValue.ComputedValueVectorFromComputedValue,
+    #"ComputedValueVectorSlice": ComputedValue.ComputedValueVectorSlice,
+    #"PersistentCacheIndex": PersistentCacheIndex.PersistentCacheIndex,
+    #"PyforaObjectConverter": PyforaObjectConverter.PyforaObjectConverter,
+    #"PyforaComputedValue": PyforaComputedValue.PyforaComputedValue,
+    #"ViewOfEntireCumulusSystem": ViewOfEntireCumulusSystem.ViewOfEntireCumulusSystem,
+    #"WriteToS3Task": WriteToS3Task.WriteToS3Task,
+    #"PyforaDictionaryElement": PyforaComputedValue.PyforaDictionaryElement,
+    #"PyforaTupleElement": PyforaComputedValue.PyforaTupleElement,
+    #"PyforaResultAsJson": PyforaComputedValue.PyforaResultAsJson,
     "PyforaCluster": PyforaCluster.PyforaCluster
     }
 

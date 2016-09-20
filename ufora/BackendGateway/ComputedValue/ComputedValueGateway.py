@@ -51,7 +51,7 @@ class ComputedValueGateway(ThreadLocalStack.ThreadLocalStackPushable):
 
 class CacheLoader(object):
     """mixin class holding the background cacheloading functionality"""
-    def __init__(self, callbackSchedulerFactory, callbackScheduler, ramCacheSize = None):
+    def __init__(self, callbackScheduler, ramCacheSize=None):
         self.callbackScheduler = callbackScheduler
         self.lock_ = threading.RLock()
         self.vectorDataIDRequestCount_ = {}
@@ -205,7 +205,7 @@ class CumulusComputedValueGateway(CacheLoader, ComputedValueGateway, Stoppable.S
 
     """
 
-    def __init__(self, callbackSchedulerFactory, callbackScheduler, cumulusGatewayFactory):
+    def __init__(self, callbackScheduler, cumulusGatewayFactory):
         self.callbackScheduler = callbackScheduler
         ComputedValueGateway.__init__(self)
 
@@ -213,7 +213,6 @@ class CumulusComputedValueGateway(CacheLoader, ComputedValueGateway, Stoppable.S
 
         CacheLoader.__init__(
             self,
-            callbackSchedulerFactory,
             callbackScheduler,
             Setup.config().computedValueGatewayRAMCacheMB * 1024 * 1024
             )
