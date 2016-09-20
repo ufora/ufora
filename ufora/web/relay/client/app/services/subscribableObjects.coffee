@@ -33,23 +33,23 @@ class SubscribablesService
       cumulus: "ViewOfEntireCumulusSystem"
       cluster: "PyforaCluster"
 
-    constructor: (@subscribableWebObjects, @valueStreams) ->
+    constructor: (@subscribableWebObjects, @valueStreams, @log) ->
         @cache = {}
 
-    newInterface: (inter, args) ->
+    newInterface: (inter, args) =>
       self =
         _raw: new inter(args)
         _streams: {}
-        set: (prop, value) ->
+        set: (prop, value) =>
           self._raw["set_#{prop}"] value,
-            onFailure: (msg) ->
-              $log.error(msg)
+            onFailure: (msg) =>
+              @log.error(msg)
             onSuccess: () ->
         subscribe: (prop, resubscribe) =>
           self._streams[prop] ||= @valueStreams.empty()
           self._raw["subscribe_#{prop}"]
-            onFailure: (msg) ->
-              $log.error(msg)
+            onFailure: (msg) =>
+              @log.error(msg)
             onSuccess: (data) ->
               self._streams[prop].notify(data)
             onChanged: (data) ->
@@ -128,7 +128,7 @@ angular.module('pyfora')
         socketIo.then (socket) ->
             socketIoJson = new SocketIoJson(socket)
             subscribables = SubscribableWebObjects(socketIoJson)
-            resolve(new SubscribablesService(subscribables, valueStreams))
+            resolve(new SubscribablesService(subscribables, valueStreams, $log))
         .catch (err) ->
             reject(err)
 

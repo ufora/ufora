@@ -12,6 +12,8 @@
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
 
+import collections
+
 
 class Subscriptions(object):
     """Manage a set of "Subscriptions" into the ComputedGraph.
@@ -21,6 +23,7 @@ class Subscriptions(object):
     def __init__(self):
         self.cancellation_funcs = {}
         self.subscriptionValues = {}
+        self.subscriptions_by_object = collections.defaultdict(set)
         self.changedSubscriptions = set()
 
 
@@ -40,7 +43,8 @@ class Subscriptions(object):
             observable.unobserve(field_name, observer)
 
         observable.observe(field_name, observer)
-        self.cancellation_funcs[subscription_id] = unobserve
+        self.cancellation_funcs[subscription_id] = (observable.id, unobserve)
+        self.subscriptions_by_object[observable.id].add(subscription_id)
 
 
     def updateAndReturnChangedSubscriptionIds(self):
@@ -56,6 +60,14 @@ class Subscriptions(object):
 
 
     def removeSubscription(self, subscriptionId):
-        self.cancellation_funcs[subscriptionId]()
+        object_id, unobserve = self.cancellation_funcs[subscriptionId]
+        unobserve()
         del self.cancellation_funcs[subscriptionId]
         del self.subscriptionValues[subscriptionId]
+        self.subscriptions_by_object[object_id].discard(subscriptionId)
+
+
+    def removeAllSubscriptionsForObject(self, objectId):
+        object_subscriptions = list(self.subscriptions_by_object[objectId])
+        for subscriptionId in object_subscriptions:
+            self.removeSubscription(subscriptionId)

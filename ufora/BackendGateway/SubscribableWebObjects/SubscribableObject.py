@@ -15,6 +15,9 @@
 import types
 import ufora.BackendGateway.Observable as Observable
 
+# expose to importers of this module
+from ufora.BackendGateway.Observable import observable
+
 
 class SubscribableObject(Observable.Observable):
     def __init__(self, id, cumulus_gateway, cache_loader):

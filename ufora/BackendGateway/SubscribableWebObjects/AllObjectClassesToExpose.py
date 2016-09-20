@@ -38,7 +38,7 @@ classMap = {
     #"PersistentCacheIndex": PersistentCacheIndex.PersistentCacheIndex,
     #"PyforaObjectConverter": PyforaObjectConverter.PyforaObjectConverter,
     #"PyforaComputedValue": PyforaComputedValue.PyforaComputedValue,
-    #"ViewOfEntireCumulusSystem": ViewOfEntireCumulusSystem.ViewOfEntireCumulusSystem,
+    "ViewOfEntireCumulusSystem": ViewOfEntireCumulusSystem.ViewOfEntireCumulusSystem,
     #"WriteToS3Task": WriteToS3Task.WriteToS3Task,
     #"PyforaDictionaryElement": PyforaComputedValue.PyforaDictionaryElement,
     #"PyforaTupleElement": PyforaComputedValue.PyforaTupleElement,

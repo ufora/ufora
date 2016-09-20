@@ -76,30 +76,6 @@ def unexpectedExceptionJson(jsonMessage, message):
         "message": message
         }
 
-class IncomingObjectCache(object):
-    def __init__(self):
-        self.objectIdCache_ = {}
-        self.objectToIdCache_ = {}
-        self.objectIdList_ = []
-
-    def lookupObjectById(self, id):
-        if id not in self.objectIdCache_:
-            raise MalformedMessageException("Object with ID %s unknown" % id)
-        return self.objectIdCache_[id]
-
-    def addObjectById(self, id, objectDefinition):
-        if id in self.objectIdCache_:
-            raise MalformedMessageException("ObjectID already defined")
-
-        self.objectIdCache_[id] = objectDefinition
-        self.objectIdList_.append(id)
-
-    def flushIdsBelow(self, threshold):
-        self.objectIdList_ = sorted(self.objectIdList_)
-
-        while self.objectIdList_ and self.objectIdList_[0] < threshold:
-            del self.objectIdCache_[self.objectIdList_[0]]
-            self.objectIdList_.pop(0)
 
 class OutgoingObjectCache(object):
     def __init__(self):
@@ -225,7 +201,6 @@ class MessageProcessor(object):
 
         Fora._builtin = ForaValue.FORAValue(ModuleImporter.builtinModuleImplVal())
 
-        self.incomingObjectCache = IncomingObjectCache()
         self.outgoingObjectCache = OutgoingObjectCache()
 
         #self.VDM = VectorDataManager.constructVDM(callbackScheduler)
@@ -260,7 +235,7 @@ class MessageProcessor(object):
                 responses = self.handleJsonMessage(jsonMessage)
                 responses += self.tryFlushObjectIdCache()
             else:
-                responses = self.updateGraphAndReturnMessages()
+                responses = self.getPendingMessages()
 
         except UnicodeEncodeError as err:
             self.expectedMessageId += 1
@@ -318,6 +293,16 @@ class MessageProcessor(object):
             return [{'responseType': 'ClientFlushObjectIdsBelow', 'value':objectId}]
         return []
 
+
+    def flushIdsBelow(self, threshold):
+        object_ids = sorted(self.active_objects.keys())
+
+        while object_ids and object_ids[0] < threshold:
+            del self.active_objects[object_ids[0]]
+            self.subscriptions.removeAllSubscriptionsForObject(object_ids[0])
+            object_ids.pop(0)
+
+
     def handleFlushObjectIds(self, incomingJsonMessage, obj):
         if not 'value' in incomingJsonMessage:
             raise MalformedMessageException("missing 'value'")
@@ -327,14 +312,14 @@ class MessageProcessor(object):
         if not isinstance(threshold, int):
             raise MalformedMessageException("threshold should be an integer")
 
-        self.incomingObjectCache.flushIdsBelow(threshold)
+        self.flushIdsBelow(threshold)
 
         return [{
             "messageId": incomingJsonMessage["messageId"],
             "responseType": "OK"
             }]
 
-    def extractObjectDefinition(self, objDefJson):
+    def extractObjectDefinition(self, objDefJson, objectId=None):
         if 'objectId_' in objDefJson or 'objectDefinition_' in objDefJson:
             return self.convertObjectArgs(objDefJson)
 
@@ -351,7 +336,7 @@ class MessageProcessor(object):
 
         try:
             objectCls = AllObjectClassesToExpose.classMap[objType]
-            result = objectCls(uuid.uuid4().hex,
+            result = objectCls(objectId or uuid.uuid4().hex,
                                self.cumulus_gateway,
                                self.cache_loader,
                                objectArgs)
@@ -368,10 +353,15 @@ class MessageProcessor(object):
 
         if isinstance(objectArgs, dict):
             if 'objectDefinition_' in objectArgs:
-                return self.extractObjectDefinition(objectArgs['objectDefinition_'])
+                assert 'objectId_' in objectArgs
+                return self.extractObjectDefinition(objectArgs['objectDefinition_'],
+                                                    objectArgs['objectId_'])
 
             if 'objectId_' in objectArgs:
-                obj = self.incomingObjectCache.lookupObjectById(objectArgs['objectId_'])
+                obj_id = objectArgs['objectId_']
+                obj = self.active_objects.get(obj_id)
+                if obj is None:
+                    raise MalformedMessageException("Object with ID %s unknown" % obj_id)
                 return obj
 
             tr = {}
@@ -518,8 +508,7 @@ class MessageProcessor(object):
                 "value": self.outgoingObjectCache.convertResponseToJson(fieldFun(objectToRead))
                 }
 
-        return ([valueResponseJson] +
-                self.encodeSubscriptionChangesAsJsonAndDrop(otherSubscriptionChanges))
+        return [valueResponseJson] + self.getPendingMessages()
 
 
     def encodeSubscriptionChangesAsJsonAndDrop(self, changedSubscriptionIds):
@@ -559,10 +548,11 @@ class MessageProcessor(object):
 
         return result
 
-    def updateGraphAndReturnMessages(self):
-        changed = self.subscriptions.updateAndReturnChangedSubscriptionIds()
 
+    def getPendingMessages(self):
+        changed = self.subscriptions.updateAndReturnChangedSubscriptionIds()
         return self.encodeSubscriptionChangesAsJsonAndDrop(changed)
+
 
     def extractPendingMessages(self):
         tr = [x() for x in self.pendingObjectQueue]

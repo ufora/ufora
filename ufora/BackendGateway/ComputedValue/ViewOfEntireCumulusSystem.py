@@ -12,49 +12,78 @@
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
 
-import ufora.BackendGateway.ComputedGraph.ComputedGraph as ComputedGraph
-import ufora.native.Cumulus as CumulusNative
-import ufora.native.FORA as ForaNative
-import ufora.BackendGateway.ComputedValue.ComputedValueGateway as ComputedValueGateway
-import time
-import ufora.BackendGateway.ComputedGraph.BackgroundUpdateQueue as BackgroundUpdateQueue
+from ufora.BackendGateway.SubscribableWebObjects.SubscribableObject \
+    import SubscribableObject, ExposedFunction, ExposedProperty, observable
 
-getGateway = ComputedValueGateway.getGateway
 
-class ViewOfEntireCumulusSystem(ComputedGraph.Location):
-    viewOfSystem_ = ComputedGraph.Mutable(object, lambda: ())
-    recentGlobalUserFacingLogMessages_ = ComputedGraph.Mutable(object, lambda: ())
-    totalMessageCountsEver_ = ComputedGraph.Mutable(object, lambda: 0)
+class ViewOfEntireCumulusSystem(SubscribableObject):
+    def __init__(self, id, cumulus_gateway, cache_loader, _):
+        super(ViewOfEntireCumulusSystem, self).__init__(id, cumulus_gateway, cache_loader)
 
-    @ComputedGraph.ExposedProperty()
+        self.viewOfSystem_ = None
+        self.recentGlobalUserFacingLogMessages_ = None
+        self.totalMessageCountsEver_ = None
+
+        self.cumulus_gateway.onJsonViewOfSystemChanged = self.onJsonViewOfSystemChanged
+
+
+    @ExposedProperty
     def mostRecentMessages(self):
         return self.recentGlobalUserFacingLogMessages_
 
-    @ComputedGraph.ExposedProperty()
+
+    @mostRecentMessages.setter
+    @observable
+    def mostRecentMessages(self, value):
+        self.recentGlobalUserFacingLogMessages_ = value
+
+
+    @ExposedProperty
     def totalMessagesEver(self):
         return self.totalMessageCountsEver_
 
-    @ComputedGraph.ExposedFunction()
-    def clearMostRecentMessages(self, arg):
+
+    @totalMessagesEver.setter
+    @observable
+    def totalMessagesEver(self, value):
+        self.totalMessageCountsEver_ = value
+
+
+    @ExposedFunction
+    def clearMostRecentMessages(self, _):
         self.recentGlobalUserFacingLogMessages_ = ()
 
-    @ComputedGraph.ExposedFunction()
-    def clearAndReturnMostRecentMessages(self, arg):
+
+    @ExposedFunction
+    def clearAndReturnMostRecentMessages(self, _):
         messages = self.recentGlobalUserFacingLogMessages_
         self.recentGlobalUserFacingLogMessages_ = ()
         return messages
 
-    @ComputedGraph.ExposedProperty()
+
+    @ExposedProperty
     def viewOfCumulusSystem(self):
         return self.viewOfSystem_
 
-    @ComputedGraph.ExposedFunction()
+
+    @viewOfCumulusSystem.setter
+    @observable
+    def viewOfCumulusSystem(self, value):
+        self.viewOfSystem_ = value
+
+
+    @ExposedFunction
     def pushNewGlobalUserFacingLogMessage(self, msg):
         self.totalMessageCountsEver_ = self.totalMessageCountsEver_ + 1
         self.recentGlobalUserFacingLogMessages_ = (
-            self.recentGlobalUserFacingLogMessages_ + \
-                ({"timestamp": msg.timestamp, "message": msg.message, "isDeveloperFacing": msg.isDeveloperFacing, },)
+            self.recentGlobalUserFacingLogMessages_ + (
+                {
+                    "timestamp": msg.timestamp,
+                    "message": msg.message,
+                    "isDeveloperFacing": msg.isDeveloperFacing,
+                },)
             )
 
 
-
+    def onJsonViewOfSystemChanged(self, json):
+        self.viewOfCumulusSystem = json.toSimple()
