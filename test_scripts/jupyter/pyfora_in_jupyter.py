@@ -45,7 +45,10 @@ class PyforaInJupyterTest(unittest.TestCase):
         returnCode, output, err = \
             self.evaluateNotebookInSubprocess(notebookPath)
 
-        self.assertEqual(returnCode, 0, msg=(returnCode, output, err))
+        self.assertEqual(returnCode, 0, msg={"notebookPath": notebookPath, 
+                                             "returnCode": returnCode, 
+                                             "output": output, 
+                                             "err": err})
 
     def test_notebooksThrowNoExceptions(self):
         notebooks_dir = os.path.join(self.cur_dir, "notebooks")

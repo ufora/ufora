@@ -18,7 +18,7 @@ import json
 import os
 import struct
 
-class Deserializer:
+class Deserializer(object):
     def readByte(self):
         res = struct.unpack("<b", self.grabBytes(1))[0]
         return res
@@ -44,6 +44,9 @@ class Deserializer:
         res = self.grabBytes(length)
         return res
 
+    def grabBytes(self, bytecount):
+        raise NotImplementedError
+
 
 class StringDeserializer(Deserializer):
     def __init__(self, s):
@@ -54,6 +57,7 @@ class StringDeserializer(Deserializer):
         res = self.data[self.index:self.index+bytecount]
         self.index += bytecount
         return res
+
 
 class FileDescriptorDeserializer(Deserializer):
     def __init__(self, fd):
@@ -114,15 +118,6 @@ def deserializeFromStream(stream, objectVisitor, convertJsonToObject):
 
         def readStringTuple():
             return tuple([stream.readString() for _ in xrange(stream.readInt32())])
-
-        def readTupleScopeIds():
-            res = {}
-            ct = stream.readInt32()
-            for _ in xrange(ct):
-                path = tuple(stream.readString().split("."))
-                objId = stream.readInt64()
-                res[path] = objId
-            return res
 
         def readDottedScopeIds():
             res = {}

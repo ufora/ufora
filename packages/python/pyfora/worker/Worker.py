@@ -21,13 +21,9 @@ import struct
 import pyfora.worker.Common as Common
 import pyfora.worker.Messages as Messages
 import pyfora.PureImplementationMappings as PureImplementationMappings
-import pyfora.PureImplementationMapping as PureImplementationMapping
 import pyfora.PythonObjectRehydrator as PythonObjectRehydrator
 import pyfora.PyObjectWalker as PyObjectWalker
-import pyfora.ObjectRegistry as ObjectRegistry
 import pyfora.BinaryObjectRegistry as BinaryObjectRegistry
-import pyfora.NamedSingletons as NamedSingletons
-import pyfora.PyAbortSingletons as PyAbortSingletons
 
 
 class Worker:
@@ -78,9 +74,8 @@ class Worker:
         registry = BinaryObjectRegistry.BinaryObjectRegistry()
 
         walker = PyObjectWalker.PyObjectWalker(
-            purePythonClassMapping=mappings,
-            objectRegistry=registry
-            )
+            mappings,
+            registry)
 
         objId = walker.walkPyObject(result)
 

@@ -17,8 +17,6 @@ import sys
 import socket
 import struct
 import pyfora.worker.spawner as spawner
-import pyfora.worker.Spawner as Spawner
-import pyfora.worker.Worker as Worker
 import pyfora.worker.Messages as Messages
 import pyfora.worker.Common as Common
 import pyfora.worker.SubprocessRunner as SubprocessRunner
@@ -26,15 +24,10 @@ import time
 import logging
 
 import pyfora.PureImplementationMappings as PureImplementationMappings
-import pyfora.PureImplementationMapping as PureImplementationMapping
 import pyfora.PyObjectWalker as PyObjectWalker
-import pyfora.ObjectRegistry as ObjectRegistry
 import pyfora.BinaryObjectRegistry as BinaryObjectRegistry
-import pyfora.BinaryObjectRegistryDeserializer as BinaryObjectRegistryDeserializer
-import pyfora.NamedSingletons as NamedSingletons
 import pyfora.PythonObjectRehydrator as PythonObjectRehydrator
-import pyfora.TypeDescription as TypeDescription
-import pyfora
+
 
 class WorkerPool:
     def __init__(self, pathToSocketDir, max_processes = None):
@@ -113,8 +106,8 @@ class WorkerPool:
             binaryObjectRegistry = BinaryObjectRegistry.BinaryObjectRegistry()
 
             walker = PyObjectWalker.PyObjectWalker(
-                purePythonClassMapping=mappings,
-                objectRegistry=binaryObjectRegistry
+                mappings,
+                binaryObjectRegistry
                 )
 
             objId = walker.walkPyObject(toCall)

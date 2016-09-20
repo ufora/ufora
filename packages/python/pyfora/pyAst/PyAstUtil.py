@@ -238,7 +238,7 @@ def collectDataMembersSetInInit(pyClassObject):
     if initAstOrNone is None:
         return []
 
-    return _collectDataMembersSetInInitAst(initAstOrNone)
+    return list(_collectDataMembersSetInInitAst(initAstOrNone))
 
 
 def _collectDataMembersSetInInitAst(initAst):

@@ -20,8 +20,6 @@ import base64
 import ufora.BackendGateway.SubscribableWebObjects.Exceptions as Exceptions
 import ufora.BackendGateway.ComputedGraph.ComputedGraph as ComputedGraph
 import ufora.BackendGateway.ComputedValue.ComputedValueGateway as ComputedValueGateway
-import ufora.FORA.python.ModuleImporter as ModuleImporter
-import ufora.FORA.python.ModuleDirectoryStructure as ModuleDirectoryStructure
 
 #global variables to hold the state of the converter. This is OK because
 #the PyforaObjectConverter is a singleton
@@ -94,7 +92,6 @@ class PyforaObjectConverter(ComputedGraph.Location):
 
     @ComputedGraph.ExposedFunction(expandArgs=True)
     def convert(self, objectId, serializedBinaryObjectDefinition):
-        import pyfora.TypeDescription as TypeDescription
         import pyfora.Exceptions as PyforaExceptions
         import pyfora.BinaryObjectRegistryDeserializer as BinaryObjectRegistryDeserializer
 

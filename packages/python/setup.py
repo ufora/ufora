@@ -13,6 +13,7 @@
 #   limitations under the License.
 
 from setuptools import setup, find_packages
+from distutils.core import Extension
 import os
 import re
 
@@ -32,6 +33,55 @@ def read_package_version():
 version = read_package_version()
 
 install_requires = ['futures', 'socketIO-client>=0.6.5', 'numpy', 'wsaccel']
+
+ext_modules = []
+
+stringbuildermodule = Extension('pyfora.StringBuilder',
+                                language='c++',
+                                sources=['pyfora/src/StringBuilder.cpp',
+                                         'pyfora/src/stringbuildermodule.cpp']
+                                )
+ext_modules.append(stringbuildermodule)
+
+binaryObjectRegistryModule = Extension('pyfora.BinaryObjectRegistry',
+                                       language='c++',
+                                       sources=['pyfora/src/BinaryObjectRegistry.cpp',
+                                                'pyfora/src/StringDeserializer.cpp',
+                                                'pyfora/src/PyObjectWalker.cpp',
+                                                'pyfora/src/binaryobjectregistrymodule.cpp',
+                                                'pyfora/src/StringBuilder.cpp',
+                                                'pyfora/src/FileDescription.cpp',
+                                                'pyfora/src/PyObjectUtils.cpp',
+                                                'pyfora/src/PyAstUtil.cpp',
+                                                'pyfora/src/FreeVariableMemberAccessChain.cpp',
+                                                'pyfora/src/PyAstFreeVariableAnalyses.cpp',
+                                                'pyfora/src/PyforaInspect.cpp',
+                                                'pyfora/src/FreeVariableResolver.cpp',
+                                                'pyfora/src/Ast.cpp',
+                                                'pyfora/src/UnresolvedFreeVariableExceptions.cpp',
+                                                'pyfora/src/BinaryObjectRegistryHelpers.cpp',
+                                                'pyfora/src/Json.cpp']
+                                       )
+ext_modules.append(binaryObjectRegistryModule)
+
+pyObjectWalkerModule = Extension('pyfora.PyObjectWalker',
+                                 language='c++',
+                                 sources=['pyfora/src/pyobjectwalkermodule.cpp',
+                                          'pyfora/src/PyObjectWalker.cpp',
+                                          'pyfora/src/BinaryObjectRegistry.cpp',
+                                          'pyfora/src/FileDescription.cpp',
+                                          'pyfora/src/StringBuilder.cpp',
+                                          'pyfora/src/PyObjectUtils.cpp',
+                                          'pyfora/src/FreeVariableResolver.cpp',
+                                          'pyfora/src/PyAstUtil.cpp',
+                                          'pyfora/src/FreeVariableMemberAccessChain.cpp',
+                                          'pyfora/src/PyAstFreeVariableAnalyses.cpp',
+                                          'pyfora/src/PyforaInspect.cpp',
+                                          'pyfora/src/Ast.cpp',
+                                          'pyfora/src/UnresolvedFreeVariableExceptions.cpp',
+                                          'pyfora/src/BinaryObjectRegistryHelpers.cpp',
+                                          'pyfora/src/Json.cpp'])
+ext_modules.append(pyObjectWalkerModule)
 
 
 setup(
@@ -65,6 +115,7 @@ setup(
     entry_points={
         'console_scripts':
             ['pyfora_aws=pyfora.aws.pyfora_aws:main']
-    }
+    },
+    ext_modules=ext_modules
 )
 

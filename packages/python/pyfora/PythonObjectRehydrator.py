@@ -30,9 +30,7 @@ import os
 import ast
 import traceback
 import logging
-import base64
 import numpy
-import cPickle
 
 
 def sanitizeModulePath(pathToModule):
@@ -189,7 +187,7 @@ class PythonObjectRehydrator(object):
     def convertObjectDefinitionsToPythonObject(self, definitions, root_id):
         converted = {}
 
-        def convert(objectId,retainHomogenousListsAsNumpy=False):
+        def convert(objectId, retainHomogenousListsAsNumpy=False):
             if objectId in converted:
                 return converted[objectId]
             converted[objectId] = convertInner(definitions[objectId], retainHomogenousListsAsNumpy)

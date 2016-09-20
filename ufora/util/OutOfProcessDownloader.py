@@ -18,7 +18,6 @@ import time
 import threading
 import ufora.util.ManagedThread as ManagedThread
 import sys
-import struct
 import os
 import socket
 import ufora.distributed.util.common as common

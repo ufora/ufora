@@ -93,6 +93,17 @@ class InMemoryExecutorTestCases(ExecutorTestCases.ExecutorTestCases):
 
             self.assertEqual(res, (True,True,True))
 
+    def test_remote_python_object_432(self):
+        with self.create_executor() as ufora:
+            
+            with ufora.remotely:
+                x = 2
+
+            with ufora.remotely.downloadAll():
+                y = x + 3
+
+            self.assertEqual(y, 5)
+
     def test_with_blocks_inside_converted_code(self):
         with self.assertRaises(pyfora.InvalidPyforaOperation):
             with self.create_executor() as executor:

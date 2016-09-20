@@ -13,19 +13,14 @@
 #   limitations under the License.
 
 import unittest
-import pickle
-import time
 
 import ufora.native.FORA as ForaNative
-import ufora.FORA.python.ForaValue as ForaValue
 import ufora.native.CallbackScheduler as CallbackScheduler
 import ufora.FORA.python.PurePython.Converter as Converter
-import ufora.FORA.python.PurePython.PyforaToJsonTransformer as PyforaToJsonTransformer
 import ufora.FORA.python.PurePython.PythonBinaryStreamToImplval as PythonBinaryStreamToImplval
 import ufora.FORA.python.PurePython.PythonBinaryStreamFromImplval as PythonBinaryStreamFromImplval
 import ufora.distributed.S3.InMemoryS3Interface as InMemoryS3Interface
 import ufora.cumulus.test.InMemoryCumulusSimulation as InMemoryCumulusSimulation
-import ufora.FORA.python.Evaluator.Evaluator as Evaluator
 import pyfora.BinaryObjectRegistry as BinaryObjectRegistry
 import pyfora.PureImplementationMappings as PureImplementationMappings
 import pyfora.PyObjectWalker as PyObjectWalker
@@ -161,8 +156,8 @@ class PythonBinaryStreamToImplvalTest(unittest.TestCase):
         binaryObjectRegistry = BinaryObjectRegistry.BinaryObjectRegistry()
 
         walker = PyObjectWalker.PyObjectWalker(
-            purePythonClassMapping=mappings,
-            objectRegistry=binaryObjectRegistry
+            mappings,
+            binaryObjectRegistry
             )
 
         root_id = walker.walkPyObject(pyObject)
@@ -175,8 +170,6 @@ class PythonBinaryStreamToImplvalTest(unittest.TestCase):
         streamReader.read(data)
         anObjAsImplval = streamReader.getObjectById(root_id)
     
-        stream = BinaryObjectRegistry.BinaryObjectRegistry()
-        
         converter = PythonBinaryStreamFromImplval.constructConverter(Converter.canonicalPurePythonModule(), self.vdm)
 
         root_id, data = converter.write(anObjAsImplval)
@@ -191,8 +184,8 @@ class PythonBinaryStreamToImplvalTest(unittest.TestCase):
         binaryObjectRegistry = BinaryObjectRegistry.BinaryObjectRegistry()
 
         walker = PyObjectWalker.PyObjectWalker(
-            purePythonClassMapping=mappings,
-            objectRegistry=binaryObjectRegistry
+            mappings,
+            binaryObjectRegistry
             )
 
         ids = [walker.walkPyObject(o) for o in [pyObject] + list(args)]

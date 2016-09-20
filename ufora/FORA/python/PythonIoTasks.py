@@ -19,23 +19,17 @@ import ufora.native.Cumulus as CumulusNative
 import ufora.config.Setup as Setup
 import ufora.util.ExponentialMovingAverage as ExponentialMovingAverage
 import pyfora.PureImplementationMappings as PureImplementationMappings
-import pyfora.PureImplementationMapping as PureImplementationMapping
 import pyfora.PythonObjectRehydrator as PythonObjectRehydrator
 import pyfora.PyObjectWalker as PyObjectWalker
-import pyfora.ObjectRegistry as ObjectRegistry
 import pyfora.BinaryObjectRegistry as BinaryObjectRegistry
-import ufora.FORA.python.ModuleDirectoryStructure as ModuleDirectoryStructure
 import ufora.FORA.python.PurePython.Converter as Converter
-import ufora.FORA.python.PurePython.PythonBinaryStreamToImplval as PythonBinaryStreamToImplval
 import ufora.FORA.python.PurePython.PythonAstConverter as PythonAstConverter
 import ufora.FORA.python.ModuleImporter as ModuleImporter
 import pyfora.NamedSingletons as NamedSingletons
 import pyfora.PyAbortSingletons as PyAbortSingletons
 import ufora.util.OutOfProcessDownloader as OutOfProcessDownloader
 
-import pyfora
 import struct
-import cPickle as pickle
 import logging
 import os
 import requests
@@ -322,8 +316,8 @@ class OutOfProcessPythonCallExecutor:
         registry = BinaryObjectRegistry.BinaryObjectRegistry()
 
         walker = PyObjectWalker.PyObjectWalker(
-            purePythonClassMapping=mappings,
-            objectRegistry=registry
+            mappings,
+            registry
             )
 
         objId = walker.walkPyObject(result)

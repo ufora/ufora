@@ -21,13 +21,10 @@ import ufora.FORA.python.PurePython.PyforaToJsonTransformer as PyforaToJsonTrans
 import ufora.FORA.python.PurePython.StacktraceToJson as StacktraceToJson
 import ufora.native.FORA as ForaNative
 
-import pyfora.ModuleLevelObjectIndex as ModuleLevelObjectIndex
 import pyfora.TypeDescription as TypeDescription
 import pyfora.StronglyConnectedComponents as StronglyConnectedComponents
-import pyfora.BinaryObjectRegistry as BinaryObjectRegistry
 
 import pyfora
-import base64
 import os
 import logging
 
@@ -682,7 +679,7 @@ class Converter(object):
 
             value = self.nativeConverterAdaptor.invertTuple(implval)
             if value is not None:
-                tupleIds = [transform(x) for x in value]
+                tupleIds = tuple([transform(x) for x in value])
                 stream.defineTuple(objId, tupleIds)
                 return objId
 
@@ -783,7 +780,7 @@ class Converter(object):
                                         transformed = transform(member[0])
 
                                         if transformed is not UnconvertibleToken:
-                                            members[str(memberName)] = transformed
+                                            members[(str(memberName),)] = transformed
 
                         om = implval.objectMetadata
                         if 'classMetadata' in om:
@@ -814,7 +811,7 @@ class Converter(object):
                         if member is not None and member[1] is None:
                             result = transform(member[0])
                             if result is not UnconvertibleToken:
-                                members[str(memberName)] = result
+                                members[(str(memberName),)] = result
 
                 sourcePath = defPoint.defPoint.asExternal.paths[0]
 
@@ -833,7 +830,7 @@ class Converter(object):
                     #this is a little wrong. When going python->binary, we would have
                     #a list of base classes. When going pyfora->binary, we're holding the
                     #base classes by name as free variables.
-                    []
+                    ()
                     )
                 return objId
 

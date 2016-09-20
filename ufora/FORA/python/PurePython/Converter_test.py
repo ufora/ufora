@@ -13,39 +13,37 @@
 #   limitations under the License.
 
 import unittest
-import os
-import base64
 import numpy
 import multiprocessing
 import cPickle as pickle
 import time
 
-import ufora.FORA.python.ModuleDirectoryStructure as ModuleDirectoryStructure
 import pyfora.PureImplementationMappings as PureImplementationMappings
-import pyfora.PureImplementationMapping as PureImplementationMapping
 import pyfora.PyObjectWalker as PyObjectWalker
 import pyfora.ObjectRegistry as ObjectRegistry
 import pyfora.BinaryObjectRegistry as BinaryObjectRegistry
 import pyfora.BinaryObjectRegistryDeserializer as BinaryObjectRegistryDeserializer
-import pyfora.NamedSingletons as NamedSingletons
 import pyfora.PythonObjectRehydrator as PythonObjectRehydrator
 import pyfora.TypeDescription as TypeDescription
-import pyfora
 import ufora.FORA.python.PurePython.Converter as Converter
 import ufora.FORA.python.PurePython.PyforaToJsonTransformer as PyforaToJsonTransformer
 import ufora.test.PerformanceTestReporter as PerformanceTestReporter
 import ufora.native.FORA as FORANative
 import ufora.native.CallbackScheduler as CallbackScheduler
 
+
 class ThisIsAClass:
     def f(self):
     	return 100
 
+
 def ThisIsAFunction():
     return 100
 
+
 def ThisFunctionIsImpure():
     return multiprocessing.cpu_count()
+
 
 def roundtripConvert(toConvert, vdm, allowUserCodeModuleLevelLookups = False, verbose=False):
     t0 = time.time()
@@ -54,8 +52,8 @@ def roundtripConvert(toConvert, vdm, allowUserCodeModuleLevelLookups = False, ve
     binaryObjectRegistry = BinaryObjectRegistry.BinaryObjectRegistry()
 
     walker = PyObjectWalker.PyObjectWalker(
-        purePythonClassMapping=mappings,
-        objectRegistry=binaryObjectRegistry
+        mappings,
+        binaryObjectRegistry
         )
 
     objId = walker.walkPyObject(toConvert)
@@ -108,14 +106,18 @@ class ConverterTest(unittest.TestCase):
 
     def test_walking_unconvertible_module(self):
         mappings = PureImplementationMappings.PureImplementationMappings()
-        registry = ObjectRegistry.ObjectRegistry()
+        binaryObjectRegistry = BinaryObjectRegistry.BinaryObjectRegistry()
 
         walker = PyObjectWalker.PyObjectWalker(
-            purePythonClassMapping=mappings,
-            objectRegistry=registry
+            mappings,
+            binaryObjectRegistry
             )
 
         objId = walker.walkPyObject(ThisFunctionIsImpure)
+        binaryObjectRegistry.defineEndOfStream()
+
+        registry = ObjectRegistry.ObjectRegistry()
+        BinaryObjectRegistryDeserializer.deserializeFromString(binaryObjectRegistry.str(), registry, lambda x:x)
 
         self.assertEqual(sorted(registry.objectIdToObjectDefinition[objId].freeVariableMemberAccessChainsToId.keys()), ["multiprocessing"])
 
@@ -148,16 +150,30 @@ class ConverterTest(unittest.TestCase):
     def test_conversion_metadata(self):
         for anInstance in [ThisIsAClass(), ThisIsAFunction]:
             mappings = PureImplementationMappings.PureImplementationMappings()
-            registry = ObjectRegistry.ObjectRegistry()
+
+            binaryObjectRegistry = BinaryObjectRegistry.BinaryObjectRegistry()
 
             walker = PyObjectWalker.PyObjectWalker(
-                purePythonClassMapping=mappings,
-                objectRegistry=registry
+                mappings,
+                binaryObjectRegistry
                 )
 
             objId = walker.walkPyObject(anInstance)
+            binaryObjectRegistry.defineEndOfStream()
 
-            converter = Converter.constructConverter(Converter.canonicalPurePythonModule(), None)
+            converter = Converter.constructConverter(
+                Converter.canonicalPurePythonModule(),
+                None
+                )
+
+            registry = ObjectRegistry.ObjectRegistry()
+
+            BinaryObjectRegistryDeserializer.deserializeFromString(
+                binaryObjectRegistry.str(),
+                registry,
+                lambda x:x
+                )
+
             anObjAsImplval = converter.convertDirectly(objId, registry)
 
             stream = BinaryObjectRegistry.BinaryObjectRegistry()
@@ -173,7 +189,9 @@ class ConverterTest(unittest.TestCase):
 
             convertedInstance = rehydrator.convertEncodedStringToPythonObject(stream.str(), root_id)
 
-            convertedInstanceModified = rehydrator.convertEncodedStringToPythonObject(stream.str().replace("return 100", "return 200"), root_id)
+            convertedInstanceModified = rehydrator.convertEncodedStringToPythonObject(
+                stream.str().replace("return 100", "return 200"),
+                root_id)
 
             if anInstance is ThisIsAFunction:
                 self.assertEqual(anInstance(), 100)

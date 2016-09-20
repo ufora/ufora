@@ -547,30 +547,26 @@ class ExceptionTestCases(object):
             self.equivalentEvaluationTest(lambda: C20())
             self.assertTrue(False)
         except pyfora.PythonToForaConversionError as e:
-            pattern = ".*free variable 'x'.*\n" \
-                    + ".*, in test_free_vars_error_msg3\n" \
-                    + "\\s*self\\.equivalentEvaluationTest.*\n" \
+            pattern = ".*unable to resolve free variable 'x'.*" \
                     + ".*, in f\n" \
                     + "\\s*return x\\.y\\.z"
-            self.assertTrue(re.match(pattern, str(e)) is not None)
+            self.assertIsNotNone(re.match(pattern, str(e), re.DOTALL))
 
     def test_free_vars_error_msg4(self):
         class C21:
-            def f2():
+            def f2(self):
                 x = 42
                 return x
-            def f3():
+            def f3(self):
                 return x
         try:
             self.equivalentEvaluationTest(lambda: C21())
             self.assertTrue(False)
         except pyfora.PythonToForaConversionError as e:
             pattern = ".*free variable 'x'.*\n" \
-                    + ".*, in test_free_vars_error_msg4\n" \
-                    + "\\s*self\\.equivalentEvaluationTest.*\n" \
                     + ".*, in f3\n" \
                     + "\\s*return x"
-            self.assertTrue(re.match(pattern, str(e)) is not None)
+            self.assertIsNotNone(re.match(pattern, str(e)))
 
     def test_free_vars_error_msg5(self):
         def f():
@@ -582,11 +578,9 @@ class ExceptionTestCases(object):
             self.assertTrue(False)
         except pyfora.PythonToForaConversionError as e:
             pattern = ".*free variable 'x'.*\n" \
-                    + ".*, in f\n" \
-                    + "\\s*return g\\(\\)\n" \
                     + ".*, in g\n" \
                     + "\\s*return x\\.y\\.z"
-            self.assertTrue(re.match(pattern, str(e)) is not None)
+            self.assertIsNotNone(re.match(pattern, str(e)))
 
     def test_with_block_free_vars_error_msg1(self):
         try:
@@ -603,18 +597,17 @@ class ExceptionTestCases(object):
     def test_with_block_free_vars_error_msg2(self):
         def foo():
             return z
+
         try:
             with self.create_executor() as fora:
                 with fora.remotely:
                     foo()
             self.assertTrue(False)
         except pyfora.PythonToForaConversionError as e:
-            pattern = ".*free variable 'z'.*\n" \
-                    + ".*, in test_with_block_free_vars_error_msg2\n" \
-                    + "\\s*foo\\(\\)\n" \
-                    + ".*, in foo\n" \
+            pattern = ".*unable to resolve free variable 'z'.*" \
+                    + ".*, in foo" \
                     + "\\s*return z"
-            self.assertTrue(re.match(pattern, str(e)) is not None)
+            self.assertTrue(re.match(pattern, str(e), re.DOTALL) is not None)
 
     def test_zero_division_should_throw(self):
         def f1():

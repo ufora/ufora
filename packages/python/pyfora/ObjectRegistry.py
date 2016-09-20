@@ -13,7 +13,7 @@
 #   limitations under the License.
 
 import pyfora.TypeDescription as TypeDescription
-import base64
+
 
 class ObjectRegistry(object):
     def __init__(self):

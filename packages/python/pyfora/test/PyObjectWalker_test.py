@@ -1,4 +1,4 @@
-#   Copyright 2015 Ufora Inc.
+#   Copyright 2016 Ufora Inc.
 #
 #   Licensed under the Apache License, Version 2.0 (the "License");
 #   you may not use this file except in compliance with the License.
@@ -12,53 +12,87 @@
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
 
+from pyfora.BinaryObjectRegistry import BinaryObjectRegistry as BinaryObjectRegistryPure
 import pyfora.PureImplementationMappings as PureImplementationMappings
 import pyfora.PureImplementationMapping as PureImplementationMapping
-import pyfora.PyObjectWalker as PyObjectWalker
+from pyfora.PyObjectWalker import PyObjectWalker
 import pyfora.NamedSingletons as NamedSingletons
+
+import ast
 import unittest
+
 
 class SomeRandomInstance:
     pass
 
+
 class PureUserWarning:
     pass
 
+
 class PyObjectWalkerTest(unittest.TestCase):
+    def setUp(self):
+        self.excludeList = ["staticmethod", "property", "__inline_fora"]
+
+        def is_pureMapping_call(node):
+            return isinstance(node, ast.Call) and \
+                isinstance(node.func, ast.Name) and \
+                node.func.id == 'pureMapping'
+
+        self.excludePredicateFun = is_pureMapping_call
+
+        self.mappings = PureImplementationMappings.PureImplementationMappings()
+
+        def terminal_value_filter(terminalValue):
+            return not self.mappings.isOpaqueModule(terminalValue)
+
+        self.terminalValueFilter = terminal_value_filter
+
     def test_cant_provide_mapping_for_named_singleton(self):
-        mappings = PureImplementationMappings.PureImplementationMappings()
 
         #empty mappings work
-        PyObjectWalker.PyObjectWalker(
-            purePythonClassMapping=mappings,
+        PyObjectWalker(
+            purePythonClassMapping=self.mappings,
             objectRegistry=None
             )
 
-        mappings.addMapping(
+        self.mappings.addMapping(
             PureImplementationMapping.InstanceMapping(
                 SomeRandomInstance(), SomeRandomInstance
                 )
             )
 
         #an instance mapping doesn't cause an exception
-        PyObjectWalker.PyObjectWalker(
-            purePythonClassMapping=mappings,
+        PyObjectWalker(
+            purePythonClassMapping=self.mappings,
             objectRegistry=None
             )
 
         self.assertTrue(UserWarning in NamedSingletons.pythonSingletonToName)
 
-        mappings.addMapping(
+        self.mappings.addMapping(
             PureImplementationMapping.InstanceMapping(UserWarning, PureUserWarning)
             )
 
         #but this mapping doesnt
         with self.assertRaises(Exception):
-            PyObjectWalker.PyObjectWalker(
-                purePythonClassMapping=mappings,
+            PyObjectWalker(
+                purePythonClassMapping=self.mappings,
                 objectRegistry=None
                 )
+
+    def test_PyObjectWalker_TypeErrors(self):
+        mappings = PureImplementationMappings.PureImplementationMappings()
+
+        with self.assertRaises(TypeError):
+            not_an_objectregistry = 2
+            PyObjectWalker(mappings, not_an_objectregistry, None, None, None)
+
+        with self.assertRaises(TypeError):
+            not_a_native_object_registry = BinaryObjectRegistryPure()
+            PyObjectWalker(mappings, not_a_native_object_registry, None, None, None)
 
 
 if __name__ == "__main__":
     unittest.main()
+
