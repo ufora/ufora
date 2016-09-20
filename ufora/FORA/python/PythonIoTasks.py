@@ -23,9 +23,11 @@ import pyfora.PureImplementationMapping as PureImplementationMapping
 import pyfora.PythonObjectRehydrator as PythonObjectRehydrator
 import pyfora.PyObjectWalker as PyObjectWalker
 import pyfora.ObjectRegistry as ObjectRegistry
-import pyfora.ObjectRegistry as ObjectRegistry
+import pyfora.BinaryObjectRegistry as BinaryObjectRegistry
 import ufora.FORA.python.ModuleDirectoryStructure as ModuleDirectoryStructure
 import ufora.FORA.python.PurePython.Converter as Converter
+import ufora.FORA.python.PurePython.PythonBinaryStreamToImplval as PythonBinaryStreamToImplval
+
 import pyfora
 import cPickle as pickle
 import logging
@@ -310,7 +312,7 @@ class OutOfProcessPythonCallExecutor:
 
         result = convertedInstance()
 
-        registry = ObjectRegistry.ObjectRegistry()
+        registry = BinaryObjectRegistry.BinaryObjectRegistry()
 
         walker = PyObjectWalker.PyObjectWalker(
             purePythonClassMapping=mappings,
@@ -319,12 +321,9 @@ class OutOfProcessPythonCallExecutor:
 
         objId = walker.walkPyObject(result)
 
-        return pickle.dumps((objId, registry.objectIdToObjectDefinition))
+        registry.defineEndOfStream()
 
-        
-
-        
-
+        return pickle.dumps((objId, registry.str()))
 
 
 def outOfProcessPythonCall(downloaderPool, vdm, root_id, datastream):
@@ -341,16 +340,12 @@ def outOfProcessPythonCall(downloaderPool, vdm, root_id, datastream):
     downloaderPool.getDownloader() \
             .executeAndCallbackWithString(writer, outputCallback, inputCallback)
 
-    objectRegistry = ObjectRegistry.ObjectRegistry()
+    objId, datastream = pickle.loads(result[0])
 
-    objId, objectRegistry.objectIdToObjectDefinition = pickle.loads(result[0])
+    converter = PythonBinaryStreamToImplval.constructConverter(Converter.canonicalPurePythonModule(), vdm)
+    converter.read(datastream)
 
-    converter = Converter.constructConverter(Converter.canonicalPurePythonModule(), vdm)
-
-    anObjAsImplval = converter.convertDirectly(objId, objectRegistry)
-
-    return anObjAsImplval
-
+    return converter.getObjectById(objId)
 
 
 def writeMultipartS3UploadPart(s3InterfaceFactory,
