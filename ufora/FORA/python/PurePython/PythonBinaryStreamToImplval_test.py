@@ -22,6 +22,7 @@ import ufora.native.CallbackScheduler as CallbackScheduler
 import ufora.FORA.python.PurePython.Converter as Converter
 import ufora.FORA.python.PurePython.PyforaToJsonTransformer as PyforaToJsonTransformer
 import ufora.FORA.python.PurePython.PythonBinaryStreamToImplval as PythonBinaryStreamToImplval
+import ufora.FORA.python.PurePython.PythonBinaryStreamFromImplval as PythonBinaryStreamFromImplval
 import ufora.FORA.python.Evaluator.Evaluator as Evaluator
 import pyfora.BinaryObjectRegistry as BinaryObjectRegistry
 import pyfora.PureImplementationMappings as PureImplementationMappings
@@ -42,7 +43,7 @@ class PythonBinaryStreamToImplvalTest(unittest.TestCase):
             cls.vdm = None
 
     def test_deserialize_primitives(self):
-        for value in [1,1.0,"1.0",None,False, [], [1.0], [1.0]]:
+        for value in [1,1.0,"1.0",None,False, [], [1.0], [1.0], {1:2}, (1,2,3)]:
             self.assertEqual(value, self.roundtripConvert(value))
 
     def test_deserialize_singletons(self):
@@ -155,8 +156,6 @@ class PythonBinaryStreamToImplvalTest(unittest.TestCase):
         self.assertEqual(self.roundtripExecute(f,10), f(10))
 
     def roundtripConvert(self, pyObject):
-        converter = Converter.constructConverter(Converter.canonicalPurePythonModule(), self.vdm)
-
         mappings = PureImplementationMappings.PureImplementationMappings()
         binaryObjectRegistry = BinaryObjectRegistry.BinaryObjectRegistry()
 
@@ -177,21 +176,16 @@ class PythonBinaryStreamToImplvalTest(unittest.TestCase):
     
         stream = BinaryObjectRegistry.BinaryObjectRegistry()
         
-        root_id, needsLoading = converter.transformPyforaImplval(
-            anObjAsImplval,
-            stream,
-            PyforaToJsonTransformer.ExtractVectorContents(self.vdm)
-            )
-        assert not needsLoading
+        converter = PythonBinaryStreamFromImplval.constructConverter(Converter.canonicalPurePythonModule(), self.vdm)
+
+        root_id, data = converter.write(anObjAsImplval)
 
         rehydrator = PythonObjectRehydrator.PythonObjectRehydrator(mappings, allowUserCodeModuleLevelLookups=False)
 
-        return rehydrator.convertJsonResultToPythonObject(stream.str(), root_id)
+        return rehydrator.convertJsonResultToPythonObject(data, root_id)
 
 
     def roundtripExecute(self, pyObject, *args):
-        converter = Converter.constructConverter(Converter.canonicalPurePythonModule(), self.vdm)
-
         mappings = PureImplementationMappings.PureImplementationMappings()
         binaryObjectRegistry = BinaryObjectRegistry.BinaryObjectRegistry()
 
@@ -220,17 +214,12 @@ class PythonBinaryStreamToImplvalTest(unittest.TestCase):
         self.assertTrue(result.isResult(), result)
 
         result = result.asResult.result
+
+        converter = PythonBinaryStreamFromImplval.constructConverter(Converter.canonicalPurePythonModule(), self.vdm)
     
-        stream = BinaryObjectRegistry.BinaryObjectRegistry()
-        
-        root_id, needsLoading = converter.transformPyforaImplval(
-            result,
-            stream,
-            PyforaToJsonTransformer.ExtractVectorContents(self.vdm)
-            )
-        assert not needsLoading
+        root_id, data = converter.write(result)
 
         rehydrator = PythonObjectRehydrator.PythonObjectRehydrator(mappings, allowUserCodeModuleLevelLookups=False)
 
-        return rehydrator.convertJsonResultToPythonObject(stream.str(), root_id)
+        return rehydrator.convertJsonResultToPythonObject(data, root_id)
 

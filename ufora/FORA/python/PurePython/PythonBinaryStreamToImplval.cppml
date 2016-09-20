@@ -25,62 +25,9 @@
 #include "../../Core/MemoryPool.hpp"
 #include "../../TypedFora/ABI/ImplValVisitor.hppml"
 #include "../../TypedFora/ABI/ContainsNonemptyVectorsVisitor.hppml"
+#include "PythonBinaryStreamCommon.hppml"
 
 namespace Fora {
-
-bool isUnconvertibleValueTuple(ImplValContainer val)
-    {
-    if (!val.type().isTuple())
-        return false;
-    if (val.type().getTuple().types().size() != 1)
-        return false;
-    auto name = val.type().getTuple().names()[0];
-
-    static Symbol symbolPyforaUnconvertibleValue("PyforaUnconvertibleValue");
-
-    if (!name || *name != symbolPyforaUnconvertibleValue)
-        return false;
-
-    return true;
-    }
-
-
-template<class target_type>
-ImmutableTreeVector<target_type> splitOnDot(string name)
-    {
-    ImmutableTreeVector<target_type> res;
-
-    long last = 0;
-    long cur = 0;
-    while (cur < name.size())
-        {
-        if (name[cur] == '.')
-            {
-            res = res + target_type(name.substr(last, cur-last));
-            last = cur+1;
-            }
-        cur += 1;
-        }
-    res = res + target_type(name.substr(last, cur-last));
-
-    return res;
-    }
-
-template<class T>
-Expression rebindChains(Expression expr, const map<string, T>& vars)
-    {
-    ImmutableTreeMap<ImmutableTreeVector<Symbol>, Expression> varsToRemap;
-
-    for (auto kv: vars)
-        {
-        std::string varname = kv.first;
-        auto pos = varname.find('.');
-        if (pos != string::npos)
-            varsToRemap = varsToRemap + splitOnDot<Symbol>(varname) + Expression::Variable(Symbol(varname));
-        }
-
-    return Fora::rebindFreeMemberAccessChains(expr, varsToRemap);
-    }
 
 PythonBinaryStreamToImplval::PythonBinaryStreamToImplval(
             PolymorphicSharedPtr<VectorDataManager> inVDM,
@@ -99,7 +46,6 @@ PythonBinaryStreamToImplval::PythonBinaryStreamToImplval(
         mListConverter(inPyListConverter),
         mTupleConverter(inPyTupleConverter),
         mDictConverter(inPyDictConverter),
-        mBuiltinSymbolMapping(builtinSymbolMapping),
         mSingletonAndExceptionConverter(inSingletonAndExceptionConverter),
         mPyAstParser(pyAstParser)
     {
@@ -117,45 +63,45 @@ PythonBinaryStreamToImplval::PythonBinaryStreamToImplval(
 
 ImplValContainer PythonBinaryStreamToImplval::readPrimitive(IBinaryStream& stream, uint8_t code)
     {        
-    if (code == CODE_NONE)
+    if (code == PythonBinaryStreamCommon::CODE_NONE)
         return mConstantConverter->noneValue();
         else
-    if (code == CODE_INT)
+    if (code == PythonBinaryStreamCommon::CODE_INT)
         {
         int64_t value;
         stream >> value;
         return mConstantConverter->convertInt(value);
         }
         else
-    if (code == CODE_LONG)
+    if (code == PythonBinaryStreamCommon::CODE_LONG)
         {
         std::string value;
         stream >> value;
         lassert_dump(false, "can't convert 'long' yet");
         }
         else
-    if (code == CODE_FLOAT)
+    if (code == PythonBinaryStreamCommon::CODE_FLOAT)
         {
         double value;
         stream >> value;
         return mConstantConverter->convertFloat(value);
         }
         else
-    if (code == CODE_BOOL)
+    if (code == PythonBinaryStreamCommon::CODE_BOOL)
         {
         uint8_t value;
         stream >> value;
         return mConstantConverter->convertBoolean(value);
         }
         else
-    if (code == CODE_STR)
+    if (code == PythonBinaryStreamCommon::CODE_STR)
         {
         std::string value;
         stream >> value;
         return mConstantConverter->convertString(value);
         }
         else
-    if (code == CODE_LIST_OF_PRIMITIVES)
+    if (code == PythonBinaryStreamCommon::CODE_LIST_OF_PRIMITIVES)
         {
         int64_t count;
         stream >> count;
@@ -191,19 +137,19 @@ DtypePrimitive readDtypeToTypePrimitive(IBinaryStream& stream)
     uint8_t code;
     deserializer >> code;
 
-    if (code == PythonBinaryStreamToImplval::CODE_INT)
+    if (code == PythonBinaryStreamCommon::CODE_INT)
         {
         int64_t i;
         stream >> i;
         return DtypePrimitive::Int(i);
         }
-    if (code == PythonBinaryStreamToImplval::CODE_STR)
+    if (code == PythonBinaryStreamCommon::CODE_STR)
         {
         std::string s;
         stream >> s;
         return DtypePrimitive::Str(s);
         }
-    if (code == PythonBinaryStreamToImplval::CODE_TUPLE || code == PythonBinaryStreamToImplval::CODE_LIST)
+    if (code == PythonBinaryStreamCommon::CODE_TUPLE || code == PythonBinaryStreamCommon::CODE_LIST)
         {
         int32_t count;
         stream >> count;
@@ -297,20 +243,20 @@ void PythonBinaryStreamToImplval::read(IBinaryStream& stream)
         uint8_t code;
         stream >> code;
 
-        if (code >= CODE_NONE && code <= CODE_LIST_OF_PRIMITIVES)
+        if (code >= PythonBinaryStreamCommon::CODE_NONE && code <= PythonBinaryStreamCommon::CODE_LIST_OF_PRIMITIVES)
             mValues[objectId] = readPrimitive(stream, code);
             else
-        if (code == CODE_TUPLE || code == CODE_LIST)
+        if (code == PythonBinaryStreamCommon::CODE_TUPLE || code == PythonBinaryStreamCommon::CODE_LIST)
             {
             ImmutableTreeVector<ImplValContainer> elts = readValuesFromIds(stream);
 
-            if (code == CODE_TUPLE)
+            if (code == PythonBinaryStreamCommon::CODE_TUPLE)
                 mValues[objectId] = mTupleConverter->createTuple(elts);
             else
                 mValues[objectId] = mListConverter->createList(elts, mVDM);
             }
             else
-        if (code == CODE_PACKED_HOMOGENOUS_DATA)
+        if (code == PythonBinaryStreamCommon::CODE_PACKED_HOMOGENOUS_DATA)
             {
             Type t = readDtypeToTypeInstance(stream).type();
             std::string data;
@@ -319,7 +265,7 @@ void PythonBinaryStreamToImplval::read(IBinaryStream& stream)
             mValues[objectId] = mListConverter->createListOfPrimitives((const uint8_t*)&data[0], data.size() / t.size(), t);
             }
             else
-        if (code == CODE_FILE)
+        if (code == PythonBinaryStreamCommon::CODE_FILE)
             {
             std::string path;
             std::string text;
@@ -329,7 +275,7 @@ void PythonBinaryStreamToImplval::read(IBinaryStream& stream)
             mFiles[objectId] = FileDescription(path, text);
             }
             else
-        if (code == CODE_DICT)
+        if (code == PythonBinaryStreamCommon::CODE_DICT)
             {
             ImmutableTreeVector<ImplValContainer> keys = readValuesFromIds(stream);
             ImmutableTreeVector<ImplValContainer> vals = readValuesFromIds(stream);
@@ -337,7 +283,7 @@ void PythonBinaryStreamToImplval::read(IBinaryStream& stream)
             mValues[objectId] = mDictConverter->createDict(keys, vals);
             }
             else
-        if (code == CODE_BUILTIN_EXCEPTION_INSTANCE)
+        if (code == PythonBinaryStreamCommon::CODE_BUILTIN_EXCEPTION_INSTANCE)
             {
             std::string exceptionTypeName;
             int64_t argsId;
@@ -350,7 +296,7 @@ void PythonBinaryStreamToImplval::read(IBinaryStream& stream)
                 *mSingletonAndExceptionConverter->instantiateException(exceptionTypeName, mValues[argsId]);
             }
             else
-        if (code == CODE_NAMED_SINGLETON)
+        if (code == PythonBinaryStreamCommon::CODE_NAMED_SINGLETON)
             {
             std::string singletonName;
 
@@ -359,7 +305,7 @@ void PythonBinaryStreamToImplval::read(IBinaryStream& stream)
             mValues[objectId] = *mSingletonAndExceptionConverter->convertSingleton(singletonName);
             }
             else
-        if (code == CODE_FUNCTION || code == CODE_CLASS)
+        if (code == PythonBinaryStreamCommon::CODE_FUNCTION || code == PythonBinaryStreamCommon::CODE_CLASS)
             {
             int64_t fileId;
             int32_t lineNo;
@@ -370,7 +316,7 @@ void PythonBinaryStreamToImplval::read(IBinaryStream& stream)
             //if we are a class, we need to convert our list of base class instances back to
             //valid free variable access chains
             ImmutableTreeVector<ImmutableTreeVector<std::string> > dottedBaseClassIds;
-            if (code == CODE_CLASS)
+            if (code == PythonBinaryStreamCommon::CODE_CLASS)
                 {
                 map<int64_t, std::string> chainsInReverse;
                 for (auto kv: chains)
@@ -386,7 +332,7 @@ void PythonBinaryStreamToImplval::read(IBinaryStream& stream)
 
                     lassert(chainsInReverse.find(baseId) != chainsInReverse.end());
 
-                    dottedBaseClassIds = dottedBaseClassIds + splitOnDot<string>(chainsInReverse[baseId]);
+                    dottedBaseClassIds = dottedBaseClassIds + PythonBinaryStreamCommon::splitOnDot<string>(chainsInReverse[baseId]);
                     }
                 }
 
@@ -461,7 +407,7 @@ void PythonBinaryStreamToImplval::read(IBinaryStream& stream)
                             );
                     }
 
-            createFuncExpr = rebindChains(createFuncExpr, chains);
+            createFuncExpr = PythonBinaryStreamCommon::rebindChains(createFuncExpr, chains);
 
             bool allDefined= true;
             for (auto kv: chains)
@@ -491,7 +437,7 @@ void PythonBinaryStreamToImplval::read(IBinaryStream& stream)
                 }
             }
             else
-        if (code == CODE_CLASS_INSTANCE)
+        if (code == PythonBinaryStreamCommon::CODE_CLASS_INSTANCE)
             {
             int64_t idOfClass;
             stream >> idOfClass;
@@ -504,7 +450,7 @@ void PythonBinaryStreamToImplval::read(IBinaryStream& stream)
 
             ImplValContainer classIVC = mValues[idOfClass];
 
-            if (isUnconvertibleValueTuple(classIVC))
+            if (PythonBinaryStreamCommon::isUnconvertibleValueTuple(classIVC))
                 mValues[objectId] = classIVC;
             else
                 {
@@ -521,11 +467,11 @@ void PythonBinaryStreamToImplval::read(IBinaryStream& stream)
 
                 ImplValContainer symbolCreateInstance = ImplValContainerUtilities::createSymbol(Symbol("CreateInstance"));
 
-                mValues[objectId] = *simulateApply(classIVC, symbolCreateInstance, classArgs);
+                mValues[objectId] = *PythonBinaryStreamCommon::simulateApply(classIVC, symbolCreateInstance, classArgs);
                 }
             }
             else
-        if (code == CODE_INSTANCE_METHOD)
+        if (code == PythonBinaryStreamCommon::CODE_INSTANCE_METHOD)
             {
             int64_t instanceId;
             std::string methodName;
@@ -534,14 +480,14 @@ void PythonBinaryStreamToImplval::read(IBinaryStream& stream)
 
             assertHasObject(instanceId);
 
-            mValues[objectId] = *simulateApply(
+            mValues[objectId] = *PythonBinaryStreamCommon::simulateApply(
                 mValues[instanceId], 
                 ImplValContainerUtilities::createSymbol(Symbol::Member()),
                 ImplValContainerUtilities::createSymbol(Symbol(methodName))
                 );
             }
             else
-        if (code == CODE_UNCONVERTIBLE)
+        if (code == PythonBinaryStreamCommon::CODE_UNCONVERTIBLE)
             {
             uint8_t hasModulePath;
             stream >> hasModulePath;
@@ -569,7 +515,7 @@ void PythonBinaryStreamToImplval::read(IBinaryStream& stream)
                 );
             }
             else
-        if (code == CODE_PY_ABORT_EXCEPTION)
+        if (code == PythonBinaryStreamCommon::CODE_PY_ABORT_EXCEPTION)
             {
             std::string exceptionTypeName;
             int64_t argsId;
@@ -712,33 +658,11 @@ void PythonBinaryStreamToImplval::tryToConvertPendingObject(int64_t objectId)
             );
 
     for (int64_t id: reachableObjects)
-        mValues[id] = *simulateApply(
+        mValues[id] = *PythonBinaryStreamCommon::simulateApply(
             value, 
             ImplValContainerUtilities::createSymbol(Symbol::Member()),
             ImplValContainerUtilities::createSymbol(Symbol(recursiveNames[id]))
             );
-    }
-
-Nullable<ImplValContainer> PythonBinaryStreamToImplval::simulateApply(ImmutableTreeVector<ImplValContainer> applyArgs)
-    {
-    const static int DEFAULT_FUNCTION_STAGE_1_SIMULATION_STEPS = 100;
-
-    FunctionStage1::Simulation simulation(
-        DEFAULT_FUNCTION_STAGE_1_SIMULATION_STEPS
-        );
-
-    FunctionStage1::ExpressionEvaluationResult result =
-        simulation.evaluateApply(applyArgs);
-
-    if (result.isResult())
-        return null() << result.getResult().val();
-
-    return null();
-    }
-
-Nullable<ImplValContainer> PythonBinaryStreamToImplval::simulateApply(ImplValContainer a1, ImplValContainer a2, ImplValContainer a3)
-    {
-    return simulateApply(emptyTreeVec() + a1 + a2 + a3);
     }
 
 ImplValContainer PythonBinaryStreamToImplval::evaluateRootLevelCreateObjectExpression(
@@ -900,7 +824,7 @@ Expression PythonBinaryStreamToImplval::replaceUnconvertiblesWithThrows(Expressi
     ImmutableTreeVector<Symbol> varNamesVec;
 
     for (auto& kv: vars)
-        if (isUnconvertibleValueTuple(kv.second))
+        if (PythonBinaryStreamCommon::isUnconvertibleValueTuple(kv.second))
             varNamesVec = varNamesVec + Symbol(kv.first);
 
     if (varNamesVec.size())

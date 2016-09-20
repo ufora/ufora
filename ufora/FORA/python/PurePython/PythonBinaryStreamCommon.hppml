@@ -1,0 +1,294 @@
+/***************************************************************************
+    Copyright 2016 Ufora Inc.
+
+    Licensed under the Apache License, Version 2.0 (the "License");
+    you may not use this file except in compliance with the License.
+    You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+    Unless required by applicable law or agreed to in writing, software
+    distributed under the License is distributed on an "AS IS" BASIS,
+    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    See the License for the specific language governing permissions and
+    limitations under the License.
+****************************************************************************/
+
+#pragma once
+
+#include "../../Core/Type.hppml"
+#include "../../Core/ClassMediator.hppml"
+#include "../../Core/ImplValContainer.hppml"
+#include "../../Language/RebindFreeMemberAccesses.hppml"
+#include "../../Language/FunctionStage1Simulation.hppml"
+
+namespace Fora {
+
+class PythonBinaryStreamCommon {
+public:
+    const static uint8_t CODE_NONE=1;
+    const static uint8_t CODE_INT=2;
+    const static uint8_t CODE_LONG=3;
+    const static uint8_t CODE_FLOAT=4;
+    const static uint8_t CODE_BOOL=5;
+    const static uint8_t CODE_STR=6;
+    const static uint8_t CODE_LIST_OF_PRIMITIVES=7;
+    const static uint8_t CODE_TUPLE=8;
+    const static uint8_t CODE_PACKED_HOMOGENOUS_DATA=9;
+    const static uint8_t CODE_LIST=10;
+    const static uint8_t CODE_FILE=11;
+    const static uint8_t CODE_DICT=12;
+    const static uint8_t CODE_REMOTE_PY_OBJECT=13;
+    const static uint8_t CODE_BUILTIN_EXCEPTION_INSTANCE=14;
+    const static uint8_t CODE_NAMED_SINGLETON=15;
+    const static uint8_t CODE_FUNCTION=16;
+    const static uint8_t CODE_CLASS=17;
+    const static uint8_t CODE_UNCONVERTIBLE=18;
+    const static uint8_t CODE_CLASS_INSTANCE=19;
+    const static uint8_t CODE_INSTANCE_METHOD=20;
+    const static uint8_t CODE_WITH_BLOCK=21;
+    const static uint8_t CODE_PY_ABORT_EXCEPTION=22;
+    const static uint8_t CODE_STACKTRACE_AS_JSON=23;
+
+    static bool isUnconvertibleValueTuple(ImplValContainer val)
+        {
+        if (!val.type().isTuple())
+            return false;
+        if (val.type().getTuple().types().size() != 1)
+            return false;
+        auto name = val.type().getTuple().names()[0];
+
+        static Symbol symbolPyforaUnconvertibleValue("PyforaUnconvertibleValue");
+
+        if (!name || *name != symbolPyforaUnconvertibleValue)
+            return false;
+
+        return true;
+        }
+
+
+    template<class target_type>
+    static ImmutableTreeVector<target_type> splitOnDot(string name)
+        {
+        ImmutableTreeVector<target_type> res;
+
+        long last = 0;
+        long cur = 0;
+        while (cur < name.size())
+            {
+            if (name[cur] == '.')
+                {
+                res = res + target_type(name.substr(last, cur-last));
+                last = cur+1;
+                }
+            cur += 1;
+            }
+        res = res + target_type(name.substr(last, cur-last));
+
+        return res;
+        }
+
+    template<class T>
+    static Expression rebindChains(Expression expr, const map<string, T>& vars)
+        {
+        ImmutableTreeMap<ImmutableTreeVector<Symbol>, Expression> varsToRemap;
+
+        for (auto kv: vars)
+            {
+            std::string varname = kv.first;
+            auto pos = varname.find('.');
+            if (pos != string::npos)
+                varsToRemap = varsToRemap + splitOnDot<Symbol>(varname) + Expression::Variable(Symbol(varname));
+            }
+
+        return Fora::rebindFreeMemberAccessChains(expr, varsToRemap);
+        }
+
+    static Nullable<ImplValContainer> simulateApply(ImmutableTreeVector<ImplValContainer> applyArgs)
+        {
+        const static int DEFAULT_FUNCTION_STAGE_1_SIMULATION_STEPS = 100;
+
+        FunctionStage1::Simulation simulation(
+            DEFAULT_FUNCTION_STAGE_1_SIMULATION_STEPS
+            );
+
+        FunctionStage1::ExpressionEvaluationResult result =
+            simulation.evaluateApply(applyArgs);
+
+        if (result.isResult())
+            return null() << result.getResult().val();
+
+        return null();
+        }
+
+    static Nullable<ImplValContainer> simulateApply(ImplValContainer a1, ImplValContainer a2, ImplValContainer a3)
+        {
+        return simulateApply(emptyTreeVec() + a1 + a2 + a3);
+        }
+
+    static Nullable<ImplValContainer> getMember(ImplValContainer a, std::string s)
+        {
+        return simulateApply(
+            a, 
+            ImplValContainer(CSTValue(Symbol("Member"))), 
+            ImplValContainer(CSTValue(Symbol(s)))
+            );
+        }
+
+    static Nullable<CodeLocation> getObjectDefinitionPoint(const ImplValContainer& val)
+        {
+        if (!val.type().isClass())
+            return null();
+
+        ExpressionLocationMetadata meta;
+
+        @match ClassMediator(*val.type().getClass().classBody().mediator())
+            -| Function(f) ->> {
+                meta = f.locationMetadata();
+                }
+            -| Lambda(e) ->> {
+                meta = e.locationMetadata();
+                }
+            -| Object(o) ->> {
+                meta = o.locationMetadata();
+                }
+            -| Class(o) ->> {
+                meta = o.locationMetadata();
+                }
+            -| _ ->> { return null(); }
+            ;
+
+        Nullable<CodeLocation> loc;
+        if (meta.isWithId())
+            loc = GlobalCodeLocationRegistry::getCodeLocation(meta.getWithId().id());
+
+        return loc;
+        }
+
+    static ImmutableTreeVector<Symbol> getObjectMembers(ImplValContainer& value)
+        {
+        ImmutableTreeVector<Symbol> res;
+
+        if (!value.type().isClass())
+            return res;
+
+        ClassMediator mediator = *value.type().getClass().classBody().mediator();
+
+        if (mediator.isObject())
+            {
+            ObjectDefinitionBody body =
+                mediator.getObject().obj().body();
+
+            while (!body.isEmpty())
+                {
+                if (body.getTerm().termWithMetadata().objectDefinitionTerm().isMember())
+                    res = res + 
+                        body.getTerm().termWithMetadata().objectDefinitionTerm()
+                            .getMember().membername();
+                
+                body = body.getTerm().otherwise();
+                }
+
+            return res;
+            }
+            else
+        if (mediator.isClass())
+            {
+            ClassDefinitionBody body =
+                mediator.getClass().obj().body();
+
+            while (!body.isEmpty())
+                {
+                @match ClassDefinitionTerm(body.getTerm().termWithMetadata().classDefinitionTerm())
+                    -| DataMember(x) ->> { res = res + x; }
+                    -| Static(Member(x)) ->> { res = res + x; }
+                    -| ObjectTerm(Member(x)) ->> { res = res + x; }
+                    -| _ ->> { }
+                    ;
+
+                body = body.getTerm().otherwise();
+                }
+
+            return res;
+            }
+
+        return res;
+        }
+
+    static ImmutableTreeVector<Symbol> getObjectLexicalMembers(ImplValContainer& value)
+        {
+        if (!value.type().isClass())
+            return emptyTreeVec();
+
+        ClassMediator mediator = *value.type().getClass().classBody().mediator();
+
+        ImmutableTreeVector<Symbol> res;
+
+        for (auto nameAndBinding: mediator.lexicalSurroundings().bindings())
+            res = res + nameAndBinding.first;
+
+        return res;
+        }
+
+    static ImmutableTreeMap<Symbol, LexicalBinding> getObjectLexicalBindingMap(ImplValContainer& value)
+        {
+        if (!value.type().isClass())
+            return emptyTreeMap();
+
+        ClassMediator mediator = *value.type().getClass().classBody().mediator();
+
+        return mediator.lexicalSurroundings().bindings();
+        }
+
+    static Nullable<ImplValContainer> getObjectMetadata(const ImplValContainer& value)
+        {
+        if (!value.type().isClass())
+            return null();
+
+        ClassMediator mediator = *value.type().getClass().classBody().mediator();
+
+        Nullable<CSTValue> result;
+
+        @match ClassMediator(mediator)
+            -| Function(_,_,meta) ->> { result = meta; }
+            -| Object(_,_,meta) ->> { result = meta; }
+            -| Class(_,_,meta) ->> { result = meta; }
+            -| Lambda() ->> { result = ImplValContainer(); }
+            -| _ ->> {}
+            ;
+
+        if (result)
+            return null() << ImplValContainer(result->getReference());
+
+        return null();
+        }
+
+    static Nullable<std::string> getObjectDefinitionSourceTextFromMetadata(ImplValContainer value)
+        {
+        auto nMeta = PythonBinaryStreamCommon::getObjectMetadata(value);
+        if (!nMeta)
+            return null();
+
+        if (nMeta->type().isTuple())
+            for (long k = 0; k < nMeta->type().getTuple().types().size(); k++)
+                if (nMeta->type().getTuple().names()[k] == Nullable<Symbol>(Symbol("classMetadata")))
+                    {
+                    nMeta = *nMeta->tupleGetItem(k);
+                    break;
+                    }
+
+        for (long k = 0; k < nMeta->type().getTuple().types().size(); k++)
+            if (nMeta->type().getTuple().names()[k] == Nullable<Symbol>(Symbol("sourceText")))
+                {
+                auto val = getObjectMetadata(*nMeta->tupleGetItem(k));
+                if (!val || !val->type().isString())
+                    return null();
+                return null() << val->cast<String>().stdString();
+                }
+
+        return null();
+        }
+
+    };
+
+}

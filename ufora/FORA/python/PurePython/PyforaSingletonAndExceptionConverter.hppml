@@ -19,6 +19,7 @@
 #include "../../../core/PolymorphicSharedPtr.hpp"
 #include "../../../core/containers/ImmutableTreeMap.hppml"
 #include "../../Core/ImplValContainerUtilities.hppml"
+#include "../../Core/ClassMediator.hppml"
 #include "../../Language/FunctionStage1Simulation.hppml"
 
 class ImplValContainer;
@@ -55,9 +56,35 @@ public:
                 ImplValContainerUtilities::createSymbol(Symbol("Member")) + 
                 ImplValContainerUtilities::createSymbol(Symbol("PyException"))
             );
+
+        mPyAbortExceptionClass = *simulateApply(
+            emptyTreeVec() + 
+                mPyforaBuiltins + 
+                ImplValContainerUtilities::createSymbol(Symbol("Member")) + 
+                ImplValContainerUtilities::createSymbol(Symbol("PyAbortException"))
+            );
+
+        mPyExceptionClassName = *getClassName(
+            *simulateApply(
+                emptyTreeVec() + 
+                    mPyExceptionClass + 
+                    ImplValContainerUtilities::createSymbol(Symbol("CreateInstance")) + 
+                    ImplValContainer() +  
+                    ImplValContainer()
+                )
+            );
+        mPyAbortExceptionClassName = *getClassName(
+            *simulateApply(
+                emptyTreeVec() + 
+                    mPyAbortExceptionClass + 
+                    ImplValContainerUtilities::createSymbol(Symbol("CreateInstance")) + 
+                    ImplValContainer() +  
+                    ImplValContainer()
+                )
+            );
         }
 
-    Nullable<ImplValContainer> instantiateException(std::string name, ImplValContainer args)
+    Nullable<ImplValContainer> instantiateException(const std::string& name, const ImplValContainer& args)
         {
         auto nTypeInstance = convertSingleton(name);
 
@@ -72,7 +99,7 @@ public:
                 );
         }
 
-    Nullable<ImplValContainer> convertSingleton(std::string name)
+    Nullable<ImplValContainer> convertSingleton(const std::string& name)
         {
         auto it = mNamesToInstances.find(name);
 
@@ -81,8 +108,53 @@ public:
 
         return null();
         }
+
+    Nullable<std::string> convertInstanceToSingletonName(const ImplValContainer& value)
+        {
+        auto it = mHashesToNames.find(value.hash());
+        if (it != mHashesToNames.end())
+            return null() << it->second;
+        return null();
+        }
+
+    Nullable<std::string> convertExceptionInstance(const ImplValContainer& value, ImplValContainer& outExceptionArgs, bool& outIsPyAbort)
+        {
+        auto name = getClassName(value);
+
+        if (!name)
+            return null();
+
+        if (*name == mPyExceptionClassName || *name == mPyAbortExceptionClassName)
+            {
+            outIsPyAbort = *name == mPyAbortExceptionClassName;
+
+            auto typeInstance = getObjectLexicalMember(value, "@class");
+            lassert(typeInstance);
+
+            auto typeInstanceName = convertInstanceToSingletonName(*typeInstance);
+            lassert(typeInstanceName);
+
+            outExceptionArgs = *getObjectLexicalMember(value, "@args");
+
+            return typeInstanceName;
+            }
+        return null();
+        }
+
     
 private:
+    static Nullable<std::string> getClassName(const ImplValContainer& inValue)
+        {
+        @match Type(inValue.type())
+            -| Class(_, classBody) ->> {
+                return null() << classBody.mediator()->name();
+                }
+            -| _ ->> {
+                }
+
+        return null();
+        }
+
     Nullable<ImplValContainer> simulateApply(ImmutableTreeVector<ImplValContainer> applyArgs)
         {
         const static int32_t DEFAULT_FUNCTION_STAGE_1_SIMULATION_STEPS = 100;
@@ -100,9 +172,27 @@ private:
         return null();
         }
 
+    Nullable<ImplValContainer> getObjectLexicalMember(const ImplValContainer& obj, std::string name)
+        {
+        Nullable<pair<ImplValContainer, Nullable<Symbol> > > member =
+                ImplValContainerUtilities::objectGetMember(obj, Symbol(name));
+
+        if (member && !member->second)
+            return null() << member->first;
+
+        return null();
+        }
+
+
     ImplValContainer mPyforaBuiltins;
 
     ImplValContainer mPyExceptionClass;
+
+    ImplValContainer mPyAbortExceptionClass;
+
+    std::string mPyExceptionClassName;
+
+    std::string mPyAbortExceptionClassName;
 
     map<std::string, ImplValContainer> mNamesToInstances;
 
