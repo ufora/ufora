@@ -277,7 +277,8 @@ class MessageProcessor(object):
 
             obj = None
             if incomingJsonMessage["messageType"] != "ServerFlushObjectIdsBelow":
-                obj = self.extractObjectDefinition(incomingJsonMessage['objectDefinition'])
+                obj = self.extractObjectDefinition(incomingJsonMessage['objectDefinition'],
+                                                   incomingJsonMessage.get("objectId_"))
 
             return self.messageTypeHandlers[incomingJsonMessage["messageType"]](incomingJsonMessage,
                                                                                 obj)
@@ -320,6 +321,10 @@ class MessageProcessor(object):
             }]
 
     def extractObjectDefinition(self, objDefJson, objectId=None):
+        logging.error("Object definition: %s. ObjectId: %s.\nActive objects: %s",
+                      objDefJson,
+                      objectId,
+                      self.active_objects)
         if 'objectId_' in objDefJson or 'objectDefinition_' in objDefJson:
             return self.convertObjectArgs(objDefJson)
 
@@ -336,7 +341,8 @@ class MessageProcessor(object):
 
         try:
             objectCls = AllObjectClassesToExpose.classMap[objType]
-            result = objectCls(objectId or uuid.uuid4().hex,
+            assert objectId is not None
+            result = objectCls(objectId if objectId is not None else uuid.uuid4().hex,
                                self.cumulus_gateway,
                                self.cache_loader,
                                objectArgs)

@@ -36,7 +36,7 @@ classMap = {
     #"ComputedValueVectorFromComputedValue": ComputedValue.ComputedValueVectorFromComputedValue,
     #"ComputedValueVectorSlice": ComputedValue.ComputedValueVectorSlice,
     #"PersistentCacheIndex": PersistentCacheIndex.PersistentCacheIndex,
-    #"PyforaObjectConverter": PyforaObjectConverter.PyforaObjectConverter,
+    "PyforaObjectConverter": PyforaObjectConverter.PyforaObjectConverter,
     #"PyforaComputedValue": PyforaComputedValue.PyforaComputedValue,
     "ViewOfEntireCumulusSystem": ViewOfEntireCumulusSystem.ViewOfEntireCumulusSystem,
     #"WriteToS3Task": WriteToS3Task.WriteToS3Task,

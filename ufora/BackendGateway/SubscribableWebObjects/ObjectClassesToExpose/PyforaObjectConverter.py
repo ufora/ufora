@@ -17,34 +17,39 @@ import time
 import traceback
 
 import ufora.BackendGateway.SubscribableWebObjects.Exceptions as Exceptions
-import ufora.BackendGateway.ComputedGraph.ComputedGraph as ComputedGraph
-import ufora.BackendGateway.ComputedValue.ComputedValueGateway as ComputedValueGateway
+from ufora.BackendGateway.SubscribableWebObjects.SubscribableObject \
+    import SubscribableObject, ExposedFunction
+
 import ufora.FORA.python.ModuleDirectoryStructure as ModuleDirectoryStructure
 
-#global variables to hold the state of the converter. This is OK because
-#the PyforaObjectConverter is a singleton
-objectIdToIvc_ = {}
-converter_ = [None]
-objectRegistry_ = [None]
 
-class PyforaObjectConverter(ComputedGraph.Location):
-    @ComputedGraph.ExposedFunction(expandArgs=True)
+
+class PyforaObjectConverter(SubscribableObject):
+    def __init__(self, id, cumulus_gateway, cache_loader, _):
+        super(PyforaObjectConverter, self).__init__(id, cumulus_gateway, cache_loader)
+        self.objectIdToIvc_ = {}
+        self.converter_ = [None]
+        self.objectRegistry_ = [None]
+
+
+    @ExposedFunction(expandArgs=True)
     def initialize(self, purePythonMDSAsJson):
         """Initialize the converter assuming a set of pyfora builtins"""
         try:
             import pyfora.ObjectRegistry as ObjectRegistry
             import ufora.FORA.python.PurePython.Converter as Converter
-            import ufora.FORA.python.PurePython.PyforaSingletonAndExceptionConverter as PyforaSingletonAndExceptionConverter
+            import ufora.FORA.python.PurePython.PyforaSingletonAndExceptionConverter \
+                as PyforaSingletonAndExceptionConverter
             import ufora.native.FORA as ForaNative
             import ufora.FORA.python.ModuleImporter as ModuleImporter
 
 
             logging.info("Initializing the PyforaObjectConverter")
 
-            objectRegistry_[0] = ObjectRegistry.ObjectRegistry()
+            self.objectRegistry_[0] = ObjectRegistry.ObjectRegistry()
 
             if purePythonMDSAsJson is None:
-                converter_[0] = Converter.Converter()
+                self.converter_[0] = Converter.Converter()
             else:
                 purePythonModuleImplval = ModuleImporter.importModuleFromMDS(
                     ModuleDirectoryStructure.ModuleDirectoryStructure.fromJson(purePythonMDSAsJson),
@@ -85,39 +90,43 @@ class PyforaObjectConverter(ComputedGraph.Location):
 
                 foraBuiltinsImplVal = ModuleImporter.builtinModuleImplVal()
 
-                converter_[0] = Converter.Converter(
+                self.converter_[0] = Converter.Converter(
                     nativeListConverter=nativeListConverter,
                     nativeTupleConverter=nativeTupleConverter,
                     nativeDictConverter=nativeDictConverter,
                     nativeConstantConverter=nativeConstantConverter,
                     singletonAndExceptionConverter=singletonAndExceptionConverter,
-                    vdmOverride=ComputedValueGateway.getGateway().vdm,
+                    vdmOverride=self.cache_loader.vdm,
                     purePythonModuleImplVal=purePythonModuleImplval,
                     foraBuiltinsImplVal=foraBuiltinsImplVal
                     )
         except:
-            logging.critical("Failed to initialize the PyforaObjectConverter: %s", traceback.format_exc())
+            logging.critical("Failed to initialize the PyforaObjectConverter: %s",
+                             traceback.format_exc())
             raise
 
-    @ComputedGraph.Function
+
     def hasObjectId(self, objectId):
-        return objectId in objectIdToIvc_
+        return objectId in self.objectIdToIvc_
 
-    @ComputedGraph.Function
+
     def getIvcFromObjectId(self, objectId):
-        return objectIdToIvc_[objectId]
+        return self.objectIdToIvc_[objectId]
 
-    @ComputedGraph.Function
+
     def unwrapPyforaDictToDictOfAssignedVars(self, dictIVC):
-        """Take a Pyfora dictionary, and return a dict {string->IVC}. Returns None if not possible."""
-        return converter_[0].unwrapPyforaDictToDictOfAssignedVars(dictIVC)
+        """Take a Pyfora dictionary, and return a dict {string->IVC}.
+           Returns None if not possible."""
+        return self.converter_[0].unwrapPyforaDictToDictOfAssignedVars(dictIVC)
 
-    @ComputedGraph.Function
+
     def unwrapPyforaTupleToTuple(self, tupleIVC):
-        """Take a Pyfora tuple, and return a tuple {IVC}. Returns None if not possible."""
-        return converter_[0].unwrapPyforaTupleToTuple(tupleIVC)
+        """Take a Pyfora tuple, and return a tuple {IVC}.
+           Returns None if not possible."""
+        return self.converter_[0].unwrapPyforaTupleToTuple(tupleIVC)
 
-    @ComputedGraph.ExposedFunction(expandArgs=True)
+
+    @ExposedFunction(expandArgs=True)
     def convert(self, objectId, objectIdToObjectDefinition):
         import pyfora.TypeDescription as TypeDescription
         import pyfora.Exceptions as PyforaExceptions
@@ -128,7 +137,7 @@ class PyforaObjectConverter(ComputedGraph.Location):
 
         t0 = time.time()
 
-        objectRegistry_[0].objectIdToObjectDefinition.update({
+        self.objectRegistry_[0].objectIdToObjectDefinition.update({
             int(k): TypeDescription.deserialize(v)
             for k, v in objectIdToObjectDefinition.iteritems()
             })
@@ -137,7 +146,7 @@ class PyforaObjectConverter(ComputedGraph.Location):
         t0 = time.time()
 
         try:
-            converter_[0].convert(objectId, objectRegistry_[0], onConverted)
+            self.converter_[0].convert(objectId, self.objectRegistry_[0], onConverted)
         except Exception as e:
             logging.error("Converter raised an exception: %s", traceback.format_exc())
             raise Exceptions.InternalError("Unable to convert objectId %s" % objectId)
@@ -152,11 +161,11 @@ class PyforaObjectConverter(ComputedGraph.Location):
         if isinstance(result[0], Exception):
             raise Exceptions.SubscribableWebObjectsException(result[0].message)
 
-        objectIdToIvc_[objectId] = result[0]
+        self.objectIdToIvc_[objectId] = result[0]
         return {'objectId': objectId}
 
-    @ComputedGraph.Function
+
     def transformPyforaImplval(self, result, transformer, vectorContentsExtractor):
-        return converter_[0].transformPyforaImplval(result, transformer, vectorContentsExtractor)
-
-
+        return self.converter_[0].transformPyforaImplval(result,
+                                                         transformer,
+                                                         vectorContentsExtractor)
