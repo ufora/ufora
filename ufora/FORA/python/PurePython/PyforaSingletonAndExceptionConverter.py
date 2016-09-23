@@ -68,7 +68,8 @@ class PyforaSingletonAndExceptionConverter:
 
         for pyName, pyforaName in self.pythonNameToPyforaName.iteritems():
             try:
-                instance = FORA.ForaValue.FORAValue(pyforaBuiltinsModule).__getattr__(pyforaName).implVal_
+                instance = pyforaBuiltinsModule.getObjectMember(pyforaName)
+                assert instance is not None
             except:
                 logging.error(
                     "Initializing PyforaSingletonAndExceptionConverter failed:"+

@@ -30,7 +30,6 @@ import pyfora.PyObjectWalker as PyObjectWalker
 import pyfora.PythonObjectRehydrator as PythonObjectRehydrator
 
 
-
 class PythonBinaryStreamToImplvalTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
