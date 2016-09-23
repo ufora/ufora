@@ -242,6 +242,7 @@ class InMemoryCumulusSimulation(object):
         self.objectStore = objectStore
         if self.objectStore is None:
             s3 = s3Service()
+
             if isinstance(s3, InMemoryS3Interface.InMemoryS3Interface):
                 objectStoreBucket = "object_store_bucket"
                 s3.setKeyValue(objectStoreBucket, 'dummyKey', 'dummyValue')
@@ -605,7 +606,13 @@ class InMemoryCumulusSimulation(object):
         return self.submitComputationOnClient(0, expressionText, **freeVariables)
 
     def submitComputationOnClient(self, clientIndex, expressionText, **freeVariables):
-        if isinstance(expressionText, CumulusNative.ComputationDefinition):
+        if isinstance(expressionText, ForaNative.ImplValContainer):
+            computationDefinition = CumulusNative.ComputationDefinition.Root(
+                CumulusNative.ImmutableTreeVectorOfComputationDefinitionTerm(
+                    [CumulusNative.ComputationDefinitionTerm.Value(x, None) for x in expressionText.getTuple()]
+                    )
+                )
+        elif isinstance(expressionText, CumulusNative.ComputationDefinition):
             computationDefinition = expressionText
         else:
             varNames = list(freeVariables.keys())

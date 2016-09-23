@@ -23,6 +23,8 @@ import ufora.FORA.python.PurePython.Converter as Converter
 import ufora.FORA.python.PurePython.PyforaToJsonTransformer as PyforaToJsonTransformer
 import ufora.FORA.python.PurePython.PythonBinaryStreamToImplval as PythonBinaryStreamToImplval
 import ufora.FORA.python.PurePython.PythonBinaryStreamFromImplval as PythonBinaryStreamFromImplval
+import ufora.distributed.S3.InMemoryS3Interface as InMemoryS3Interface
+import ufora.cumulus.test.InMemoryCumulusSimulation as InMemoryCumulusSimulation
 import ufora.FORA.python.Evaluator.Evaluator as Evaluator
 import pyfora.BinaryObjectRegistry as BinaryObjectRegistry
 import pyfora.PureImplementationMappings as PureImplementationMappings
@@ -204,10 +206,14 @@ class PythonBinaryStreamToImplvalTest(unittest.TestCase):
 
         implVals = [streamReader.getObjectById(i) for i in ids]
 
-        result = Evaluator.evaluator().evaluate(
-            implVals[0],
-            ForaNative.makeSymbol("Call"),
-            *implVals[1:]
+        result = InMemoryCumulusSimulation.computeUsingSeveralWorkers(
+            ForaNative.ImplValContainer(
+                (implVals[0],
+                ForaNative.makeSymbol("Call")) + 
+                tuple(implVals[1:])
+                ),
+            InMemoryS3Interface.InMemoryS3InterfaceFactory(),
+            1
             )
 
         self.assertTrue(result.isResult(), result)
