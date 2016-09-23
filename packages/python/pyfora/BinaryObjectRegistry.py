@@ -175,17 +175,6 @@ class BinaryObjectRegistry(object):
                 self._builder.addInt32(len(val))
                 for v in val:
                     write(v)
-            elif isinstance(val, list):
-                self._builder.addByte(CODE_LIST)
-                self._builder.addInt32(len(val))
-                for v in val:
-                    write(v)
-            elif isinstance(val, dict):
-                self._builder.addByte(CODE_DICT)
-                self._builder.addInt32(len(val))
-                for k,v in val.iteritems():
-                    write(k)
-                    write(v)
             else:
                 assert False, "unknown primitive in dtype: " + str(val)
 

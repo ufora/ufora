@@ -193,6 +193,27 @@ class PyforaComputedValue(ComputedValue.ComputedValue):
         else:
             return None
 
+def isOfSimpleType(implVal):
+    """Is this type simple enough that when we encode a value in a numpy array using a dtype,
+    we'll get back an object of the correct type?"""
+    typename = str(implVal.type)
+
+    if typename.startswith("purePython.PyInt.<instance>"):
+        return True
+    if typename.startswith("purePython.PyFloat.<instance>"):
+        return True
+    if typename.startswith("purePython.PyBool.<instance>"):
+        return True
+    if typename.startswith("purePython.PyNone.<instance>"):
+        return True
+    if typename.startswith("purePython.PyTuple.<instance>"):
+        for elt in implVal.getObjectMember("@m").getTuple():
+            if not isOfSimpleType(elt):
+                return False
+        return True
+    return False
+
+
 class PyforaResultAsJson(ComputedGraph.Location):
     #the value to extract
     computedValue = object
@@ -240,11 +261,14 @@ class PyforaResultAsJson(ComputedGraph.Location):
 
                     #see if it's simple enough to transmit as numpy data
                     if len(vectorIVC.getVectorElementsJOR()) == 1 and len(vectorIVC) > 1:
-                        res = vdm.extractVectorContentsAsNumpyArray(vectorIVC, 0, len(vectorIVC))
+                        firstElement = vdm.extractVectorItem(vectorIVC, 0)
 
-                        if res is not None:
-                            assert len(res) == len(vectorIVC)
-                            return {'contentsAsNumpyArray': res}
+                        if isOfSimpleType(firstElement):
+                            res = vdm.extractVectorContentsAsNumpyArray(vectorIVC, 0, len(vectorIVC))
+
+                            if res is not None:
+                                assert len(res) == len(vectorIVC)
+                                return {'contentsAsNumpyArray': res}
 
                     #see if we can extract the data as a regular pythonlist
                     res = vdm.extractVectorContentsAsPythonArray(vectorIVC, 0, len(vectorIVC)) 
@@ -277,7 +301,10 @@ class PyforaResultAsJson(ComputedGraph.Location):
                                 "Shouldn't be possible to download data as numpy, and then not get the first value"
                                 )
 
-                        res = {'contentsAsNumpyArray': res}
+                        if isOfSimpleType(firstElement):
+                            res = {'contentsAsNumpyArray': res}
+                        else:
+                            res = None
                     else:
                         if not vecSlice.vdmThinksIsLoaded():
                             #there's a race condition where the data could be loaded between now and

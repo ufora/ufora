@@ -33,7 +33,7 @@ def isValidPrimitiveDtypeElement(elt):
     return elt in ('<f8', '<i8', '|b1')
 
 def dtypeToPrimitive(dtype):
-    #map dtype for primitives and packed-tuples-of-primitives to a valid dtype constructor
+    #map dtype for primitives and packed-tuples-of-primitives to a python primitive
     descr = dtype.descr
 
     if len(descr) == 1 and descr[0][0] == '' and isValidPrimitiveDtypeElement(descr[0][1]):
@@ -51,13 +51,23 @@ def dtypeToPrimitive(dtype):
             prim = dtypeToPrimitive(elt[1])
         if prim is None:
             return None
-        res.append( (elt[0], prim) )
+        res.append( prim )
 
-    return res
+    return tuple(res)
+
+def primitiveToDtypeArg(primitive):
+    if primitive is None:
+        return primitive
+    if isinstance(primitive, str):
+        return primitive
+    return [("", primitiveToDtypeArg(p)) for p in primitive]
 
 def primitiveToDtype(primitive):
+    primitive = primitiveToDtypeArg(primitive)
+
     if primitive is None:
         return None
+
     return numpy.dtype(primitive)
 
 def fromDict(value_dict):

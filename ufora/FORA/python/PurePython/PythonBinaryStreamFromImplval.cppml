@@ -57,6 +57,26 @@ void PythonBinaryStreamFromImplval::writeTerminator(OBinaryStream& stream)
     stream << (int64_t)-1;
     }
 
+
+void writeDtypeToTypeInstance(OBinaryStream& stream, PythonBinaryStreamCommon::DtypePrimitive prim)
+    {
+    @match PythonBinaryStreamCommon::DtypePrimitive(prim)
+        -| Int(i) ->> {
+            stream << PythonBinaryStreamCommon::CODE_INT;
+            stream << i;
+            }
+        -| Str(s) ->> {
+            stream << PythonBinaryStreamCommon::CODE_STR;
+            stream << s;
+            }
+        -| Tuple(t) ->> {
+            stream << PythonBinaryStreamCommon::CODE_TUPLE;
+            stream << (int32_t)t.size();
+            for (auto e: t)
+                writeDtypeToTypeInstance(stream, e);
+            }
+    }
+
 int64_t PythonBinaryStreamFromImplval::write(OBinaryStream& stream, ImplValContainer value)
     {
     auto hash = value.hash();
@@ -273,7 +293,92 @@ int64_t PythonBinaryStreamFromImplval::write(OBinaryStream& stream, ImplValConta
 
         if (vec.jor().size() == 1 && vec.jor()[0].type() && vec.jor()[0].type()->isDirectlySerializable())
             {
+            ImplValContainer firstLoadedValue;
+
+            bool allLoaded = vec.visitAnyLoadedValues(
+                &*mVDM, [&](ForaValueArray* array, IntegerSequence subsequence) {
+                    //its OK to copy this value out without using a deepcopier because its
+                    //directly serializable (meaning it has no pointers in it)
+                    firstLoadedValue = (*array)[subsequence.offsetForIndex(0)];
+                    },
+                IntegerSequence(1)
+                );
+
+            lassert(allLoaded);
+
             //this is homogenous data that we can just pack directly into tuples of floats, ints, etc.
+            //check that this type is either the primitive type or a nested tuple of primitives
+            typedef PythonBinaryStreamCommon::DtypePrimitive DtypePrimitive;
+
+            boost::function<Nullable<DtypePrimitive> (ImplValContainer)> convert = [&](ImplValContainer arg) -> Nullable<DtypePrimitive> {
+                auto prim = mConstantConverter->unwrapToPrimitive(arg);
+                if (prim)
+                    {
+                    if (prim->type() == Type::Float(64))
+                        return null() << DtypePrimitive::Str("<f8");
+                    if (prim->type() == Type::Integer(64, true))
+                        return null() << DtypePrimitive::Str("<i8");
+                    if (prim->type() == Type::Integer(1, false))
+                        return null() << DtypePrimitive::Str("|b1");
+                    }
+
+                auto tup = mTupleConverter->invertTuple(arg);
+                if (tup)
+                    {
+                    ImmutableTreeVector<DtypePrimitive> prims;
+                    for (auto elt: *tup)
+                        {
+                        auto res = convert(elt);
+                        if (!res)
+                            return null();
+                        prims = prims + *res;
+                        }
+
+                    return null() << DtypePrimitive::Tuple(prims);
+                    }
+                return null();
+                };
+
+            Nullable<DtypePrimitive> prim = convert(firstLoadedValue);
+
+            if (prim)
+                {
+                stream << objId;
+                stream << PythonBinaryStreamCommon::CODE_PACKED_HOMOGENOUS_DATA;
+                writeDtypeToTypeInstance(stream, *prim);
+
+                int64_t finalDataSize = vec.size() * firstLoadedValue.type().size();
+
+                //2gb. This is not a good way to do this. We need to ensure ahead of time that data
+                //moving across the boundary is appropriately sized.
+                lassert(finalDataSize < 2000000000);
+                
+                stream << (int32_t)finalDataSize;
+
+                bool allLoaded = vec.visitAnyLoadedValues(
+                    &*mVDM, [&](ForaValueArray* array, IntegerSequence subsequence) {
+                        if (array->isHomogenousPodArray() && subsequence.stride() == 1)
+                            {
+                            stream.write(
+                                firstLoadedValue.type().size() * subsequence.size(), 
+                                array->offsetFor(subsequence.offsetForIndex(0))
+                                );
+                            }
+                        else
+                            {
+                            int64_t sz = firstLoadedValue.type().size();
+
+                            for (long k = 0; k < subsequence.size();k++)
+                                stream.write(sz, array->offsetFor(subsequence.offsetForIndex(k)));
+                            }
+                        },
+                    IntegerSequence(vec.size())
+                    );
+
+                lassert(allLoaded);
+
+                return objId;
+                }
             }
 
         std::vector<int64_t> objectIds;

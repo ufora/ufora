@@ -18,6 +18,10 @@ import pyfora.Exceptions as Exceptions
 import numpy.random.mtrand as mtrand
 import time
 
+class APackedClass:
+    def __init__(self,x,y):
+        self.x = x
+        self.y = y
 
 class BuiltinTestCases(object):
     def test_range_builtin_simple(self):
@@ -627,9 +631,36 @@ class BuiltinTestCases(object):
 
     def test_range_perf(self):
         ct = 1000
-        while ct < 5000000:
+        while ct < 1000000:
             t0 = time.time()
             x = self.evaluateWithExecutor(range, ct)
             print (time.time() - t0), ct, ct / (time.time() - t0), " per second."
 
             ct = ct * 2
+
+    def test_range_perf_floats(self):
+        ct = 1000
+        while ct < 1000000:
+            t0 = time.time()
+            x = self.evaluateWithExecutor(lambda ct: [float(x) for x in range(ct)], ct)
+            print (time.time() - t0), ct, ct / (time.time() - t0), " per second."
+
+            ct = ct * 2
+
+    def test_range_perf_tuples(self):
+        ct = 1000
+        while ct < 1000000:
+            t0 = time.time()
+            x = self.evaluateWithExecutor(lambda ct: [(int(x), float(x)) for x in range(ct)], ct)
+            print (time.time() - t0), ct, ct / (time.time() - t0), " per second."
+
+            ct = ct * 2
+
+    def test_packed_class_instances_correct(self):
+        ct = 1000
+
+        x = self.evaluateWithExecutor(lambda ct: [APackedClass(int(x), float(x)) for x in range(ct)], ct)
+        assert isinstance(x[0], APackedClass)
+
+        x = self.evaluateWithExecutor(lambda ct: [(int(x), float(x)) for x in range(ct)], ct)
+        assert isinstance(x[0], tuple)
