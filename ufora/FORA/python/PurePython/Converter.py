@@ -94,6 +94,9 @@ class Converter(object):
 
         self.convertedStronglyConnectedComponents = set()
 
+    def teardown(self):
+        self.nativeConverterAdaptor.teardown()
+
     @staticmethod
     def computeBuiltinMemberMapping(purePythonModuleImplVal, foraBuiltinsImplVal):
         builtinMemberMapping = {}

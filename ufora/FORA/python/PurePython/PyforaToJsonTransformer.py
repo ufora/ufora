@@ -55,4 +55,5 @@ class ExtractVectorContents:
 
         return res
 
-
+    def teardown(self):
+        self.vdm = None

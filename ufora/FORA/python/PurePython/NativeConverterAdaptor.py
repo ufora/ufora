@@ -86,6 +86,9 @@ class NativeConverterAdaptor(object):
             builtinMemberMapping
             )
 
+    def teardown(self):
+        self.vdm_ = None
+
     def createList(self, listOfConvertedValues):
         return self.nativeListConverter.createList(
             listOfConvertedValues,

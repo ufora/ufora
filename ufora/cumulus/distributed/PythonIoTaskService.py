@@ -331,10 +331,12 @@ class PythonIoTaskService(object):
 
         assert self.vdm_ is not None
 
+        transformer = PyforaToJsonTransformer.ExtractVectorContents(self.vdm_)
+
         root_id, needs_loading = converter.transformPyforaImplval(
             request.asOutOfProcessPythonCall.toCall,
             stream,
-            PyforaToJsonTransformer.ExtractVectorContents(self.vdm_)
+            transformer
             )
 
         assert not needs_loading, "can't handle this yet"
@@ -352,6 +354,9 @@ class PythonIoTaskService(object):
                 result
                 )
             )
+
+        transformer.teardown()
+        converter.teardown()
 
     def handleListPersistedObjects(self, request):
         while True:
