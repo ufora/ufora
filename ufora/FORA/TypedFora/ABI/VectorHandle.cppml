@@ -1081,33 +1081,31 @@ pair<PageletTreePtr, ForaValueArray*> VectorHandle::collapsePageletTreeAndUnpage
 		}
 	}
 
-bool VectorHandle::visitAnyLoadedValues(
-		VectorDataManager* inVDM,
-		boost::function2<void, ForaValueArray*, IntegerSequence> visitor,
+bool VectorHandle::visitAnyVectorHandleComponents(
+		boost::function2<bool, Fora::BigVectorId, IntegerSequence> pagedDataVisitor,
+		boost::function2<bool, ForaValueArray*, IntegerSequence> pageletAndUnpagedValuesVisitor,
 		IntegerSequence subsequence
 		)
 	{
 	if (!size())
-		return false;
+		return true;
 
 	IntegerSequence pagedValueSequence(pagedValueCount());
 	IntegerSequence pageletTreeValueSequence(pageletTreeValueCount(), pagedValueCount());
 	IntegerSequence unpagedValueSequence(unpagedValueCount(), pagedAndPageletTreeValueCount());
 
-	bool visitedAll = true;
+	bool allVisitorsReturnedTrue = true;
 
 	auto visitPaged = [&]() {
 		if (subsequence.intersect(pagedValueSequence).size())
 			{
-			if (!inVDM->visitAnyLoadedDataForVector(
+			if (!pagedDataVisitor(
 					pagedValuesIdentity(),
-					subsequence.intersect(pagedValueSequence),
-					visitor
+					subsequence.intersect(pagedValueSequence)
 					))
-				visitedAll = false;
+				allVisitorsReturnedTrue = false;
 			}
 		};
-
 
 	auto visitPagelet = [&]() {
 		if (subsequence.intersect(pageletTreeValueSequence).size())
@@ -1123,7 +1121,8 @@ bool VectorHandle::visitAnyLoadedValues(
 					IntegerSequence seq = subsequence.offset(-offset - pagedValueCount()).intersect(IntegerSequence(range));
 
 					if (seq.size())
-						visitor(pagelet->getValues(), seq);
+						if (!pageletAndUnpagedValuesVisitor(pagelet->getValues(), seq))
+							allVisitorsReturnedTrue = false;
 					},
 				subsequence.stride() < 0
 				);
@@ -1133,10 +1132,11 @@ bool VectorHandle::visitAnyLoadedValues(
 	auto visitUnpaged = [&]() {
 		if (subsequence.intersect(unpagedValueSequence).size())
 			{
-			visitor(
-				unpagedValues(),
-				subsequence.intersect(unpagedValueSequence).offset(-pagedAndPageletTreeValueCount())
-				);
+			if (!pageletAndUnpagedValuesVisitor(
+					unpagedValues(),
+					subsequence.intersect(unpagedValueSequence).offset(-pagedAndPageletTreeValueCount())
+					))
+				allVisitorsReturnedTrue = false;
 			}
 		};
 
@@ -1153,7 +1153,31 @@ bool VectorHandle::visitAnyLoadedValues(
 		visitPaged();
 		}
 
-	return visitedAll;
+	return allVisitorsReturnedTrue;
+	}
+
+bool VectorHandle::visitAnyLoadedValues(
+		VectorDataManager* inVDM,
+		boost::function2<void, ForaValueArray*, IntegerSequence> visitor,
+		IntegerSequence subsequence
+		)
+	{
+	return visitAnyVectorHandleComponents(
+		[&](Fora::BigVectorId bigvecIdentity, IntegerSequence sequence) {
+			if (!inVDM->visitAnyLoadedDataForVector(
+					bigvecIdentity,
+					sequence,
+					visitor
+					))
+				return false;
+			return true;
+			},
+		[&](ForaValueArray* array, IntegerSequence seq) {
+			visitor(array, seq);
+			return true;
+			},
+		subsequence
+		);
 	}
 
 VectorHandle::LoadCheckResult VectorHandle::attemptToLoadValues(

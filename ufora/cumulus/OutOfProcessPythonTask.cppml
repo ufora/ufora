@@ -18,6 +18,7 @@
 #include "../FORA/Core/ValueDeepcopier.hppml"
 #include "../FORA/python/PurePython/PythonBinaryStreamToImplval.hppml"
 #include "../FORA/python/PurePython/PythonBinaryStreamFromImplval.hppml"
+#include "../FORA/TypedFora/ABI/FindAllReachableVectorPages.hppml"
 
 namespace Cumulus {
 
@@ -26,6 +27,11 @@ OutOfProcessPythonTask::OutOfProcessPythonTask(PolymorphicSharedPtr<VectorDataMa
         mContext(new Fora::Interpreter::ExecutionContext(inVDM)),
         mStreamFailureEncountered(false)
     {
+    }
+
+OutOfProcessPythonTask::~OutOfProcessPythonTask()
+    {
+    clear();
     }
 
 void OutOfProcessPythonTask::setTaskObject(const ImplValContainer& inIVC)
@@ -50,10 +56,26 @@ const Nullable<ImplValContainer>& OutOfProcessPythonTask::getTaskResult() const
     return mTaskResult;
     }
 
+//walk the object graph and find any pages we'll need in order to actually serialize
+//all the data. If this set is empty, then all pages are mapped
+ImmutableTreeSet<Fora::PageId> OutOfProcessPythonTask::walkAndMapAllInputPages()
+    {
+    TypedFora::Abi::FindAllReachableVectorPages reachable(mVDM, mContext->getMemoryPool());
+
+    reachable.visit(*mInputTaskObject);
+
+    return reachable.getMissedPages();
+    }
+
 void OutOfProcessPythonTask::clear()
     {
     mTaskResult = null();
     mInputTaskObject = null();
+    
+    if (mContext)
+        mContext->teardown();
+    
+    mContext.reset(new Fora::Interpreter::ExecutionContext(mVDM));
     }
 
 void OutOfProcessPythonTask::send(
@@ -64,19 +86,21 @@ void OutOfProcessPythonTask::send(
     {
     lassert(mInputTaskObject);
 
-    PolymorphicSharedPtr<Fora::PythonBinaryStreamFromImplval> converter(
-        new Fora::PythonBinaryStreamFromImplval(
-            mVDM,
-            pyforaBuiltins,
-            pythonNameToPyforaName
-            )
-        );
+        {
+        PolymorphicSharedPtr<Fora::PythonBinaryStreamFromImplval> converter(
+            new Fora::PythonBinaryStreamFromImplval(
+                mVDM,
+                pyforaBuiltins,
+                pythonNameToPyforaName
+                )
+            );
 
-    int64_t id = converter->write(outStream, *mInputTaskObject);
-    converter->writeTerminator(outStream);
-    outStream.write(sizeof(id), &id);
+        int64_t id = converter->write(outStream, *mInputTaskObject);
+        converter->writeTerminator(outStream);
+        outStream.write(sizeof(id), &id);
+        }
     
-    mInputTaskObject = null();
+    clear();
     }
 
 void OutOfProcessPythonTask::read(
@@ -87,6 +111,8 @@ void OutOfProcessPythonTask::read(
                 boost::function<Fora::PythonParseResult (std::string)> pyAstParser
                 )
     {
+    clear();
+
     PolymorphicSharedPtr<Fora::PythonBinaryStreamToImplval> converter(
         new Fora::PythonBinaryStreamToImplval(
             mVDM,

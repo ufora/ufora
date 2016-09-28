@@ -23,7 +23,7 @@
 
 namespace Cumulus {
 
-Nullable<ExternalIoTask> convertImplValContainerToExternalIoTask(
+ExternalIoTaskMapping convertImplValContainerToExternalIoTask(
 									const ImplValContainer& taskRepresentation,
 									bool hasWriteToken,
 									PolymorphicSharedPtr<VectorDataManager> inVDM
@@ -33,39 +33,39 @@ Nullable<ExternalIoTask> convertImplValContainerToExternalIoTask(
 		ImplValContainerUtilities::extractAsAlternative(taskRepresentation);
 
 	if (!alt)
-		return null();
+		return ExternalIoTaskMapping::None();
 
 	if (alt->first != Symbol("ExternalIoTask"))
-		return null();
+		return ExternalIoTaskMapping::None();
 
 	if (!alt->second.type().isTuple() || *alt->second.tupleGetSize() != 1)
-		return null();
+		return ExternalIoTaskMapping::None();
 
 	Nullable<pair<Symbol, ImplValContainer> > alt2 =
 		ImplValContainerUtilities::extractAsAlternative(*alt->second.tupleGetItem(0));
 
 	if (!alt2 || !alt2->second.tupleGetSize())
-		return null();
+		return ExternalIoTaskMapping::None();
 
 	if (alt2->first == Symbol("DoNothing") && *alt2->second.tupleGetSize() == 0)
-		return null() << ExternalIoTask::DoNothing();
+		return ExternalIoTaskMapping::ValidTask(ExternalIoTask::DoNothing());
 
 	if (alt2->first == Symbol("EnsureBigvecIsPersisted") && *alt2->second.tupleGetSize() == 1)
 		{
 		ImplValContainer possiblyAVector = *alt2->second.tupleGetItem(0);
 
 		if (!possiblyAVector.type().isVector())
-			return null();
+			return ExternalIoTaskMapping::None();
 
 		TypedFora::Abi::VectorRecord vec = possiblyAVector.cast<TypedFora::Abi::VectorRecord>();
 
 		if (vec.unpagedAndPageletTreeValueCount())
-			return null();
+			return ExternalIoTaskMapping::None();
 
 		if (vec.pagedValuesIdentity().size() == 0)
-			return null();
+			return ExternalIoTaskMapping::None();
 
-		return null() << ExternalIoTask::SaveBigvecToPersistentCache(vec.pagedValuesIdentity().guid());
+		return ExternalIoTaskMapping::ValidTask(ExternalIoTask::SaveBigvecToPersistentCache(vec.pagedValuesIdentity().guid()));
 		}
 
 	if (alt2->first == Symbol("DistributedDataOperation") && *alt2->second.tupleGetSize() == 1)
@@ -73,9 +73,9 @@ Nullable<ExternalIoTask> convertImplValContainerToExternalIoTask(
 		Nullable<DistributedDataOperation> op = DistributedDataOperation::fromImplValContainer(*alt2->second.tupleGetItem(0));
 
 		if (!op)
-			return null();
+			return ExternalIoTaskMapping::None();
 
-		return null() << ExternalIoTask::DistributedDataOp(*op);
+		return ExternalIoTaskMapping::ValidTask(ExternalIoTask::DistributedDataOp(*op));
 		}
 
 	if (alt2->first == Symbol("OutOfProcessPythonCall") && *alt2->second.tupleGetSize() == 1)
@@ -85,48 +85,56 @@ Nullable<ExternalIoTask> convertImplValContainerToExternalIoTask(
 		task.reset(new OutOfProcessPythonTask(inVDM));
 		task->setTaskObject(*alt2->second.tupleGetItem(0));
 
+		auto pages = task->walkAndMapAllInputPages();
+
+		//if we need pages to be loaded, we're going to register the dependency and try
+		//loading again.
+		if (pages.size())
+			return ExternalIoTaskMapping::PageLoad(pages);
+
 		hash_type taskID = inVDM->newVectorHash();
 		inVDM->getOutOfProcessPythonTasks()->addTask(taskID, task);
 
-		return null() << ExternalIoTask::OutOfProcessPythonCall(taskID);
+		return ExternalIoTaskMapping::ValidTask(ExternalIoTask::OutOfProcessPythonCall(taskID));
 		}
 
 	if (alt2->first == Symbol("ReadHttp") && *alt2->second.tupleGetSize() == 1)
 		{
 		if (!hasWriteToken)
-			return null();
+			return ExternalIoTaskMapping::None();
 
 		Nullable<std::string> url = ImplValContainerUtilities::extractString(*alt2->second.tupleGetItem(0));
 
 		if (!url)
-			return null();
+			return ExternalIoTaskMapping::None();
 
-		return null() << ExternalIoTask::LoadExternalDatasetAsForaValue(
+		return ExternalIoTaskMapping::ValidTask(ExternalIoTask::LoadExternalDatasetAsForaValue(
 			ExternalDatasetDescriptor::HttpRequestDataset(HttpRequest(*url, ""))
-			);
+			));
 		}
 
 	if (alt2->first == Symbol("RequestOdbc") && *alt2->second.tupleGetSize() == 3)
 		{
 		if (!hasWriteToken)
-			return null();
+			return ExternalIoTaskMapping::None();
 
 		Nullable<std::string> connectionString =
 			ImplValContainerUtilities::extractString(*alt2->second.tupleGetItem(0));
 		if (!connectionString)
-			return null();
+			return ExternalIoTaskMapping::None();
 
 		Nullable<ImmutableTreeVector<std::string> > queries =
 			ImplValContainerUtilities::extractListOfStringsFromTuple(*alt2->second.tupleGetItem(1));
 		if (!queries)
-			return null();
+			return ExternalIoTaskMapping::None();
 
 		Nullable<std::string> uniqueIdString =
 			ImplValContainerUtilities::extractString(*alt2->second.tupleGetItem(2));
 		if (!uniqueIdString)
-			return null();
+			return ExternalIoTaskMapping::None();
 
-		return null() << ExternalIoTask::LoadExternalDatasetAsForaValue(
+		return ExternalIoTaskMapping::ValidTask(
+			ExternalIoTask::LoadExternalDatasetAsForaValue(
 				ExternalDatasetDescriptor::OdbcRequestDataset(
 					OdbcRequest(
 						*connectionString,
@@ -134,40 +142,47 @@ Nullable<ExternalIoTask> convertImplValContainerToExternalIoTask(
 						*uniqueIdString
 						)
 					)
-				);
+				)
+			);
 		}
 
 	if (alt2->first == Symbol("ReadTestDataset") && *alt2->second.tupleGetSize() == 0)
 		{
 		if (!hasWriteToken)
-			return null();
+			return ExternalIoTaskMapping::None();
 
-		return null() << ExternalIoTask::LoadExternalDatasetAsForaValue(
-			ExternalDatasetDescriptor::TestDataset()
+		return ExternalIoTaskMapping::ValidTask(
+			ExternalIoTask::LoadExternalDatasetAsForaValue(
+				ExternalDatasetDescriptor::TestDataset()
+				)
 			);
 		}
 
 	if (alt2->first == Symbol("ReadExceptionThrowingDataset") && *alt2->second.tupleGetSize() == 0)
 		{
 		if (!hasWriteToken)
-			return null();
+			return ExternalIoTaskMapping::None();
 
-		return null() << ExternalIoTask::LoadExternalDatasetAsForaValue(
-			ExternalDatasetDescriptor::ExceptionThrowingDataset()
+		return ExternalIoTaskMapping::ValidTask(
+			ExternalIoTask::LoadExternalDatasetAsForaValue(
+				ExternalDatasetDescriptor::ExceptionThrowingDataset()
+				)
 			);
 		}
 
 	if (alt2->first == Symbol("ReadFailureInducingDataset") && *alt2->second.tupleGetSize() == 0)
 		{
 		if (!hasWriteToken)
-			return null();
+			return ExternalIoTaskMapping::None();
 
-		return null() << ExternalIoTask::LoadExternalDatasetAsForaValue(
-			ExternalDatasetDescriptor::FailureInducingDataset()
+		return ExternalIoTaskMapping::ValidTask(
+			ExternalIoTask::LoadExternalDatasetAsForaValue(
+				ExternalDatasetDescriptor::FailureInducingDataset()
+				)
 			);
 		}
 
-	return null();
+	return ExternalIoTaskMapping::None();
 	}
 
 }

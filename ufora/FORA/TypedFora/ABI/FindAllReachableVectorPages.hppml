@@ -1,5 +1,5 @@
 /***************************************************************************
-   Copyright 2015 Ufora Inc.
+   Copyright 2016 Ufora Inc.
 
    Licensed under the Apache License, Version 2.0 (the "License");
    you may not use this file except in compliance with the License.
@@ -17,37 +17,49 @@
 
 #include "../../Core/Type.hppml"
 #include "ForaValueArray.hppml"
-#include "../../TypedFora/ABI/VectorHandle.hpp"
-#include "../../TypedFora/ABI/ScatteredForaValues.hppml"
+#include "VectorHandle.hpp"
+#include "ScatteredForaValues.hppml"
+#include "BigVectorLayouts.hppml"
+#include "../../VectorDataManager/VectorPage.hppml"
 #include "../../VectorDataManager/PageletTree.hppml"
 #include "../../Vector/MutableVectorRecord.hppml"
 #include "../../TypedFora/ABI/VectorRecord.hpp"
+#include "../../Judgment/JudgmentUtil.hppml"
 
-//scans through objects and shows them to 'visitor'
-//visitor should expose
-//	bool visit(const Type& inType, void* data)
-//which returns whether it wants to visit the pieces
-template<class visitor_function>
-class ImplValVisitor {
+namespace TypedFora {
+namespace Abi {
+
+class FindAllReachableVectorPages {
 public:
-	visitor_function& mVisitor;
-
-	typedef TypedFora::Abi::VectorRecord VectorRecord;
-	typedef TypedFora::Abi::VectorHandle VectorHandle;
-	typedef TypedFora::Abi::ForaValueArray ForaValueArray;
-	typedef TypedFora::Abi::PackedForaValues PackedForaValues;
-
-	set<VectorHandle*> mVectorHandles;
-
-	set<ForaValueArray*> mValueArrays;
-
-	set<hash_type> mMutableVectorRecordsVisitedByHash;
-
-	ImplValVisitor(visitor_function& inVisitor) :
-			mVisitor(inVisitor)
+	FindAllReachableVectorPages(
+					PolymorphicSharedPtr<VectorDataManager> inVDM,
+					MemoryPool* owningPool) :
+			mVDM(inVDM),
+			mOwningMemoryPool(owningPool)
 		{
 		}
 
+	void visit(const ImplValContainer& value)
+		{
+		visit(value.type(), (uint8_t*)value.data(), 1, 0);
+		}
+
+	const std::set<Fora::PageId>& getReachablePages() const
+		{
+		return mReachablePages;
+		}
+
+	const std::set<Fora::PageId>& getLoadedPages() const
+		{
+		return mLoadedPages;
+		}
+
+	const std::set<Fora::PageId>& getMissedPages() const
+		{
+		return mMissedPages;
+		}
+
+private:
 	void visit(
 			const Type& inType,
 			uint8_t* source,
@@ -59,7 +71,7 @@ public:
 		if (stride == 0)
 			stride = sz;
 
-		if (!mVisitor.visit(inType, source, count, stride))
+		if (!typeMightHaveVectorsWithin(inType))
 			return;
 
 		@match Type(inType)
@@ -138,7 +150,7 @@ public:
 			uword_t nudge
 			)
 		{
-		if (!mVisitor.visitScattered(inType, source, count, nudge))
+		if (!typeMightHaveVectorsWithin(inType))
 			return;
 
 		@match Type(inType)
@@ -212,26 +224,128 @@ public:
 
 	void visitVector(const VectorRecord& in)
 		{
-		if (in.dataPtr() && mVisitor.visitVectorRecord(in))
-			{
-			if (in.unpagedValues())
-				visitForaValueArray(in.unpagedValues());
-			}
+		if (!in.size())
+			return;
+		
+		if (in.pagedValueCount() == 0 && !jorMightHaveVectorsWithin(in.jor()))
+			return;
+
+		if (mVisitedVectors.find(in) != mVisitedVectors.end())
+			return;
+
+		mVisitedVectors.insert(in);
+
+		in.dataPtr()->visitAnyVectorHandleComponents(
+			[&](Fora::BigVectorId identity, IntegerSequence subseq) {
+				this->visitBigvec(identity, subseq);
+				return true;
+				},
+			[&](ForaValueArray* array, IntegerSequence subseq) {
+				this->visitForaValueArray(array, subseq);
+				return true;
+				},
+			in.indicesWithinHandle()
+			);
 		}
 
-	void visitForaValueArray(ForaValueArray* array)
+	void visitBigvec(Fora::BigVectorId identity, IntegerSequence subseq)
 		{
-		if (mValueArrays.find(array) == mValueArrays.end())
-			{
-			mValueArrays.insert(array);
+		BigVectorPageLayout layout = mVDM->getBigVectorLayouts()->getLayoutForId(identity);
 
-			array->visitScatteredValues([&](TypedFora::Abi::ScatteredForaValues values) {
-				this->visitScatteredValues(values);
-				});
+		ImmutableTreeVector<VectorDataIDSlice> slices =
+									layout.slicesCoveringRange(subseq);
+
+		auto visitSlice = [&](long k) {
+			auto pageId = slices[k].vector().getPage();
+
+			if (mMissedPages.find(pageId) != mMissedPages.end())
+				return;
+
+			boost::shared_ptr<VectorPage> page = mVDM->getPageFor(pageId);
+
+			mReachablePages.insert(pageId);
+
+			if (!page)
+				{
+				mMissedPages.insert(pageId);
+				return;
+				}
+
+			if (!mOwningMemoryPool->isVectorPageMapped(page))
+				{
+				boost::shared_ptr<Ufora::threading::Trigger> mappingWantsToUnmapTrigger;
+
+				mappingWantsToUnmapTrigger = page->attemptToMapTo();
+
+				if (!mappingWantsToUnmapTrigger)
+					{
+					mMissedPages.insert(pageId);
+					return;
+					}
+
+				mOwningMemoryPool->vectorPageMapped(
+					page,
+					mappingWantsToUnmapTrigger
+					);
+				}
+
+			mLoadedPages.insert(pageId);
+
+			page->getPageletTree()->visitTree(
+				[&](boost::shared_ptr<Fora::Pagelet> pagelet, IntegerRange range, long offset) {
+					visitForaValueArray(
+						pagelet->getValues(),
+						slices[k].slice().offset(-offset).intersect(
+							IntegerSequence(range)
+							)
+						);
+					},
+				slices[k].slice().containingRange(),
+				0,
+				subseq.stride() < 0
+				);
+			};
+
+		if (subseq.stride() > 0)
+			{
+			for (long k = 0; k < slices.size();k++)
+				visitSlice(k);
 			}
+		else
+			{
+			for (long k = ((long)slices.size())-1; k >= 0; k--)
+				visitSlice(k);
+			}
+
 		}
 
-	void visitScatteredValues(TypedFora::Abi::ScatteredForaValues values)
+	void visitForaValueArray(ForaValueArray* array, IntegerSequence subseq)
+		{
+		if (subseq.stride() == 1)
+			array->visitScatteredValues(
+				subseq.containingRange().low(), 
+				subseq.containingRange().high(),
+				[&](ScatteredForaValues values) {
+					this->visitScatteredValues(values);
+					}
+				);
+		else
+			for (long k = 0; k < subseq.size(); k++)
+				{
+				int64_t ix = subseq.offsetForIndex(k);
+
+				visitPackedForaValues(
+					PackedForaValues(
+						array->jovFor(ix),
+						array->offsetFor(ix),
+						0,
+						0
+						)
+					);
+				}
+		}
+
+	void visitScatteredValues(ScatteredForaValues values)
 		{
 		this->visitScattered(
 			*values.elementJOV().type(),
@@ -277,7 +391,7 @@ public:
 			const MutableVectorRecord& vec
 			)
 		{
-		if (!mVisitor.visitMutableVectorRecord(vec))
+		if (!jovMightHaveVectorsWithin(vec.elementJOV()))
 			return;
 
 		if (mMutableVectorRecordsVisitedByHash.find(vec.hash())
@@ -290,5 +404,23 @@ public:
 			mMutableVectorRecordsVisitedByHash.insert(vec.hash());
 			}
 		}
+
+	PolymorphicSharedPtr<VectorDataManager> mVDM;
+
+	MemoryPool* mOwningMemoryPool;
+
+	std::set<hash_type> mMutableVectorRecordsVisitedByHash;
+
+	std::set<Fora::PageId> mReachablePages;
+
+	std::set<Fora::PageId> mLoadedPages;
+
+	std::set<Fora::PageId> mMissedPages;
+
+	std::set<VectorRecord> mVisitedVectors;
+
 };
 
+
+}
+}

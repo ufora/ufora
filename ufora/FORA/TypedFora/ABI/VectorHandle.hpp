@@ -245,6 +245,12 @@ public:
 			IntegerSequence subsequence
 			);
 
+	bool visitAnyVectorHandleComponents(
+			boost::function2<bool, Fora::BigVectorId, IntegerSequence> pagedDataVisitor,
+			boost::function2<bool, ForaValueArray*, IntegerSequence> pageletAndUnpagedValuesVisitor,
+			IntegerSequence subsequence
+			);
+
 	//collapse 'valuesUsed' of the values in our pagelet and unpaged values array into a new array
 	//we may re-use portions of our own PageletTree. If the ForaValueArray is populated, it will
 	//be owned by the new context. if 'allowUnpagedValuesInResult' is false, then the FVA* will be

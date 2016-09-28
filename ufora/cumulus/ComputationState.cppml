@@ -259,6 +259,8 @@ public:
             			)
             		);
 
+            	mRefcountKeepaliveExecutionContext.getVDM().getOutOfProcessPythonTasks()->getTask(taskId)->clear();
+
             	mRefcountKeepaliveExecutionContext.getVDM().getOutOfProcessPythonTasks()->completeTask(taskId);
 	            }
 			-| _ ->> {
@@ -1319,29 +1321,28 @@ public:
 						ioComputations,
 						ioGuid
 						);
-			if (isExternalIoTaskCacheLoad_(cacheLoadRequest))
-				return stateChangeToExternalIoTaskCacheLoad_(
+			
+			if (stateChangeToExternalIoTaskCacheLoad_(
 						cacheLoadRequest,
 						ioComputations,
 						ioGuid
-						);
-				else
+						))
+				return true;
+
 			if (isValidCacheLoad_(cacheLoadRequest))
 				return stateChangeToRegularCacheLoad_(
 						cacheLoadRequest,
 						ioComputations,
 						ioGuid
 						);
-			else
-				{
-				mOutsideEcValues.setPendingCacheResult(
-					Fora::Interpreter::ComputationResult::Exception(
-						ImplValContainer(CSTValue("Badly formed cache argument")),
-						ImplValContainer()
-						)
-					);
-				return true;
-				}
+			
+			mOutsideEcValues.setPendingCacheResult(
+				Fora::Interpreter::ComputationResult::Exception(
+					ImplValContainer(CSTValue("Badly formed cache argument")),
+					ImplValContainer()
+					)
+				);
+			return true;
 			}
 		else
 		if (mExecutionContext->isVectorLoad())
@@ -1560,50 +1561,47 @@ public:
 		return false;
 		}
 
-	bool isExternalIoTaskCacheLoad_(ImplValContainer cacheLoadRequest)
-		{
-		if (!cacheLoadRequest.tupleGetSize())
-			return false;
-
-		if (*cacheLoadRequest.tupleGetSize() == 1)
-			return (bool)convertImplValContainerToExternalIoTask(
-				*cacheLoadRequest.tupleGetItem(0),
-				false,
-				mExecutionContext->getVDM().polymorphicSharedPtrFromThis()
-				);
-
-		return false;
-		}
-
 	bool stateChangeToExternalIoTaskCacheLoad_(
 				ImplValContainer cacheLoadRequest,
 				CreatedComputations& computations,
 				hash_type& ioGuid
 				)
 		{
-		ExternalIoTask task;
+		if (!cacheLoadRequest.tupleGetSize())
+			return false;
+
+		ExternalIoTaskMapping task;
 
 		if (*cacheLoadRequest.tupleGetSize() == 1)
-			task = *convertImplValContainerToExternalIoTask(
+			task = convertImplValContainerToExternalIoTask(
 						*cacheLoadRequest.tupleGetItem(0),
 						false,
 						mExecutionContext->getVDM().polymorphicSharedPtrFromThis()
 						);
 		else
-			task = *convertImplValContainerToExternalIoTask(
+			task = convertImplValContainerToExternalIoTask(
 						*cacheLoadRequest.tupleGetItem(1),
 						true,
 						mExecutionContext->getVDM().polymorphicSharedPtrFromThis()
 						);
 
-		ioGuid = ioGuid + computationStateHashIncrement;
-		ExternalIoTaskId taskId = ExternalIoTaskId(ioGuid);
+		@match ExternalIoTaskMapping(task)
+			-| None() ->> {
+				return false;
+				}
+			-| ValidTask(externalTask) ->> {
+				ioGuid = ioGuid + computationStateHashIncrement;
+				ExternalIoTaskId taskId = ExternalIoTaskId(ioGuid);
 
-		mComputationStatus = ComputationStatus::BlockedOnExternalIoTask(taskId);
+				mComputationStatus = ComputationStatus::BlockedOnExternalIoTask(taskId);
 
-		computations.ioTasks() = computations.ioTasks() + taskId + task;
+				computations.ioTasks() = computations.ioTasks() + taskId + externalTask;
+				}
+			-| PageLoad(pages) ->> {
+				mComputationStatus = ComputationStatus::BlockedOnVectorLoad(pages);
+				}
 
-		return false;
+		return true;
 		}
 
 	bool stateChangeToRegularCacheLoad_(

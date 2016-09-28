@@ -221,6 +221,23 @@ class WithRegularPython_test(unittest.TestCase):
 
             self.assertEqual(int(x), sz)
 
+    def test_using_large_list_slices(self):
+        with self.create_executor() as fora:
+            
+            with fora.remotely.downloadAll():
+                l = range(10000000)
+
+                aSlice = l[:10]
+
+                with helpers.python:
+                    x = sum(aSlice)
+
+                aSlice = None
+
+                l = None
+
+            self.assertEqual(x, sum(range(10)))
+
     def test_can_open_files_in_regular_python(self):
         with self.create_executor() as fora:
             with fora.remotely.downloadAll():
