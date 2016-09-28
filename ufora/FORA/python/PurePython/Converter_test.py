@@ -63,7 +63,7 @@ def roundtripConvert(toConvert, vdm, allowUserCodeModuleLevelLookups = False, ve
     binaryObjectRegistry.defineEndOfStream()
 
     registry = ObjectRegistry.ObjectRegistry()
-    BinaryObjectRegistryDeserializer.deserialize(binaryObjectRegistry.str(), registry, lambda x:x)
+    BinaryObjectRegistryDeserializer.deserializeFromString(binaryObjectRegistry.str(), registry, lambda x:x)
 
     t1 = time.time()
 
@@ -94,7 +94,7 @@ def roundtripConvert(toConvert, vdm, allowUserCodeModuleLevelLookups = False, ve
         allowUserCodeModuleLevelLookups=allowUserCodeModuleLevelLookups
         )
 
-    finalResult = rehydrator.convertJsonResultToPythonObject(outputStream.str(), root_id)
+    finalResult = rehydrator.convertEncodedStringToPythonObject(outputStream.str(), root_id)
 
     t5 = time.time()
 
@@ -171,9 +171,9 @@ class ConverterTest(unittest.TestCase):
 
             rehydrator = PythonObjectRehydrator.PythonObjectRehydrator(mappings, allowUserCodeModuleLevelLookups=False)
 
-            convertedInstance = rehydrator.convertJsonResultToPythonObject(stream.str(), root_id)
+            convertedInstance = rehydrator.convertEncodedStringToPythonObject(stream.str(), root_id)
 
-            convertedInstanceModified = rehydrator.convertJsonResultToPythonObject(stream.str().replace("return 100", "return 200"), root_id)
+            convertedInstanceModified = rehydrator.convertEncodedStringToPythonObject(stream.str().replace("return 100", "return 200"), root_id)
 
             if anInstance is ThisIsAFunction:
                 self.assertEqual(anInstance(), 100)

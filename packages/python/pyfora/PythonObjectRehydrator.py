@@ -25,6 +25,7 @@ import pyfora.BinaryObjectRegistryDeserializer as BinaryObjectRegistryDeserializ
 import pyfora
 import cPickle as pickle
 import sys
+import struct
 import os
 import ast
 import traceback
@@ -163,15 +164,29 @@ class PythonObjectRehydrator(object):
                     targetDict[magicVar] = getattr(actualModule, magicVar)
 
 
-    def convertJsonResultToPythonObject(self, binarydata, root_id):
+    def readFileDescriptorToPythonObject(self, fd):
         registry = ObjectRegistry.ObjectRegistry()
 
         def noConversion(*args):
             assert False, "Not implemented yet"
 
-        BinaryObjectRegistryDeserializer.deserialize(binarydata, registry, noConversion)
+        BinaryObjectRegistryDeserializer.deserializeFromFileDescriptor(fd, registry, noConversion)
+
+        root_id = struct.unpack("<q", os.read(fd, 8))[0]
+
+        return self.convertObjectDefinitionsToPythonObject(registry.objectIdToObjectDefinition, root_id)
         
-        definitions = registry.objectIdToObjectDefinition
+    def convertEncodedStringToPythonObject(self, binarydata, root_id):
+        registry = ObjectRegistry.ObjectRegistry()
+
+        def noConversion(*args):
+            assert False, "Not implemented yet"
+
+        BinaryObjectRegistryDeserializer.deserializeFromString(binarydata, registry, noConversion)
+
+        return self.convertObjectDefinitionsToPythonObject(registry.objectIdToObjectDefinition, root_id)
+        
+    def convertObjectDefinitionsToPythonObject(self, definitions, root_id):
         converted = {}
 
         def convert(objectId,retainHomogenousListsAsNumpy=False):

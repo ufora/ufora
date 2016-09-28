@@ -325,38 +325,18 @@ class PythonIoTaskService(object):
                 return message
 
     def handleOutOfProcessPythonCall(self, request):
-        converter = Converter.constructConverter(Converter.canonicalPurePythonModule(), self.vdm_)
-
-        stream = BinaryObjectRegistry.BinaryObjectRegistry()
-
-        assert self.vdm_ is not None
-
-        transformer = PyforaToJsonTransformer.ExtractVectorContents(self.vdm_)
-
-        root_id, needs_loading = converter.transformPyforaImplval(
-            request.asOutOfProcessPythonCall.toCall,
-            stream,
-            transformer
-            )
-
-        assert not needs_loading, "can't handle this yet"
-
         result = PythonIoTasks.outOfProcessPythonCall(
             self.outOfProcessDownloaderPool,
             self.vdm_,
-            root_id,
-            stream.str()
+            self.vdm_.getOutOfProcessPythonTask(request.asOutOfProcessPythonCall.taskId)
             )
 
         self.datasetRequestChannel_.write(
             CumulusNative.PythonIoTaskResponse.OutOfProcessPythonCallResponse(
                 request.guid,
-                result
+                request.asOutOfProcessPythonCall.taskId
                 )
             )
-
-        transformer.teardown()
-        converter.teardown()
 
     def handleListPersistedObjects(self, request):
         while True:

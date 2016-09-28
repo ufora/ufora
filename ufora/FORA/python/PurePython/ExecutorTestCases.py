@@ -124,7 +124,7 @@ class ExecutorTestCases(object):
                 raise MyException(errorMsg)
 
             # to make our a toLocal call throw an expected exception
-            executor.objectRehydrator.convertJsonResultToPythonObject = alwaysThrows
+            executor.objectRehydrator.convertEncodedStringToPythonObject = alwaysThrows
 
             func_proxy = executor.define(f).result()
             res_proxy = func_proxy().result()

@@ -27,8 +27,13 @@ import pyfora.BinaryObjectRegistry as BinaryObjectRegistry
 import ufora.FORA.python.ModuleDirectoryStructure as ModuleDirectoryStructure
 import ufora.FORA.python.PurePython.Converter as Converter
 import ufora.FORA.python.PurePython.PythonBinaryStreamToImplval as PythonBinaryStreamToImplval
+import ufora.FORA.python.PurePython.PythonAstConverter as PythonAstConverter
+import ufora.FORA.python.ModuleImporter as ModuleImporter
+import pyfora.NamedSingletons as NamedSingletons
+import pyfora.PyAbortSingletons as PyAbortSingletons
 
 import pyfora
+import struct
 import cPickle as pickle
 import logging
 import os
@@ -299,16 +304,17 @@ def completeMultipartS3Upload(s3InterfaceFactory,
                                           outputCallback)
 
 class OutOfProcessPythonCallExecutor:
-    def __init__(self, datastream, root_id):
-        self.datastream = datastream
-        self.root_id = root_id
+    def __init__(self):
+        pass
 
-    def __call__(self, data):
+    wantsDirectAccessToInputFileDescriptor = True
+
+    def __call__(self, fd):
         mappings = PureImplementationMappings.PureImplementationMappings()
         mappings.load_pure_modules()
 
         rehydrator = PythonObjectRehydrator.PythonObjectRehydrator(mappings, allowUserCodeModuleLevelLookups=False)
-        convertedInstance = rehydrator.convertJsonResultToPythonObject(self.datastream, self.root_id)
+        convertedInstance = rehydrator.readFileDescriptorToPythonObject(fd)
 
         result = convertedInstance()
 
@@ -323,29 +329,39 @@ class OutOfProcessPythonCallExecutor:
 
         registry.defineEndOfStream()
 
-        return pickle.dumps((objId, registry.str()))
+        return registry.str() + struct.pack("<q", objId)
 
 
-def outOfProcessPythonCall(downloaderPool, vdm, root_id, datastream):
-    writer = OutOfProcessPythonCallExecutor(datastream, root_id)
+def outOfProcessPythonCall(downloaderPool, vdm, taskObject):
+    writer = OutOfProcessPythonCallExecutor()
 
-    result = [None]
-    def outputCallback(response):
-        result[0] = response
+    pythonNameToPyforaName = {}
+
+    pythonNameToPyforaName.update(
+        NamedSingletons.pythonNameToPyforaName
+        )
+    pythonNameToPyforaName.update(
+        PyAbortSingletons.pythonNameToPyforaName
+        )
+
+    def outputCallback(fd, sz):
+        taskObject.readFromFileDescriptor(
+            fd,
+            Converter.canonicalPurePythonModule(),
+            ModuleImporter.builtinModuleImplVal(),
+            pythonNameToPyforaName,
+            PythonAstConverter.parseStringToPythonAst
+            )
 
     def inputCallback(fd):
-        data = ""
-        os.write(fd, common.prependSize(data))
+        taskObject.sendToFileDescriptor(
+            fd, 
+            Converter.canonicalPurePythonModule(),
+            pythonNameToPyforaName
+            )
 
     downloaderPool.getDownloader() \
-            .executeAndCallbackWithString(writer, outputCallback, inputCallback)
-
-    objId, datastream = pickle.loads(result[0])
-
-    converter = PythonBinaryStreamToImplval.constructConverter(Converter.canonicalPurePythonModule(), vdm)
-    converter.read(datastream)
-
-    return converter.getObjectById(objId)
+            .executeAndCallbackWithFileDescriptor(writer, outputCallback, inputCallback)
 
 
 def writeMultipartS3UploadPart(s3InterfaceFactory,

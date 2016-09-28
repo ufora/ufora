@@ -39,8 +39,12 @@ class DoublesString:
         return self.x + self.x
 
 class OutOfProcessDownloaderTestCases:
-    def test_basic(self):
-        pool = OutOfProcessDownloader.OutOfProcessDownloaderPool(1)
+    def test_basic_in(self):
+        pool = OutOfProcessDownloader.OutOfProcessDownloaderPool(1, actuallyRunOutOfProcess=False)
+        pool.teardown()
+
+    def test_basic_out(self):
+        pool = OutOfProcessDownloader.OutOfProcessDownloaderPool(1, actuallyRunOutOfProcess=True)
         pool.teardown()
 
     def test_in_process(self):

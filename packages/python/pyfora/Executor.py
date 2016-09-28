@@ -350,12 +350,12 @@ class Executor(object):
             if 'maxBytesExceeded' in jsonResult:
                 return Exceptions.ResultExceededBytecountThreshold()
             else:
-                return self.objectRehydrator.convertJsonResultToPythonObject(
+                return self.objectRehydrator.convertEncodedStringToPythonObject(
                     base64.b64decode(jsonResult['result']['data']), 
                     jsonResult['result']['root_id']
                     )
 
-        result = self.objectRehydrator.convertJsonResultToPythonObject(
+        result = self.objectRehydrator.convertEncodedStringToPythonObject(
             base64.b64decode(jsonResult['result']['data']), 
             jsonResult['result']['root_id']
             )
@@ -369,7 +369,7 @@ class Executor(object):
             if not isinstance(jsonResult, Exception):
                 if jsonResult['isException']:
                     result = Exceptions.ComputationError(
-                        self.objectRehydrator.convertJsonResultToPythonObject(
+                        self.objectRehydrator.convertEncodedStringToPythonObject(
                             base64.b64decode(jsonResult['result']['data']),
                             jsonResult['result']['root_id']
                             ),
@@ -397,7 +397,7 @@ class Executor(object):
             if not isinstance(jsonResult, Exception):
                 if jsonResult['isException']:
                     result = Exceptions.ComputationError(
-                        self.objectRehydrator.convertJsonResultToPythonObject(
+                        self.objectRehydrator.convertEncodedStringToPythonObject(
                             base64.b64decode(jsonResult['result']['data']),
                             jsonResult['result']['root_id']
                             ),

@@ -52,16 +52,23 @@ public:
 			mBufferBytesUsed(0),
 			mBufPtr(0)
 		{
-		lassert(mAlignment > 0 && mBufferSize % mAlignment == 0);
+		if (mAlignment)
+			{
+			lassert(mAlignment > 0 && mBufferSize % mAlignment == 0);
 
-		mBufferHolder.resize(mAlignment * 2 + mBufferSize);
-		uword_t bufptr = (uword_t)&mBufferHolder[0];
+			mBufferHolder.resize(mAlignment * 2 + mBufferSize);
+			uword_t bufptr = (uword_t)&mBufferHolder[0];
 
-		//make sure that the buffer is aligned to the alignment as well
-		if (bufptr % mAlignment)
-			bufptr += mAlignment - bufptr % mAlignment;
+			//make sure that the buffer is aligned to the alignment as well
+			if (bufptr % mAlignment)
+				bufptr += mAlignment - bufptr % mAlignment;
 
-		mBufPtr = (char*)bufptr;
+			mBufPtr = (char*)bufptr;
+			}
+		else
+			{
+			lassert(mBufferSize == 0);
+			}
 		}
 
 	~OFileDescriptorProtocol()
@@ -106,6 +113,19 @@ public:
 			return;
 
 		mPosition += inByteCount;
+
+		if (mAlignment == 0)
+			{
+			auto written = ::write(mFD, inData, inByteCount);
+
+			if (written == -1 || written == 0)
+				{
+				std::string err = strerror(errno);
+				lassert_dump(false, "failed to write: " << err << ". tried to write " << inByteCount);
+				}
+			
+			return;
+			}
 
 		while (inByteCount)
 			{

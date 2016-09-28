@@ -173,20 +173,41 @@ class OutOfProcessDownloader:
 
         callableSize = common.stringToLong(os.read(self.childReadFD, 4))
         msgCallable = os.read(self.childReadFD, callableSize)
-        inputSize = common.stringToLong(os.read(self.childReadFD, 4))
-        msgInput = os.read(self.childReadFD, inputSize) if inputSize > 0 else None
 
-        t0 = time.time()
-        callableObj = None
-        heartbeatLogger = None
         try:
             callableObj = pickle.loads(msgCallable)
+        except Exception as e:
+            logging.error(
+                "OutOfProcessDownloader failed deserializing the given callable (of size %s): %s",
+                callableSize,
+                traceback.format_exc()
+                )
 
+            isException = True
+            outgoingMessage = pickle.dumps(e)
+            return isException, outgoingMessage
+
+
+        direct = False
+        try:
+            if callableObj.wantsDirectAccessToInputFileDescriptor:
+                direct = True
+        except AttributeError:
+            pass
+
+        if not direct:
+            inputSize = common.stringToLong(os.read(self.childReadFD, 4))
+            msgInput = os.read(self.childReadFD, inputSize) if inputSize > 0 else None
+        else:
+            msgInput = self.childReadFD
+
+        t0 = time.time()
+        heartbeatLogger = None
+        try:
             heartbeatLogger = HeartbeatLogger(str(callableObj))
             heartbeatLogger.start()
 
-            outgoingMessage = callableObj() if msgInput is None else \
-                callableObj(msgInput)
+            outgoingMessage = callableObj() if msgInput is None else callableObj(msgInput)
 
             assert isinstance(outgoingMessage, str), "Callable %s returned %s, not str" % (callableObj, type(outgoingMessage))
 
@@ -271,6 +292,7 @@ class OutOfProcessDownloader:
 
                 os.write(self.parentWriteFD, common.longToString(len(toSend)))
                 os.write(self.parentWriteFD, toSend)
+
                 if inputCallback is None:
                     os.write(self.parentWriteFD, common.longToString(0))
                 else:
@@ -281,16 +303,32 @@ class OutOfProcessDownloader:
                     self.writeQueue.put(toExecute)
                 else:
                     # fire the callback on a separate thread so we can read from
-                    # the pipe while its running and prevernt os.write from
+                    # the pipe while its running and prevent os.write from
                     # hanging.
                     thread = threading.Thread(target=inputCallback, args=(self.parentWriteFD,))
                     thread.start()
 
-                    inputSize = common.stringToLong(os.read(self.childReadFD, 4))
-                    inputData = os.read(self.childReadFD, inputSize)
+                    direct = False
+                    try:
+                        if toExecute.wantsDirectAccessToInputFileDescriptor:
+                            direct = True
+                    except AttributeError:
+                        pass
 
-                    thread.join()
-                    self.writeQueue.put(lambda: toExecute(inputData))
+                    if direct:
+                        def executeFunc():
+                            res = toExecute(self.childReadFD)
+                            thread.join()
+                            return res
+
+                        self.writeQueue.put(executeFunc)
+                    else:
+                        inputSize = common.stringToLong(os.read(self.childReadFD, 4))
+                        inputData = os.read(self.childReadFD, inputSize)
+
+                        thread.join()
+
+                        self.writeQueue.put(lambda: toExecute(inputData))
 
             prefix = os.read(self.parentReadFD, 5)
 

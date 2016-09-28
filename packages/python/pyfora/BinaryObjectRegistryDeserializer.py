@@ -15,29 +15,20 @@
 import pyfora.TypeDescription as TypeDescription
 import pyfora.BinaryObjectRegistry as BinaryObjectRegistry
 import json
+import os
 import struct
 
-class StringDeserializer:
-    def __init__(self, s):
-        self.data = s
-        self.index = 0
-
-    def finished(self):
-        return self.index >= len(self.data)
-
+class Deserializer:
     def readByte(self):
-        res = struct.unpack("<b", self.data[self.index])[0]
-        self.index += 1
+        res = struct.unpack("<b", self.grabBytes(1))[0]
         return res
 
     def readInt32(self):
-        res = struct.unpack("<L", self.data[self.index:self.index+4])[0]
-        self.index += 4
+        res = struct.unpack("<L", self.grabBytes(4))[0]
         return res
 
     def readInt64(self):
-        res = struct.unpack("<q", self.data[self.index:self.index+8])[0]
-        self.index += 8
+        res = struct.unpack("<q", self.grabBytes(8))[0]
         return res
 
     def readInt64s(self):
@@ -45,19 +36,46 @@ class StringDeserializer:
         return [self.readInt64() for _ in xrange(count)]
 
     def readFloat64(self):
-        res = struct.unpack("<d", self.data[self.index:self.index+8])[0]
-        self.index += 8
+        res = struct.unpack("<d", self.grabBytes(8))[0]
         return res
 
     def readString(self):
         length = self.readInt32()
-        res = self.data[self.index:self.index+length]
-        self.index += length
+        res = self.grabBytes(length)
         return res
 
-def deserialize(data, objectVisitor, convertJsonToObject):
+
+class StringDeserializer(Deserializer):
+    def __init__(self, s):
+        self.data = s
+        self.index = 0
+
+    def grabBytes(self, bytecount):
+        res = self.data[self.index:self.index+bytecount]
+        self.index += bytecount
+        return res
+
+class FileDescriptorDeserializer(Deserializer):
+    def __init__(self, fd):
+        self.fd = fd
+
+    def grabBytes(self, bytecount):
+        res = os.read(self.fd, bytecount)
+        assert len(res) == bytecount, "Stream terminated unexpectedly"
+        return res
+
+def deserializeFromFileDescriptor(fd, objectVisitor, convertJsonToObject):
+    stream = FileDescriptorDeserializer(fd)
+
+    return deserializeFromStream(stream, objectVisitor, convertJsonToObject)
+
+
+def deserializeFromString(data, objectVisitor, convertJsonToObject):
     stream = StringDeserializer(data)
 
+    return deserializeFromStream(stream, objectVisitor, convertJsonToObject)
+
+def deserializeFromStream(stream, objectVisitor, convertJsonToObject):
     while True:
         objectId = stream.readInt64()
 

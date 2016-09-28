@@ -49,16 +49,23 @@ public:
 			mBufferBytesConsumed(0),
 			mBufPtr(0)
 		{
-		lassert(mBufferSize % mAlignment == 0);
+		if (mAlignment)
+			{
+			lassert(mBufferSize % mAlignment == 0);
 
-		mBufferHolder.resize(mAlignment * 2 + mBufferSize);
-		uword_t bufptr = (uword_t)&mBufferHolder[0];
+			mBufferHolder.resize(mAlignment * 2 + mBufferSize);
+			uword_t bufptr = (uword_t)&mBufferHolder[0];
 
-		//make sure that the buffer is aligned to the alignment as well
-		if (bufptr % mAlignment)
-			bufptr += mAlignment - bufptr % mAlignment;
+			//make sure that the buffer is aligned to the alignment as well
+			if (bufptr % mAlignment)
+				bufptr += mAlignment - bufptr % mAlignment;
 
-		mBufPtr = (char*)bufptr;
+			mBufPtr = (char*)bufptr;
+			}
+		else
+			{
+			lassert(mBufferSize == 0);
+			}
 		}
 
 	~IFileDescriptorProtocol()
@@ -79,6 +86,9 @@ public:
 		{
 		if (inByteCount == 0)
 			return 0;
+
+		if (mAlignment == 0)
+			return ::read(mFD, inData, inByteCount);
 
 		char* dataTarget = (char*)inData;
 

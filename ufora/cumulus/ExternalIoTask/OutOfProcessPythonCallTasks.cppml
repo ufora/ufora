@@ -15,7 +15,7 @@
 ****************************************************************************/
 #include "OutOfProcessPythonCallTasks.hppml"
 #include "../../FORA/Core/ImplValContainerUtilities.hppml"
-
+#include "../OutOfProcessPythonTasks.hppml"
 
 namespace Cumulus {
 
@@ -43,28 +43,24 @@ void OutOfProcessPythonCallTasks::handleExternalIoTaskCompleted(ExternalIoTaskCo
 void OutOfProcessPythonCallTasks::handlePythonIoTaskResponse(PythonIoTaskResponse completed)
 	{
 	@match PythonIoTaskResponse(completed)
-		-| OutOfProcessPythonCallResponse(guid, result) ->> {
+		-| OutOfProcessPythonCallResponse(guid, taskId) ->> {
 			ExternalIoTaskId task = mPythonTaskToIoTask[guid];
 			mPythonTaskToIoTask.erase(guid);
-
-			pair<hash_type, ImmutableTreeSet<Fora::BigVectorId> > moveGuidAndBigvecs =
-				ImplValContainerUtilities::initiateValueSend(result, &*mVDM);
+			mPythonTaskOutOfProcessPythonTaskId.erase(guid);
 
 			mOnExternalIoTaskCompleted(
 				ExternalIoTaskCompleted(
 					task, 
-					ExternalIoTaskResult::TaskResultAsForaValue(
-						Fora::Interpreter::ComputationResult::Result(
-							result,
-							ImplValContainer()
-							),
-						moveGuidAndBigvecs.second,
-						moveGuidAndBigvecs.first
-						)
+					ExternalIoTaskResult::OutOfProcessPythonTaskFinished(taskId)
 					)
 				);
 			}
 		-| Failure(guid, reasonStr) ->> {
+			mVDM->getOutOfProcessPythonTasks()->completeTask(
+				mPythonTaskOutOfProcessPythonTaskId[guid]
+				);
+			mPythonTaskOutOfProcessPythonTaskId.erase(guid);
+
 			ImplValContainer result = 
 				ImplValContainerUtilities::createTuple(
 					emptyTreeVec() + 
@@ -94,14 +90,15 @@ void OutOfProcessPythonCallTasks::handlePythonIoTaskResponse(PythonIoTaskRespons
 			}
 	}
 
-void OutOfProcessPythonCallTasks::handleNewTask(ExternalIoTaskId taskId, ImplValContainer toCall)
+void OutOfProcessPythonCallTasks::handleNewTask(ExternalIoTaskId taskId, hash_type pythonTaskId)
 	{
 	hash_type guid = mCreateNewHash();
 
 	mBroadcastPythonTask(
-		PythonIoTaskRequest::OutOfProcessPythonCall(guid, toCall)
+		PythonIoTaskRequest::OutOfProcessPythonCall(guid, pythonTaskId)
 		);
 
+	mPythonTaskOutOfProcessPythonTaskId[guid] = pythonTaskId;
 	mPythonTaskToIoTask[guid] = taskId;
 	}
 

@@ -26,6 +26,7 @@
 #include "../../TypedFora/ABI/ImplValVisitor.hppml"
 #include "../../TypedFora/ABI/ContainsNonemptyVectorsVisitor.hppml"
 #include "PythonBinaryStreamCommon.hppml"
+#include "PythonConstantType.hppml"
 
 using namespace TypedFora::Abi;
 
@@ -34,21 +35,44 @@ namespace Fora {
 PythonBinaryStreamFromImplval::PythonBinaryStreamFromImplval(
             PolymorphicSharedPtr<VectorDataManager> inVDM,
             ImplValContainer inPyforaBuiltins,
-            PolymorphicSharedPtr<PythonConstantConverter> inConstantConverter,
-            PolymorphicSharedPtr<PythonListConverter> inPyListConverter,
-            PolymorphicSharedPtr<PythonTupleConverter> inPyTupleConverter,
-            PolymorphicSharedPtr<PythonDictConverter> inPyDictConverter,
-            PolymorphicSharedPtr<PyforaSingletonAndExceptionConverter> inSingletonAndExceptionConverter
+            ImmutableTreeMap<std::string, std::string> pythonSingletonNameToPyforaName
             ) :
         mVDM(inVDM),
         mPyforaBuiltins(inPyforaBuiltins),
-        mConstantConverter(inConstantConverter),
-        mListConverter(inPyListConverter),
-        mTupleConverter(inPyTupleConverter),
-        mDictConverter(inPyDictConverter),
-        mSingletonAndExceptionConverter(inSingletonAndExceptionConverter),
         mNextObjId(0)
     {
+    mConstantConverter.reset(
+        new PythonConstantConverter(
+            emptyTreeMap() + 
+                PythonConstantType::String() + *PythonBinaryStreamCommon::getMember(mPyforaBuiltins, "PyString") + 
+                PythonConstantType::Int() + *PythonBinaryStreamCommon::getMember(mPyforaBuiltins, "PyInt") + 
+                PythonConstantType::Float() + *PythonBinaryStreamCommon::getMember(mPyforaBuiltins, "PyFloat") + 
+                PythonConstantType::None() + *PythonBinaryStreamCommon::getMember(mPyforaBuiltins, "PyNone") + 
+                PythonConstantType::Boolean() + *PythonBinaryStreamCommon::getMember(mPyforaBuiltins, "PyBool")
+            )
+        );
+    mListConverter.reset(
+        new PythonListConverter(
+            *PythonBinaryStreamCommon::getMember(mPyforaBuiltins, "PyList")
+            )
+        );
+    mDictConverter.reset(
+        new PythonDictConverter(
+            *PythonBinaryStreamCommon::getMember(mPyforaBuiltins, "PyDict")
+            )
+        );
+    mTupleConverter.reset(
+        new PythonTupleConverter(
+            *PythonBinaryStreamCommon::getMember(mPyforaBuiltins, "PyTuple")
+            )
+        );
+    mSingletonAndExceptionConverter.reset(
+        new PyforaSingletonAndExceptionConverter(
+            mPyforaBuiltins,
+            pythonSingletonNameToPyforaName
+            )
+        );
+
     mPyforaBoundMethodClass = *PythonBinaryStreamCommon::getMember(mPyforaBuiltins, "PyBoundMethod");
     }
 
@@ -453,7 +477,10 @@ int64_t PythonBinaryStreamFromImplval::write(OBinaryStream& stream, ImplValConta
                             Nullable<Symbol> name = tup.type().getTuple().names()[k];
                             ImplValContainer elt = *tup.tupleGetItem(k);
 
-                            memberIds[name->toString()] = write(stream, elt);
+                            static Symbol uninitializedSymbol("PyforaUninitializedVariable");
+
+                            if (!elt.type().isSymbol() || elt.cast<Symbol>() != uninitializedSymbol)
+                                memberIds[name->toString()] = write(stream, elt);
                             }
 
                         stream << objId;
@@ -527,8 +554,10 @@ void PythonBinaryStreamFromImplval::writeClassOrFunctionMembers(OBinaryStream& s
 
         if (!isDefinitelySelf)
             {
+            static Symbol uninitializedSymbol("PyforaUninitializedVariable");
+                            
             auto member = ImplValContainerUtilities::objectGetMember(value, symbolAndBinding.first);
-            if (member && !member->second)
+            if (member && !member->second && (!member->first.type().isSymbol() || member->first.cast<Symbol>() != uninitializedSymbol))
                 outMemberIds[symbolAndBinding.first.toString()] = write(stream, member->first);
             }
         }

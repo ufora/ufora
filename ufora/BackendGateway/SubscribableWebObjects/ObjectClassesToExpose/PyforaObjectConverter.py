@@ -105,7 +105,7 @@ class PyforaObjectConverter(ComputedGraph.Location):
 
         t0 = time.time()
 
-        BinaryObjectRegistryDeserializer.deserialize(
+        BinaryObjectRegistryDeserializer.deserializeFromString(
             base64.b64decode(serializedBinaryObjectDefinition), 
             objectRegistry_[0],
             convertJsonToObject

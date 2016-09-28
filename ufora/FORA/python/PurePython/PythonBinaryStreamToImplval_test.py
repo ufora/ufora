@@ -183,7 +183,7 @@ class PythonBinaryStreamToImplvalTest(unittest.TestCase):
 
         rehydrator = PythonObjectRehydrator.PythonObjectRehydrator(mappings, allowUserCodeModuleLevelLookups=False)
 
-        return rehydrator.convertJsonResultToPythonObject(data, root_id)
+        return rehydrator.convertEncodedStringToPythonObject(data, root_id)
 
 
     def roundtripExecute(self, pyObject, *args):
@@ -226,5 +226,5 @@ class PythonBinaryStreamToImplvalTest(unittest.TestCase):
 
         rehydrator = PythonObjectRehydrator.PythonObjectRehydrator(mappings, allowUserCodeModuleLevelLookups=False)
 
-        return rehydrator.convertJsonResultToPythonObject(data, root_id)
+        return rehydrator.convertEncodedStringToPythonObject(data, root_id)
 

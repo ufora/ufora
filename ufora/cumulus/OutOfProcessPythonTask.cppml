@@ -1,0 +1,109 @@
+/***************************************************************************
+    Copyright 2016 Ufora Inc.
+
+    Licensed under the Apache License, Version 2.0 (the "License");
+    you may not use this file except in compliance with the License.
+    You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+    Unless required by applicable law or agreed to in writing, software
+    distributed under the License is distributed on an "AS IS" BASIS,
+    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    See the License for the specific language governing permissions and
+    limitations under the License.
+****************************************************************************/
+
+#include "OutOfProcessPythonTask.hppml"
+#include "../FORA/Core/ValueDeepcopier.hppml"
+#include "../FORA/python/PurePython/PythonBinaryStreamToImplval.hppml"
+#include "../FORA/python/PurePython/PythonBinaryStreamFromImplval.hppml"
+
+namespace Cumulus {
+
+OutOfProcessPythonTask::OutOfProcessPythonTask(PolymorphicSharedPtr<VectorDataManager> inVDM) :
+        mVDM(inVDM),
+        mContext(new Fora::Interpreter::ExecutionContext(inVDM)),
+        mStreamFailureEncountered(false)
+    {
+    }
+
+void OutOfProcessPythonTask::setTaskObject(const ImplValContainer& inIVC)
+    {
+    clear();
+
+    ValueDeepcopierState state;
+
+    ValueDeepcopier deepcopier(
+        state,
+        false,
+        mContext->getMemoryPool(),
+        false,
+        false
+        );
+
+    mInputTaskObject = deepcopier.duplicate(inIVC);
+    }
+
+const Nullable<ImplValContainer>& OutOfProcessPythonTask::getTaskResult() const
+    {
+    return mTaskResult;
+    }
+
+void OutOfProcessPythonTask::clear()
+    {
+    mTaskResult = null();
+    mInputTaskObject = null();
+    }
+
+void OutOfProcessPythonTask::send(
+                OBinaryStream& outStream, 
+                ImplValContainer pyforaBuiltins,
+                ImmutableTreeMap<string, string> pythonNameToPyforaName
+                )
+    {
+    lassert(mInputTaskObject);
+
+    PolymorphicSharedPtr<Fora::PythonBinaryStreamFromImplval> converter(
+        new Fora::PythonBinaryStreamFromImplval(
+            mVDM,
+            pyforaBuiltins,
+            pythonNameToPyforaName
+            )
+        );
+
+    int64_t id = converter->write(outStream, *mInputTaskObject);
+    converter->writeTerminator(outStream);
+    outStream.write(sizeof(id), &id);
+    
+    mInputTaskObject = null();
+    }
+
+void OutOfProcessPythonTask::read(
+                IBinaryStream& inStream, 
+                ImplValContainer pyforaBuiltins,
+                ImplValContainer inForaBuiltins,
+                ImmutableTreeMap<string, string> pythonNameToPyforaName,
+                boost::function<Fora::PythonParseResult (std::string)> pyAstParser
+                )
+    {
+    PolymorphicSharedPtr<Fora::PythonBinaryStreamToImplval> converter(
+        new Fora::PythonBinaryStreamToImplval(
+            mVDM,
+            pyforaBuiltins,
+            inForaBuiltins,
+            pythonNameToPyforaName,
+            pyAstParser
+            )
+        );
+
+    converter->read(inStream);
+
+    int64_t id;
+    
+    inStream.read(sizeof(id), &id);
+
+    mTaskResult = converter->getObjectById(id);
+    }
+
+}

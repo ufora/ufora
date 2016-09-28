@@ -1,18 +1,19 @@
 import ufora.native.FORA as ForaNative
-import ufora.FORA.python.PurePython.Converter as Converter
+import pyfora.NamedSingletons as NamedSingletons
+import pyfora.PyAbortSingletons as PyAbortSingletons
 
 def constructConverter(purePythonModuleImplVal, vdm):
-    converter = Converter.constructConverter(purePythonModuleImplVal, vdm)
+    pythonNameToPyforaName = {}
+    
+    pythonNameToPyforaName.update(
+        NamedSingletons.pythonNameToPyforaName
+        )
+    pythonNameToPyforaName.update(
+        PyAbortSingletons.pythonNameToPyforaName
+        )
 
     return ForaNative.PythonBinaryStreamFromImplval(
         vdm,
         purePythonModuleImplVal,
-        converter.nativeConstantConverter,
-        converter.nativeListConverter,
-        converter.nativeTupleConverter,
-        converter.nativeDictConverter,
-        ForaNative.PyforaSingletonAndExceptionConverter(
-            converter.purePythonModuleImplVal,
-            converter.singletonAndExceptionConverter.pythonNameToInstance
-            )
+        pythonNameToPyforaName
         )
