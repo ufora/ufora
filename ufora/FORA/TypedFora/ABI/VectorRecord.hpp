@@ -166,7 +166,7 @@ public:
 						const boost::function0<hash_type>& hashCreatorFun
 						);
 
-	bool visitAnyLoadedValues(
+	bool visitAnyValuesPresentInVdm(
 		VectorDataManager* inVDM,
 		boost::function2<void, ForaValueArray*, IntegerSequence> visitor,
 		IntegerSequence subsequence
