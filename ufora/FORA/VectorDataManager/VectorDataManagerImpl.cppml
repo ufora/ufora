@@ -1139,19 +1139,29 @@ bool VectorDataManagerImpl::visitAnyLoadedDataForVector(
 					boost::function2<void, TypedFora::Abi::ForaValueArray*, IntegerSequence> visitor
 					)
 	{
-	TimedLock lock(mMutex, "VDM");
-
 	TypedFora::Abi::BigVectorPageLayout layout = mBigVectorLayouts->getLayoutForId(identity);
 
 	ImmutableTreeVector<TypedFora::Abi::VectorDataIDSlice> slices =
 								layout.slicesCoveringRange(values);
 
-	for (long k = 0; k < slices.size(); k++)
-		if (!mVectorPages->getVectorPage(slices[k].vector().getPage()))
-			return false;
+	bool allVisitedOK = true;
 
 	auto visitSlice = [&](long k) {
-		boost::shared_ptr<VectorPage> page = mVectorPages->getVectorPage(slices[k].vector().getPage());
+		boost::shared_ptr<VectorPage> page = getPageFor(slices[k].vector().getPage());
+
+		if (!page)
+			{
+			allVisitedOK = false;
+			return;	
+			}
+
+		auto trigger = page->attemptToMapTo();
+
+		while(!trigger)
+			{
+			sleepSeconds(0.001);
+			trigger = page->attemptToMapTo();
+			}
 
 		page->getPageletTree()->visitTree(
 			[&](boost::shared_ptr<Fora::Pagelet> pagelet, IntegerRange range, long offset) {
@@ -1166,6 +1176,9 @@ bool VectorDataManagerImpl::visitAnyLoadedDataForVector(
 			0,
 			values.stride() < 0
 			);
+
+		//we're done - unmap the page
+		page->removeMapping(trigger);
 		};
 
 	if (values.stride() > 0)
@@ -1179,8 +1192,7 @@ bool VectorDataManagerImpl::visitAnyLoadedDataForVector(
 			visitSlice(k);
 		}
 
-
-	return true;
+	return allVisitedOK;
 	}
 
 
