@@ -31,6 +31,7 @@ import ufora.FORA.python.PurePython.PythonAstConverter as PythonAstConverter
 import ufora.FORA.python.ModuleImporter as ModuleImporter
 import pyfora.NamedSingletons as NamedSingletons
 import pyfora.PyAbortSingletons as PyAbortSingletons
+import ufora.util.OutOfProcessDownloader as OutOfProcessDownloader
 
 import pyfora
 import struct
@@ -140,7 +141,7 @@ def persistObject(obj, objectStore, outOfProcessDownloaderPool):
     def inputCallback(fd):
         data = obj.objectData.toString()
         dataLen[0] = len(data)
-        os.write(fd, common.prependSize(data))
+        OutOfProcessDownloader.writeAllToFd(fd, common.prependSize(data))
 
     outOfProcessDownloaderPool.getDownloader() \
             .executeAndCallbackWithString(objectStoreUploader,
@@ -388,7 +389,7 @@ def writeMultipartS3UploadPart(s3InterfaceFactory,
 
     def inputCallback(fd):
         data = dataAsNBB.toString()
-        os.write(fd, common.prependSize(data))
+        OutOfProcessDownloader.writeAllToFd(fd, common.prependSize(data))
 
     outOfProcessDownloaderPool.getDownloader() \
             .executeAndCallbackWithString(writer, outputCallback, inputCallback)

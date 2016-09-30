@@ -61,7 +61,10 @@ class FileDescriptorDeserializer(Deserializer):
 
     def grabBytes(self, bytecount):
         res = os.read(self.fd, bytecount)
-        assert len(res) == bytecount, "Stream terminated unexpectedly"
+        while len(res) < bytecount:
+            next_chunk = os.read(self.fd, bytecount - len(res))
+            assert next_chunk, "Stream terminated unexpectedly"
+            res += next_chunk
         return res
 
 def deserializeFromFileDescriptor(fd, objectVisitor, convertJsonToObject):
