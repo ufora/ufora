@@ -67,7 +67,7 @@ class OutOfProcPythonTest(unittest.TestCase):
             with self.create_executor() as fora:
                 with fora.remotely:
                     with helpers.python:
-                        sys.exit(0)
+                        os._exit(0)
 
 if __name__ == "__main__":
     import ufora.config.Mainline as Mainline

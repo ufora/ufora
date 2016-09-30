@@ -159,8 +159,8 @@ class PyforaComputedValue(ComputedValue.ComputedValue):
             if len(tup) != 2:
                 return None
 
-            _, stacktraceAndVarsInScope = self.valueIVC.getTuple()
-            hashes = stacktraceAndVarsInScope[0].getStackTrace()
+            _, stacktrace = self.valueIVC.getTuple()
+            hashes = stacktrace.getStackTrace()
 
             if hashes is None:
                 return None

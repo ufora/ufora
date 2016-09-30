@@ -110,6 +110,19 @@ class WithRegularPython_test(unittest.TestCase):
             result = z.toLocal().result()
             self.assertEqual(result, 205)
 
+    def test_exception_marshalling(self):
+        with self.assertRaises(UserWarning):
+            with self.create_executor() as fora:
+                with fora.remotely:
+                    def g():
+                        raise UserWarning("This is a user warning")
+                    def f():
+                        return g()
+
+                    with helpers.python:
+                        f()
+
+
     def test_basic_out_of_process_variable_identities(self):
         with self.create_executor() as fora:
             x = {}

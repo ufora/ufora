@@ -474,23 +474,36 @@ class PythonObjectRehydrator(object):
             return_statement = ast.Return(
                     ast.Tuple([
                         ast.Dict(
-                            keys=[ast.Str(x,lineno=1,col_offset=0) for x in bound_variables],
-                            values=[ast.Name(x, ast.Load(), lineno=1,col_offset=1) for x in bound_variables],
-                            lineno=1,
-                            col_offset=0
+                            keys=[ast.Str(x) for x in bound_variables],
+                            values=[ast.Name(x, ast.Load()) for x in bound_variables],
                             ),
-                        ast.Num(0,lineno=1,col_offset=0),
-                        ast.Num(0,lineno=1,col_offset=0)
+                        ast.Num(0),
+                        ast.Num(0)
                         ],
-                    ast.Load(),
-                    lineno=1,
-                    col_offset=0
-                    ),
-                lineno=1,
-                col_offset=0
+                    ast.Load()
+                    )
+                )
+
+            return_statement_exception = ast.Return(
+                    ast.Tuple([
+                        ast.Dict(
+                            keys=[ast.Str(x) for x in bound_variables],
+                            values=[ast.Name(x, ast.Load()) for x in bound_variables],
+                            ),
+                        ast.Call(ast.Name("__pyfora_get_exception_traceback__", ast.Load()), [],[],None,None),
+                        ast.Name("__pyfora_exception_var__", ast.Load())
+                        ],
+                    ast.Load()
+                    )
                 )
 
             expr.body.append(return_statement)
+
+            handler = ast.ExceptHandler(None, ast.Name("__pyfora_exception_var__", ast.Store()), [return_statement_exception])
+
+            #now wrap in a try-catch block
+            curBody = list(expr.body)
+            expr.body = [ast.TryExcept(curBody, [handler], [])]
 
             #for every incoming variable 'x' that's also assigned to, create a dummy '__pyfora_var_guard_x' that actually
             #takes the value in from the surrounding scope, and immediately assign it
@@ -499,10 +512,8 @@ class PythonObjectRehydrator(object):
                     newVar = "__pyfora_var_guard_" + var
 
                     var_copy_expr = ast.Assign(
-                        targets=[ast.Name(var, ast.Store(),lineno=0,col_offset=0)],
-                        value=ast.Name(newVar, ast.Load(),lineno=1,col_offset=0),
-                        lineno=1,
-                        col_offset=0
+                        targets=[ast.Name(var, ast.Store())],
+                        value=ast.Name(newVar, ast.Load())
                         )
 
                     globalScope[newVar] = globalScope[var]
@@ -511,6 +522,13 @@ class PythonObjectRehydrator(object):
                     expr.body = [var_copy_expr] + expr.body
 
             expr = updatePyAstMemberChains(expr, tuple(globalScope.keys()), isClassContext=True)
+
+            ast.fix_missing_locations(expr)
+
+            def extractTrace():
+                return sys.exc_info()[2]
+
+            globalScope['__pyfora_get_exception_traceback__'] = extractTrace
 
             code = compile(ast.Module([expr]), filename, 'exec')
 

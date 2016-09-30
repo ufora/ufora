@@ -18,6 +18,7 @@ import ufora.FORA.python.PurePython.NativeConverterAdaptor as NativeConverterAda
 import ufora.FORA.python.ModuleDirectoryStructure as ModuleDirectoryStructure
 import ufora.FORA.python.PurePython.PyforaSingletonAndExceptionConverter as PyforaSingletonAndExceptionConverter
 import ufora.FORA.python.PurePython.PyforaToJsonTransformer as PyforaToJsonTransformer
+import ufora.FORA.python.PurePython.StacktraceToJson as StacktraceToJson
 import ufora.native.FORA as ForaNative
 
 import pyfora.ModuleLevelObjectIndex as ModuleLevelObjectIndex
@@ -719,13 +720,13 @@ class Converter(object):
 
                     return objId
 
-            if implval.isTuple():
+            if implval.isStackTrace():
                 stackTraceAsJsonOrNone = self.getStackTraceAsJsonOrNone(implval)
                 if stackTraceAsJsonOrNone is not None:
                     stream.defineStacktrace(objId, stackTraceAsJsonOrNone)
                     return objId
                 else:
-                    assert False, "unknown tuple, but not a stacktrace"
+                    assert False, "unknown tuple, but not a stacktrace: %s" % implval
 
             if implval.isObject():
                 objectClass = implval.getObjectClass()
@@ -850,43 +851,7 @@ class Converter(object):
         return root_id, anyNeedLoading[0]
 
     def getStackTraceAsJsonOrNone(self, implval):
-        tup = implval.getTuple()
-
-        if len(tup) != 2:
-            return None
-
-        return self.exceptionCodeLocationsAsJson(tup)
-
-    def exceptionCodeLocationsAsJson(self, stacktraceAndVarsInScope):
-        hashes = stacktraceAndVarsInScope[0].getStackTrace()
-
-        if hashes is None:
-            return None
-
-        codeLocations = [ForaNative.getCodeLocation(h) for h in hashes]
-        codeLocations = [c for c in codeLocations if c is not None]
-
-        def formatCodeLocation(c):
-            if not c.defPoint.isExternal():
-                return None
-            def posToJson(simpleParsePosition):
-                return {
-                    'characterOffset': simpleParsePosition.rawOffset,
-                    'line': simpleParsePosition.line,
-                    'col': simpleParsePosition.col
-                    }
-            return {
-                'path': list(c.defPoint.asExternal.paths),
-                'range': {
-                    'start': posToJson(c.range.start),
-                    'stop': posToJson(c.range.stop)
-                    }
-                }
-
-        return tuple(
-                x for x in [formatCodeLocation(c) for c in codeLocations] if x is not None
-                )
-
+        return StacktraceToJson.implvalStacktraceToJson(implval)
 
 canonicalPurePythonModuleCache_ = [None]
 def canonicalPurePythonModule():

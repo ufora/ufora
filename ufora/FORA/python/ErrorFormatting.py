@@ -35,7 +35,7 @@ def errorIndicatorLine(lineText, range):
         return carats_(lineText, range.start.col, range.stop.col) + "\n"
     return ""
 
-def formatExceptionPoint_(filename, code, textRange, lines, valuesInScope):
+def formatExceptionPoint_(filename, code, textRange, lines):
     """given a string of code and a SimpleParseRange, return a formatted
     exception trace"""
     if code is not None and lines:
@@ -52,15 +52,6 @@ def formatExceptionPoint_(filename, code, textRange, lines, valuesInScope):
 
             line = "\n\t" + lineWithoutTabs + "\n\t" + errorIndicator
 
-        if valuesInScope is not None and len(valuesInScope):
-            line = line + "\twith\n"
-            for index in range(len(valuesInScope)):
-                line = line + "\t  %s: %s\n" % (
-                    valuesInScope.names_[index],
-                    valuesInScope[index]
-                    )
-            line = line + "\n"
-
         return "  From %s:%d%s" % (filename, textRange.stop.line, line)
 
     return "  From %s:%d\n" % (filename, textRange.stop.line)
@@ -76,7 +67,7 @@ def formatChop(s):
 # a label and the code itself
 exceptionCodeSourceFormatters = {}
 
-def formatCodeLocation(codeLocation, valuesInScope, lines = 1):
+def formatCodeLocation(codeLocation, lines = 1):
     defPoint = codeLocation.defPoint
     codeRange = codeLocation.range
 
@@ -86,25 +77,24 @@ def formatCodeLocation(codeLocation, valuesInScope, lines = 1):
         if elts and elts[0] in exceptionCodeSourceFormatters:
             filenameAndCode = exceptionCodeSourceFormatters[elts[0]](elts[1:])
             if filenameAndCode is not None:
-                return formatExceptionPoint_(filenameAndCode[0], filenameAndCode[1], codeRange, lines, valuesInScope)
+                return formatExceptionPoint_(filenameAndCode[0], filenameAndCode[1], codeRange, lines)
     elif defPoint.isAxioms():
         return "\tAxiom: " + str(codeRange.stop.line) + "\n"
     return ""
 
-def formatStackTraceHash(hash, valuesInScope, lines = 1):
+def formatStackTraceHash(hash, lines = 1):
     codeLocation = ForaNative.getCodeLocation(hash)
     if codeLocation is not None:
-        return formatCodeLocation(codeLocation, valuesInScope, lines)
+        return formatCodeLocation(codeLocation, lines)
     else:
         return ""
 
-def formatStacktrace(stacktrace, valuesInScope, lines = 1):
+def formatStacktrace(stacktrace, lines = 1):
     """given a list of CodeLocation objects, print a stacktrace
 
     stacktrace -- list of CodeLocation objects
-    valuesInScope -- tuple?
     """
     return "".join([
-        formatStackTraceHash(s, valuesInScope[index] if valuesInScope is not None else None, lines)
+        formatStackTraceHash(s, lines)
             for index, s in enumerate(stacktrace)])
 

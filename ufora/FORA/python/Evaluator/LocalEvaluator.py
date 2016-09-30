@@ -582,19 +582,6 @@ class ComputationCache(Stoppable.Stoppable):
                 return
 
 
-callAndReturnExpr = FORANative.parseStringToExpression(
-    """object {
-    ...(f, *args) {
-        try { (f`(*args), (f, *args), 'callAndReturnExpr') }
-        catch from stacktrace (e) {  throw from stacktrace (e, (f, *args)) }
-        }
-    }""",
-    FORANative.CodeDefinitionPoint(),
-    "cdp"
-    )
-
-callAndReturn = FORANative.evaluateRootLevelCreateObjectExpression(callAndReturnExpr, {}, True)
-
 def areAllArgumentsConst(*args):
     """Returns True if all ImplValContainer arguments in the specified list are const."""
     for arg in args:
@@ -654,9 +641,7 @@ class LocalEvaluator(EvaluatorBase.EvaluatorBase):
         return self.vdm_
 
     def evaluate(self, *args):
-        argIv = FORANative.ImplValContainer(self.expandIfListOrTuple(callAndReturn, *args))
-        res = self.evaluateDirectly(callAndReturn, *args)
-        return FORANative.updateFreeStoreValues(argIv, res)
+        return self.evaluateDirectly(args[0], *args[1:])
 
     def hasRemoteEvaluator(self):
         """Returns True if this LocalEvaluator has an inner RemoteEvaluator.

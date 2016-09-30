@@ -29,6 +29,31 @@ import logging
 import traceback
 import __builtin__
 import ast
+import sys
+
+def pythonTracebackToJson(stacktrace):
+    if stacktrace is None:
+        return None
+
+    res = []
+
+    while stacktrace is not None:
+        filename = stacktrace.tb_frame.f_code.co_filename
+        lineno = stacktrace.tb_lineno
+
+        res.append({'path':[filename],'range':{'start':{'line':lineno,'col':1}, 'stop':{'line':lineno,'col':1}}})
+        stacktrace = stacktrace.tb_next
+
+    #stacktraces are innermost to outermost
+    return list(reversed(res))
+
+def get_traceback_type():
+    try:
+        raise UserWarning()
+    except:
+        return type(sys.exc_info()[2])
+
+traceback_type = get_traceback_type()
 
 class UnresolvedFreeVariableException(Exception):
     def __init__(self, freeVariable, contextName):
@@ -227,6 +252,8 @@ class PyObjectWalker(object):
                 objectId,
                 NamedSingletons.pythonSingletonToName[pyObject]
                 )
+        elif isinstance(pyObject, traceback_type):
+            self._registerStackTraceAsJson(objectId, pyObject)
         elif isinstance(pyObject, PyforaWithBlock.PyforaWithBlock):
             self._registerWithBlock(objectId, pyObject)
         elif isinstance(pyObject, _Unconvertible):
@@ -342,6 +369,9 @@ class PyObjectWalker(object):
             objectId,
             primitive
             )
+
+    def _registerStackTraceAsJson(self, objectId, traceback):
+        self._objectRegistry.defineStacktrace(objectId, pythonTracebackToJson(traceback))
 
     def _registerDict(self, objectId, dict_):
         """

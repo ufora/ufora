@@ -16,6 +16,7 @@
 
 #include "PythonBinaryStreamToImplval.hppml"
 #include "../../../core/Logging.hpp"
+#include "../../../core/Json.hppml"
 #include "../../../core/cppml/ExtractAllObjectsMatchingPredicate.hppml"
 #include "../../Language/RebindFreeMemberAccesses.hppml"
 #include "../../Language/RebindFree.hppml"
@@ -337,6 +338,79 @@ void PythonBinaryStreamToImplval::read(IBinaryStream& stream)
 
             mValues[objectId] = 
                 *mSingletonAndExceptionConverter->instantiateException(exceptionTypeName, mValues[argsId]);
+            }
+            else
+        if (code == PythonBinaryStreamCommon::CODE_STACKTRACE_AS_JSON)
+            {
+            std::string stacktrace;
+            stream >> stacktrace;
+
+            //we convert the json back to a Fora stacktrace, but we can't replicate
+            //all the information normally contained in parsed FORA code because the 
+            //stacktrace doesn't have column information. This is OK because we're just
+            //going to convert it back to python again.
+
+            auto json = Ufora::Json::parse(stacktrace);
+
+            try {
+                @match Ufora::Json(json)
+                    -| Null() ->> {
+                        mValues[objectId] = 
+                            ImplValContainerUtilities::createStackTrace(ForaStackTrace());
+                        }
+                    -| Array(terms) ->> {
+                        ImmutableTreeVector<CodeLocationId> result;
+                        for (auto t: terms)
+                            @match Ufora::Json(t)
+                                -| Object(pathAndRange) ->> {
+                                    ImmutableTreeVector<std::string> path;
+                                    int64_t lineNo;
+
+                                    @match Ufora::Json(*pathAndRange["path"])
+                                        -| Array(someStrings) ->> {
+                                            path = mapITV(someStrings, [&](Ufora::Json j) -> std::string {
+                                                @match Ufora::Json(j)
+                                                    -| String(s) ->> {return s;}
+                                                });
+                                            }
+
+                                    @match Ufora::Json(*pathAndRange["range"])
+                                        -| Object(startAndStop) ->> {
+                                            @match Ufora::Json(*startAndStop["start"])
+                                                -| Object(lineAndCol) ->> {
+                                                    @match Ufora::Json(*lineAndCol["line"])
+                                                        -| Number(aValue) ->> {
+                                                            lineNo = aValue;
+                                                            }
+                                                    }
+                                            }
+
+                                    CodeLocation loc(
+                                        CodeDefinitionPoint::External(path),
+                                        SimpleParseRange(
+                                            SimpleParsePosition(0,lineNo,0),
+                                            SimpleParsePosition(0,lineNo,0)
+                                            )
+                                        );
+
+                                    CodeLocationId locId = hashValue(loc);
+
+                                    GlobalCodeLocationRegistry::setCodeLocation(locId, loc);
+
+                                    result = result + locId;
+                                    }
+
+                        mValues[objectId] = 
+                            ImplValContainerUtilities::createStackTrace(ForaStackTrace(result));
+                        }
+                }
+            catch(...)
+                {
+                LOG_ERROR << "Invalid json found while converting stacktrace: " << json;
+                throw;
+                }
+
+            
             }
             else
         if (code == PythonBinaryStreamCommon::CODE_NAMED_SINGLETON)

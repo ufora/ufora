@@ -803,13 +803,7 @@ class TestExecutionContext(unittest.TestCase):
 
 
         self.assertTrue(frameData.wasCompiled is False)
-        self.assertTrue(len(frameData.inScopeValues) == 2)
-        self.assertTrue([str(x) for x in frameData.inScopeValues.keys] == ['x', 'v'])
-
-        values = [frameData.inScopeValues[x] for x in frameData.inScopeValues.keys]
-        self.assertTrue(values[0].isInt64())
-        self.assertTrue(values[1].isVector())
-
+        
         context.teardown()
 
 

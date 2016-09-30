@@ -1281,25 +1281,6 @@ class CFGWithFuturesTest(unittest.TestCase):
         self.assertTrue(final.asResult.result.isResult())
         self.assertEqual(final.asResult.result.asResult.result.pyval, 1)
 
-    def test_serialResultsWithExceptions_1(self):
-        cfg = self.parseStringToFunction("fun(f) { f(1) + f(2) }").toCFG(1)
-        funImplval = FORA.extractImplValContainer(FORA.eval("fun(x) { throw x; }"))
-
-        serialResult = self.serialResult(cfg, (funImplval,), "block_0Let")
-
-        pausedFrame = serialResult.asPaused.frame
-
-        self.assertEqual(
-            pausedFrame.values[0],
-            ForaNative.ImplValContainer(1)
-            )
-        self.assertEqual(
-            pausedFrame.values[1],
-            funImplval
-            )
-        self.assertEqual(pausedFrame.graph, cfg)
-        self.assertEqual(pausedFrame.label, "block_5Throw")
-
     # this test was disabled due to a refcounting bug in ControlFlowGraph/SimulationState:
     # the example is something like: bla = f(args) where bla is not consumed anywhere else
     # and args is not yet current, and there are some subsequent calculations
