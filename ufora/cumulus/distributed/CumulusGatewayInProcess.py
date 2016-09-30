@@ -23,15 +23,34 @@ import ufora.distributed.S3.InMemoryS3Interface as InMemoryS3Interface
 
 class InProcessGateway(CumulusGateway.CumulusGateway):
     def __init__(self, callbackSchedulerFactory, callbackScheduler, vdm, **kwds):
-        s3Service = InMemoryS3Interface.InMemoryS3InterfaceFactory()
+        #don't modify callers directly
+        kwds = dict(kwds)
+
+        if 's3Service' in kwds:
+            s3Service = kwds['s3Service']
+            del kwds['s3Service']
+        else:
+            s3Service = InMemoryS3Interface.InMemoryS3InterfaceFactory()
+
+        if 'threadsPerWorker' in kwds:
+            threadsPerWorker = kwds['threadsPerWorker']
+            del kwds['threadsPerWorker']
+        else:
+            threadsPerWorker = Setup.config().cumulusServiceThreadCount
+
+        if 'memoryPerWorkerMB' in kwds:
+            memoryPerWorkerMB = kwds['memoryPerWorkerMB']
+            del kwds['memoryPerWorkerMB']
+        else:
+            memoryPerWorkerMB = 400
 
         simulation = InMemoryCumulusSimulation.InMemoryCumulusSimulation(
             1,
             0,
             s3Service=s3Service,
-            memoryPerWorkerMB=400,
+            memoryPerWorkerMB=memoryPerWorkerMB,
             callbackScheduler=callbackScheduler,
-            threadsPerWorker=Setup.config().cumulusServiceThreadCount,
+            threadsPerWorker=threadsPerWorker,
             **kwds
             )
 

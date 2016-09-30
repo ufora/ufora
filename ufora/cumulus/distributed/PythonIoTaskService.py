@@ -67,7 +67,7 @@ class PythonIoTaskService(object):
             "out of process" if s3Interface.isCompatibleWithOutOfProcessDownloadPool else \
                 "in memory"
             )
-
+        
         self.outOfProcessDownloaderPool = \
             OutOfProcessDownloader.OutOfProcessDownloaderPool(
                 self.threadcount,
