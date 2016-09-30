@@ -19,6 +19,7 @@ import pyfora.RemotePythonObject as RemotePythonObject
 import pyfora.Exceptions as Exceptions
 import pyfora.pure_modules.pure_pandas as PurePandas
 import pyfora.helpers as helpers
+import pyfora
 
 import sys
 import unittest
@@ -60,6 +61,13 @@ class OutOfProcPythonTest(unittest.TestCase):
                 res = sum(sliceSum(i * 1000, i*1000 + 1000) for i in xrange(1000))
 
         self.assertEqual(res, sum(range(1000000)))
+
+    def test_out_of_proc_exit_throws_exception(self):
+        with self.assertRaises(pyfora.InvalidPyforaOperation):
+            with self.create_executor() as fora:
+                with fora.remotely:
+                    with helpers.python:
+                        sys.exit(0)
 
 if __name__ == "__main__":
     import ufora.config.Mainline as Mainline
