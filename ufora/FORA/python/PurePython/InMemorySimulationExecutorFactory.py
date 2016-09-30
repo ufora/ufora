@@ -22,6 +22,15 @@ import pyfora.Connection as Connection
 
 
 def create_executor(**kwds):
+    kwds = dict(kwds)
+
+    if 'pageSizeOverride' not in kwds:
+        kwds['pageSizeOverride'] = 10000000
+
+    if 'useInMemoryCache' not in kwds:
+        kwds['useInMemoryCache'] = 200
+    
+
     s3 = []
     def createMessageProcessor():
         harness = SharedStateTestHarness.SharedStateTestHarness(inMemory=True)
@@ -33,8 +42,6 @@ def create_executor(**kwds):
                         harness.callbackScheduler.getFactory(),
                         harness.callbackScheduler,
                         vdm,
-                        pageSizeOverride=10000000,
-                        useInMemoryCache=200,
                         **kwds
                         )
 

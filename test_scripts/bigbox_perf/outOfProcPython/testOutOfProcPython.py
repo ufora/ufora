@@ -26,11 +26,17 @@ import traceback
 import pandas
 import os
 import numpy
+import resource
 
 class OutOfProcPythonTest(unittest.TestCase):
-    def create_executor(cls):
+    def create_executor(self, **kwds):
         s3 = ActualS3Interface.ActualS3InterfaceFactory()
-        return InMemorySimulationExecutorFactory.create_executor(s3Service=s3)
+        if 'threadsPerWorker' not in kwds:
+            kwds['threadsPerWorker'] = 30
+        if 'memoryPerWorkerMB' not in kwds:
+            kwds['memoryPerWorkerMB'] = 40000
+        
+        return InMemorySimulationExecutorFactory.create_executor(s3Service=s3, **kwds)
 
     def test_really_out_of_proc(self):
         with self.create_executor() as fora:
@@ -39,6 +45,25 @@ class OutOfProcPythonTest(unittest.TestCase):
                     pid = os.getpid()
 
         self.assertTrue(pid != os.getpid())
+
+    def test_operating_on_small_slices_of_lists(self):
+        with self.create_executor() as fora:
+            with fora.remotely:
+                #1 billion integers
+                a_list = range(1000000000)
+
+                #the first million integers
+                a_list_slice = a_list[:1000000]
+                with helpers.python:
+                    resource.setrlimit(resource.RLIMIT_AS, (2 * 1024 * 1024 * 1024, -1))
+
+                    sum_result = sum(a_list_slice)
+
+                a_list = None
+            
+            sum_result = sum_result.toLocal().result()
+
+            self.assertEqual(sum_result, sum(range(1000000)))
 
 if __name__ == "__main__":
     import ufora.config.Mainline as Mainline
