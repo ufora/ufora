@@ -12,18 +12,30 @@
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
 
+import collections
 import types
 import ufora.BackendGateway.Observable as Observable
 
-# expose to importers of this module
+# DO NOT REMOVE: this allows users of this module to use
+# the 'observable' decorator without having to know about the 'Observable'
+# module.
 from ufora.BackendGateway.Observable import observable
 
 
+CumulusEnvironment = collections.namedtuple(
+    'CumulusEnvironment',
+    'cumulus_gateway cache_loader computations object_converter'
+    )
+
+
 class SubscribableObject(Observable.Observable):
-    def __init__(self, id, cumulus_gateway, cache_loader):
-        super(SubscribableObject, self).__init__(id)
-        self.cumulus_gateway = cumulus_gateway
-        self.cache_loader = cache_loader
+    def __init__(self, id, cumulus_env):
+        super(SubscribableObject, self).__init__()
+        self.id = id
+        self.cumulus_gateway = cumulus_env.cumulus_gateway
+        self.cache_loader = cumulus_env.cache_loader
+        self.computations = cumulus_env.computations
+        self.object_converter = cumulus_env.object_converter
 
 
 

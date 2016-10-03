@@ -194,7 +194,7 @@ class ComputedValueVectorSlice(ComputedGraph.Location):
         logging.info("Extract numpy data for %s: %s", self, self.vdmThinksIsLoaded())
         if self.computedValueVector.vectorImplVal is None:
             return None
-        
+
         if len(self.vectorDataIds) > 0 and not self.isLoaded:
             return None
 
@@ -211,48 +211,12 @@ class ComputedValueVectorSlice(ComputedGraph.Location):
 
         return result
 
-    @ComputedGraph.Function
-    def extractVectorDataAsNumpyArrayInChunks(self, stepSize = 100000):
-        """Return the data as a sequence of numpy arrays each of which is no larger than 'stepSize'.
-
-        This is used to prevent us from creating memory fragmentation when we are loading
-        lots of arrays of different sizes.
-        """
-        if self.computedValueVector.vectorImplVal is None:
-            return None
-        
-        if len(self.vectorDataIds) > 0 and not self.isLoaded:
-            return None
-
-        if not self.vdmThinksIsLoaded():
-            return None
-
-        result = []
-        index = self.lowIndex
-        while index < self.highIndex and result is not None:
-            tailResult = ComputedValueGateway.getGateway().extractVectorDataAsNumpyArray(
-                self.computedValueVector,
-                index,
-                min(self.highIndex, index+stepSize)
-                )
-            index += stepSize
-            if tailResult is not None:
-                result.append(tailResult)
-            else:
-                result = None
-
-        if result is None and not self.vdmThinksIsLoaded():
-            logging.info("CumulusClient: %s was marked loaded but returned None", self)
-            self.isLoaded = False
-            ComputedValueGateway.getGateway().reloadVector(self)
-
-        return result
 
     @ComputedGraph.Function
     def extractVectorItemAsIVC(self, ct):
         if self.computedValueVector.vectorImplVal is None:
             return None
-        
+
         if len(self.vectorDataIds) > 0 and not self.isLoaded:
             return None
 
@@ -286,7 +250,7 @@ class ComputedValueVectorSlice(ComputedGraph.Location):
     @ComputedGraph.ExposedFunction()
     def decreaseRequestCount(self, *args):
         ComputedValueGateway.getGateway().decreaseVectorRequestCount(self)
-        
+
 
 def validateComputedValueArgs(args):
     """check that every argument to a ComputedValue is either an ImplValContainer or
@@ -406,9 +370,9 @@ class ComputedValue(ComputedGraph.Location):
         axioms = runtime.getAxioms()
         compiler = runtime.getTypedForaCompiler()
         instructionGraph = runtime.getInstructionGraph()
-        
+
         reasoner = ForaNative.SimpleForwardReasoner(compiler, instructionGraph, axioms)
-        
+
         frame = reasoner.reasonAboutComputationDefinition(self.cumulusComputationDefinition)
 
         logging.critical("Result was %s", frame.exits())
@@ -424,7 +388,7 @@ class ComputedValue(ComputedGraph.Location):
             return 0
 
         stats = self.checkpointStatus.statistics
-        
+
         return ComputedValueGateway.getGateway().bytecountForBigvecs(
                         self.checkpointStatus.bigvecsReferenced
                         )
@@ -434,7 +398,7 @@ class ComputedValue(ComputedGraph.Location):
             return 0
 
         stats = self.checkpointStatus.statistics
-        
+
         return stats.totalBytesInMemory
 
     def isCompletelyCheckpointed(self):
@@ -478,7 +442,7 @@ class ComputedValue(ComputedGraph.Location):
         result = {
             "status": {
                 "title" : "Computation Status",
-                "value" : "Finished" if self.isFinished else "Unfinished" + 
+                "value" : "Finished" if self.isFinished else "Unfinished" +
                     ((" (%s cpus)" % self.totalWorkerCount) if self.totalWorkerCount > 0 else ""),
                 "units" : ""
                 },
@@ -622,14 +586,14 @@ class ComputedValue(ComputedGraph.Location):
     isLoadingFromCheckpoint = ComputedGraph.Mutable(object, lambda: False)
     rootComputedValueDependencies = ComputedGraph.Mutable(object, lambda: ())
     totalBytesReferencedAtLastCheckpoint = ComputedGraph.Mutable(object, lambda: 0)
-    
+
     @ComputedGraph.ExposedProperty()
     def totalWorkerCount(self):
         return self.workerCount + self.workerCountForDependentComputations
 
     def codeLocationDefinitionAsJson(self):
         return None
-    
+
     @ComputedGraph.ExposedProperty()
     def totalCacheloadCount(self):
         return self.cacheloadCount + self.cacheloadCountForDependentComputations

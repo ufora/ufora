@@ -28,8 +28,7 @@ def observable(f):
 
 
 class Observable(object):
-    def __init__(self, id):
-        self.id = id
+    def __init__(self):
         self.observers = collections.defaultdict(set)
 
 
@@ -43,5 +42,5 @@ class Observable(object):
 
     def notify(self, name, new_value, old_value):
         for observer in self.observers[name]:
-            observer(self.id, name, new_value, old_value)
+            observer(name, new_value, old_value)
 

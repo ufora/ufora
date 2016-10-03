@@ -23,8 +23,9 @@ import ufora.BackendGateway.ComputedGraph.ComputedGraph as ComputedGraph
 import ufora.BackendGateway.ComputedGraph.BackgroundUpdateQueue as BackgroundUpdateQueue
 import ufora.native.Cumulus as CumulusNative
 import ufora.util.ThreadLocalStack as ThreadLocalStack
-import ufora.FORA.VectorDataManager.VectorDataManager as VectorDataManager
 import traceback
+
+from ufora.BackendGateway.CacheLoader import CacheLoader
 
 ViewOfEntireCumulusSystem = None
 PersistentCacheIndex = None
@@ -49,150 +50,6 @@ class ComputedValueGateway(ThreadLocalStack.ThreadLocalStackPushable):
         assert False, "Subclass should implement"
 
 
-class CacheLoader(object):
-    """mixin class holding the background cacheloading functionality"""
-    def __init__(self, callbackScheduler, ramCacheSize=None):
-        self.callbackScheduler = callbackScheduler
-        self.lock_ = threading.RLock()
-        self.vectorDataIDRequestCount_ = {}
-        self.vectorDataIDToVectorSlices_ = {}
-        self.vdm = VectorDataManager.constructVDM(callbackScheduler, ramCacheSize)
-        self.vdm.setDropUnreferencedPagesWhenFull(True)
-
-        self.ramCacheOffloadRecorder = CumulusNative.TrackingOfflineStorage(self.callbackScheduler)
-        self.vdm.setOfflineCache(self.ramCacheOffloadRecorder)
-
-
-    def extractVectorDataAsPythonArray(self, vectorCGLocation, low, high):
-        return self.vdm.extractVectorContentsAsPythonArray(
-            vectorCGLocation.vectorImplVal,
-            low,
-            high
-            )
-
-    def extractVectorDataAsNumpyArray(self, vectorCGLocation, low, high):
-        return self.vdm.extractVectorContentsAsNumpyArray(
-            vectorCGLocation.vectorImplVal,
-            low,
-            high
-            )
-
-    def extractVectorItem(self, vectorCGLocation, index):
-        return self.vdm.extractVectorItem(
-            vectorCGLocation.vectorImplVal,
-            index
-            )
-
-    def vectorDataIsLoaded(self, vectorCGLocation, low, high):
-        return self.vdm.vectorDataIsLoaded(
-            vectorCGLocation.vectorImplVal,
-            low,
-            high
-            )
-
-    def onCacheLoad(self, vectorDataID):
-        with self.lock_:
-            if vectorDataID in self.vectorDataIDToVectorSlices_:
-                cgLocations = self.vectorDataIDToVectorSlices_[vectorDataID]
-            else:
-                cgLocations = set()
-
-            self.collectOffloadedVectors_()
-
-            for cgLocation in cgLocations:
-                BackgroundUpdateQueue.push(self.createSetIsLoadedFun(cgLocation, self.computeVectorSliceIsLoaded_(cgLocation)))
-
-    def collectOffloadedVectors_(self):
-        offloaded = self.ramCacheOffloadRecorder.extractDropped()
-
-        if offloaded:
-            logging.info("ComputedValue RamCache dropped %s", offloaded)
-
-        for offloadedVecDataID in offloaded:
-            if offloadedVecDataID in self.vectorDataIDToVectorSlices_:
-                for cgLocation in self.vectorDataIDToVectorSlices_[offloadedVecDataID]:
-                    BackgroundUpdateQueue.push(self.createSetIsLoadedFun(cgLocation, False))
-
-        if offloaded:
-            #check if there's anything we need to load
-            self.sendReloadRequests()
-
-    def createSetIsLoadedFun(self, cgLocation, newIsLoadedVal):
-        def setLoadedFun():
-            cgLocation.markLoaded(newIsLoadedVal)
-        return setLoadedFun
-
-    def sendReloadRequests(self):
-        #TODO BUG brax: ComputedValue doesn't know how to resubmit cacheload requests for unloaded items
-        pass
-
-    def setVectorLoadFlag_(self, vectorSlice):
-        isLoaded = self.computeVectorSliceIsLoaded_(vectorSlice)
-
-        vectorSlice.markLoaded(isLoaded)
-
-    def computeVectorSliceIsLoaded_(self, vectorSlice):
-        return self.vdm.vectorDataIsLoaded(
-            vectorSlice.computedValueVector.vectorImplVal,
-            vectorSlice.lowIndex,
-            vectorSlice.highIndex
-            )
-
-    def computeVectorDataIDIsLoaded_(self, vectorDataId):
-        return self.vdm.vectorDataIdIsLoaded(vectorDataId)
-
-    def reloadVector(self, vectorSlice):
-        with self.lock_:
-            self.setVectorLoadFlag_(vectorSlice)
-
-            for vectorDataID in vectorSlice.vectorDataIds:
-                self.increaseVectorDataIdRequestCount_(vectorSlice, vectorDataID)
-
-
-    def increaseVectorRequestCount(self, vectorSlice):
-        with self.lock_:
-            self.setVectorLoadFlag_(vectorSlice)
-
-        for vectorDataID in vectorSlice.vectorDataIds:
-            self.increaseVectorDataIdRequestCount_(vectorSlice, vectorDataID)
-
-    def increaseVectorDataIdRequestCount_(self, vectorSlice, vectorDataID):
-        #register our vector slice dependency
-        if vectorDataID not in self.vectorDataIDToVectorSlices_:
-            self.vectorDataIDToVectorSlices_[vectorDataID] = set()
-
-        self.vectorDataIDToVectorSlices_[vectorDataID].add(vectorSlice)
-
-
-        if vectorDataID in self.vectorDataIDRequestCount_:
-            self.vectorDataIDRequestCount_[vectorDataID] += 1
-            return
-        else:
-            self.vectorDataIDRequestCount_[vectorDataID] = 1
-
-        if not self.computeVectorDataIDIsLoaded_(vectorDataID):
-            self.cumulusGateway.requestCacheItem(vectorDataID)
-
-
-    def decreaseVectorRequestCount(self, vectorSlice):
-        with self.lock_:
-            self.setVectorLoadFlag_(vectorSlice)
-
-            for vectorDataID in vectorSlice.vectorDataIds:
-                self.decreaseVectorDataIdRequestCount_(vectorSlice, vectorDataID)
-
-    def decreaseVectorDataIdRequestCount_(self, vectorSlice, vectorDataID):
-        assert vectorDataID in self.vectorDataIDRequestCount_
-
-        self.vectorDataIDRequestCount_[vectorDataID] -= 1
-        if self.vectorDataIDRequestCount_[vectorDataID] == 0:
-            del self.vectorDataIDRequestCount_[vectorDataID]
-            self.vectorDataIDToVectorSlices_[vectorDataID].discard(vectorSlice)
-            if not self.vectorDataIDToVectorSlices_[vectorDataID]:
-                del self.vectorDataIDToVectorSlices_[vectorDataID]
-        else:
-            return
-
 
 class CumulusComputedValueGateway(CacheLoader, ComputedValueGateway, Stoppable.Stoppable):
     """Gateway - a global object that manages the interface between
@@ -213,6 +70,7 @@ class CumulusComputedValueGateway(CacheLoader, ComputedValueGateway, Stoppable.S
 
         CacheLoader.__init__(
             self,
+            callbackSchedulerFactory,
             callbackScheduler,
             Setup.config().computedValueGatewayRAMCacheMB * 1024 * 1024
             )
@@ -227,7 +85,6 @@ class CumulusComputedValueGateway(CacheLoader, ComputedValueGateway, Stoppable.S
         self.cumulusGateway.onNewGlobalUserFacingLogMessage = self.onNewGlobalUserFacingLogMessage
         self.cumulusGateway.onExternalIoTaskCompleted = self.onExternalIoTaskCompleted
         self.cumulusGateway.onCPUCountChanged = self.onCPUCountChanged
-        self.cumulusGateway.onCacheLoad = self.onCacheLoad
         self.cumulusGateway.onComputationResult = self.onComputationResult
         self.cumulusGateway.onMachineCountWentToZero = self.onMachineCountWentToZero
 

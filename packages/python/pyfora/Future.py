@@ -40,7 +40,7 @@ class Future(Futures.Future):
     """
     def __init__(self, onCancel=None):
         super(Future, self).__init__()
-        self._computedValue = None
+        self._computation = None
         self._onCancel = onCancel
 
 
@@ -53,16 +53,16 @@ class Future(Futures.Future):
             if self._state is not Futures.RUNNING or self._onCancel is None:
                 # can't cancel
                 return False
-            if self._onCancel(self._computedValue):
+            if self._onCancel(self._computation):
                 self._state = Futures.CANCELLED
                 self._condition.notify_all()
 
         self._invoke_callbacks()
         return True
 
-    def setComputedValue(self, computedValue):
+    def set_computation(self, computation):
         ''' Should only be called by Executor '''
-        self._computedValue = computedValue
+        self._computation = computation
 
     def resultWithWakeup(self, statusUpdateFunction=None):
         """Poll the future, but wake up frequently (to allow for keyboard interrupts)."""
@@ -73,9 +73,9 @@ class Future(Futures.Future):
         try:
             while True:
                 try:
-                    if (statusUpdateFunction is not None and 
-                            self._computedValue is not None and 
-                            hasSubscribed[0] == False and 
+                    if (statusUpdateFunction is not None and
+                            self._computation is not None and
+                            hasSubscribed[0] == False and
                             time.time() > timeOfLastSubscription[0] + 1.0):
                         hasSubscribed[0] = True
                         def onSuccess(result):
@@ -85,14 +85,25 @@ class Future(Futures.Future):
                                 try:
                                     statusUpdateFunction(result)
                                 except:
-                                    logging.error("statusUpdateFunction threw an unexpected exception:\n%s", traceback.format_exc())
+                                    logging.error(
+                                        "statusUpdateFunction threw an unexpected exception:\n%s",
+                                        traceback.format_exc()
+                                        )
 
                         def onFailure(result):
-                            logging.error("subscribing to computation statistics produced unexpected error: %s", result)
+                            logging.error(
+                                ("subscribing to computation statistics produced "
+                                 "unexpected error: %s"),
+                                result
+                                )
                             hasSubscribed[0] = False
                             timeOfLastSubscription[0] = time.time()
 
-                        self._computedValue.get_stats({'onSuccess': onSuccess, 'onFailure': onFailure})
+                        self._computation.get_stats(
+                            {
+                                'onSuccess': onSuccess,
+                                'onFailure': onFailure
+                            })
                         timeOfLastSubscription[0] = time.time()
 
                     return self.result(timeout=KEYBOARD_INTERRUPT_WAKEUP_INTERVAL)

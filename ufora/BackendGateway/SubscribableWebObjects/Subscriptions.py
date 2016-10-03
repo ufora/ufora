@@ -32,8 +32,7 @@ class Subscriptions(object):
 
 
     def addSubscription(self, subscription_id, observable, field_name):
-        def observer(observable_id, field, new_value, old_value):
-            assert observable_id == observable.id
+        def observer(field, new_value, old_value):
             assert field == field_name
             if new_value != old_value:
                 self.subscriptionValues[subscription_id] = new_value

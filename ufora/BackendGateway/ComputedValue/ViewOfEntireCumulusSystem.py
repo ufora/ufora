@@ -17,11 +17,11 @@ from ufora.BackendGateway.SubscribableWebObjects.SubscribableObject \
 
 
 class ViewOfEntireCumulusSystem(SubscribableObject):
-    def __init__(self, id, cumulus_gateway, cache_loader, _):
-        super(ViewOfEntireCumulusSystem, self).__init__(id, cumulus_gateway, cache_loader)
+    def __init__(self, id, cumulus_env, _):
+        super(ViewOfEntireCumulusSystem, self).__init__(id, cumulus_env)
 
         self.viewOfSystem_ = None
-        self.recentGlobalUserFacingLogMessages_ = None
+        self.recentGlobalUserFacingLogMessages_ = ()
         self.totalMessageCountsEver_ = None
 
         self.cumulus_gateway.onJsonViewOfSystemChanged = self.onJsonViewOfSystemChanged
@@ -72,7 +72,6 @@ class ViewOfEntireCumulusSystem(SubscribableObject):
         self.viewOfSystem_ = value
 
 
-    @ExposedFunction
     def pushNewGlobalUserFacingLogMessage(self, msg):
         self.totalMessageCountsEver_ = self.totalMessageCountsEver_ + 1
         self.recentGlobalUserFacingLogMessages_ = (

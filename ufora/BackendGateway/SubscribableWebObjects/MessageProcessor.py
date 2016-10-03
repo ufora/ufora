@@ -22,6 +22,8 @@ import traceback
 
 import ufora.FORA.python.ModuleImporter as ModuleImporter
 
+import ufora.BackendGateway.Computations as Computations
+import ufora.BackendGateway.ObjectConverter as ObjectConverter
 import ufora.BackendGateway.ComputedGraph.ComputedGraph as ComputedGraph
 
 import ufora.BackendGateway.SubscribableWebObjects.AllObjectClassesToExpose \
@@ -185,6 +187,10 @@ class MessageProcessor(object):
     def __init__(self, cumulus_gateway, cache_loader):
         self.cumulus_gateway = cumulus_gateway
         self.cache_loader = cache_loader
+        self.object_converter = ObjectConverter.ObjectConverter(cache_loader.vdm)
+        self.computations = Computations.Computations(cumulus_gateway,
+                                                      cache_loader.vdm,
+                                                      self.object_converter)
 
         self.lock = threading.Lock()
         self.cacheLoadEvents = {}
@@ -321,10 +327,6 @@ class MessageProcessor(object):
             }]
 
     def extractObjectDefinition(self, objDefJson, objectId=None):
-        logging.error("Object definition: %s. ObjectId: %s.\nActive objects: %s",
-                      objDefJson,
-                      objectId,
-                      self.active_objects)
         if 'objectId_' in objDefJson or 'objectDefinition_' in objDefJson:
             return self.convertObjectArgs(objDefJson)
 
@@ -343,8 +345,12 @@ class MessageProcessor(object):
             objectCls = AllObjectClassesToExpose.classMap[objType]
             assert objectId is not None
             result = objectCls(objectId if objectId is not None else uuid.uuid4().hex,
-                               self.cumulus_gateway,
-                               self.cache_loader,
+                               SubscribableObject.CumulusEnvironment(
+                                   self.cumulus_gateway,
+                                   self.cache_loader,
+                                   self.computations,
+                                   self.object_converter
+                                   ),
                                objectArgs)
             result.__dict__['objectDefinition_'] = objDefJson
             self.active_objects[result.id] = result

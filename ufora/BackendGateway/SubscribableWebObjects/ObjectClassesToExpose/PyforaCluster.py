@@ -18,8 +18,8 @@ from ufora.BackendGateway.SubscribableWebObjects.SubscribableObject \
 
 
 class PyforaCluster(SubscribableObject):
-    def __init__(self, id, cumulus_gateway, cache_loader, _):
-        super(PyforaCluster, self).__init__(id, cumulus_gateway, cache_loader)
+    def __init__(self, id, cumulus_env, _):
+        super(PyforaCluster, self).__init__(id, cumulus_env)
 
 
     @ExposedFunction()

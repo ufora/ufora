@@ -14,17 +14,17 @@
 
 import ufora.BackendGateway.SubscribableWebObjects.Exceptions as Exceptions
 
-import ufora.BackendGateway.SubscribableWebObjects.ObjectClassesToExpose.Test as Test
+#import ufora.BackendGateway.SubscribableWebObjects.ObjectClassesToExpose.Test as Test
 import ufora.BackendGateway.SubscribableWebObjects.ObjectClassesToExpose.PyforaObjectConverter \
     as PyforaObjectConverter
-import ufora.BackendGateway.SubscribableWebObjects.ObjectClassesToExpose.PyforaComputedValue \
-    as PyforaComputedValue
-import ufora.BackendGateway.SubscribableWebObjects.ObjectClassesToExpose.WriteToS3Task \
-    as WriteToS3Task
+import ufora.BackendGateway.SubscribableWebObjects.Computation as Computation
+#import ufora.BackendGateway.SubscribableWebObjects.ObjectClassesToExpose.PyforaComputedValue \
+    #as PyforaComputedValue
+#import ufora.BackendGateway.SubscribableWebObjects.ObjectClassesToExpose.WriteToS3Task \
+    #as WriteToS3Task
 import ufora.BackendGateway.SubscribableWebObjects.ObjectClassesToExpose.PyforaCluster \
     as PyforaCluster
 
-import ufora.BackendGateway.ComputedValue.ComputedValue as ComputedValue
 import ufora.BackendGateway.ComputedValue.PersistentCacheIndex as PersistentCacheIndex
 import ufora.BackendGateway.ComputedValue.ViewOfEntireCumulusSystem as ViewOfEntireCumulusSystem
 
@@ -38,6 +38,7 @@ classMap = {
     #"PersistentCacheIndex": PersistentCacheIndex.PersistentCacheIndex,
     "PyforaObjectConverter": PyforaObjectConverter.PyforaObjectConverter,
     #"PyforaComputedValue": PyforaComputedValue.PyforaComputedValue,
+    "Computation": Computation.Computation,
     "ViewOfEntireCumulusSystem": ViewOfEntireCumulusSystem.ViewOfEntireCumulusSystem,
     #"WriteToS3Task": WriteToS3Task.WriteToS3Task,
     #"PyforaDictionaryElement": PyforaComputedValue.PyforaDictionaryElement,

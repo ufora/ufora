@@ -60,7 +60,7 @@ class Connection(object):
         def onSuccess(messages):
             if self.closed:
                 return
-            
+
             self.pullAllMessages()
 
         def onChanged(messages):
@@ -86,11 +86,11 @@ class Connection(object):
         def onSuccess(messages):
             try:
                 for m in messages:
-                        if self.logMessageHandler:
-                            self.logMessageHandler(m)
-                        else:
-                            if not m['isDeveloperFacing']:
-                                print m['message'],
+                    if self.logMessageHandler:
+                        self.logMessageHandler(m)
+                    else:
+                        if not m['isDeveloperFacing']:
+                            print m['message'],
             finally:
                 processed.set()
 
@@ -127,7 +127,8 @@ class Connection(object):
         if not isinstance(valueAsString.computedValue, SubscribableWebObjects.PyforaComputedValue):
             onCompletedCallback(
                 Exceptions.PyforaError(
-                    "The object handle in the object passed to triggerS3DatasetExport should be a ComputedValue"
+                    ("The object handle in the object passed to triggerS3DatasetExport should be a "
+                     "ComputedValue")
                     )
                 )
             return
@@ -234,8 +235,8 @@ class Connection(object):
         assert isinstance(fn, RemotePythonObject.RemotePythonObject)
         assert all([isinstance(arg, RemotePythonObject.RemotePythonObject) for arg in args])
 
-        computedValue = self.webObjectFactory.PyforaComputedValue({
-            'argIds': (fn._pyforaComputedValueArg(),) + tuple(
+        computation = self.webObjectFactory.Computation({
+            'arg_ids': (fn._pyforaComputedValueArg(), ) + tuple(
                 arg._pyforaComputedValueArg() for arg in args
                 )
             })
@@ -243,48 +244,46 @@ class Connection(object):
         def onFailure(err):
             if not self.closed:
                 onCreatedCallback(Exceptions.PyforaError(err))
-        def onSuccess(computationId):
+        def onSuccess(_):
             if not self.closed:
-                onCreatedCallback(computedValue)
-        def onChanged(computationId):
-            pass
+                onCreatedCallback(computation)
 
-        computedValue.subscribe_submittedComputationId({
+        computation.get_computation_id({
             'onSuccess': onSuccess,
-            'onFailure': onFailure,
-            'onChanged': onChanged
+            'onFailure': onFailure
             })
 
 
-    def prioritizeComputation(self,
-                              computedValue,
-                              onPrioritizedCallback,
-                              onCompletedCallback,
-                              onFailedCallback):
+    def start_computation(self,
+                          computation,
+                          onStartedCallback,
+                          onCompletedCallback,
+                          onFailedCallback):
         """Prioritize a given computation.
 
-        computedValue - the callback result of creating a computation.
-        onPrioritizedCallback - called with either an error or None on success of the prioritization
+        computation - the callback result of creating a computation.
+        onStartedCallback - called with either an error or None if the computation
+                            was started successfully
         onCompletedCallback - called with the "jsonStatus" if the computation finishes with a value
         onFailedCallback - called with a pyfora exception if the computation fails
             or throws an exception for some reason
         """
         def onFailure(err):
             if not self.closed:
-                onPrioritizedCallback(Exceptions.PyforaError(err))
-        def onSuccess(result):
+                onStartedCallback(Exceptions.PyforaError(err))
+        def onSuccess(_):
             if not self.closed:
-                onPrioritizedCallback(None)
-                self._subscribeToComputationStatus(computedValue,
+                onStartedCallback(None)
+                self._subscribeToComputationStatus(computation,
                                                    onCompletedCallback,
                                                    onFailedCallback)
 
-        computedValue.increaseRequestCount({}, {
+        computation.start({}, {
             'onSuccess': onSuccess,
             'onFailure': onFailure
             })
 
-    def triggerCompilationOnComputation(self, computedValue, onCompleted):
+    def triggerCompilationOnComputation(self, computation, onCompleted):
         """Trigger compilation of the code underlying a computation.
 
         This is exclusively used for testing purposes, as it only works when
@@ -292,15 +291,12 @@ class Connection(object):
 
         Returns True on success, False on failure.
         """
-        def onFailure(err):
+        def callback(_):
             onCompleted()
 
-        def onSuccess(result):
-            onCompleted()
-
-        computedValue.triggerCompilation({}, {
-            'onSuccess': onSuccess,
-            'onFailure': onFailure
+        computation.triggerCompilation({}, {
+            'onSuccess': callback,
+            'onFailure': callback
             })
 
     @staticmethod
@@ -385,14 +381,14 @@ class Connection(object):
             if not self.closed:
                 onFailedCallback(Exceptions.PyforaError(err))
 
-        computedValue.subscribe_jsonStatusRepresentation({
+        computedValue.subscribe_computation_status({
             'onSuccess': statusChanged,
             'onFailure': onFailure,
             'onChanged': statusChanged
             })
 
 
-    def downloadComputation(self, computedValue, onResultCallback, maxBytecount=None):
+    def downloadComputation(self, computation, onResultCallback, maxBytecount=None):
         """download the result of a computation as json.
 
         onResultCallback - called with a PyforaError if there is a problem, or
@@ -406,23 +402,14 @@ class Connection(object):
             if not self.closed and jsonStatus is not None:
                 onResultCallback(jsonStatus)
 
-        computedValue.increaseRequestCount(
-            {},
-            {'onSuccess': lambda *args: None, 'onFailure': lambda *args: None}
-            )
-
         def resultStatusChanged(populated):
             if not self.closed and populated:
-                resultComputer.getResultAsJson({}, {
+                computation.request_result({'maxBytecount': maxBytecount}, {
                     'onSuccess': resultChanged,
                     'onFailure': onFailure
                     })
 
-        resultComputer = self.webObjectFactory.PyforaResultAsJson(
-            {'computedValue': computedValue, 'maxBytecount': maxBytecount}
-            )
-
-        resultComputer.subscribe_resultIsPopulated({
+        computation.subscribe_computation_status({
             'onSuccess': resultStatusChanged,
             'onFailure': onFailure,
             'onChanged': resultStatusChanged

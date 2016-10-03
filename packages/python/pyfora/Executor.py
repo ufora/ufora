@@ -303,10 +303,11 @@ class Executor(object):
     def _resolveFutureToComputedObject(self, future, jsonResult):
         self._resolve_future(
             future,
-            RemotePythonObject.ComputedRemotePythonObject(future._computedValue,
-                                                          self,
-                                                          'status' in jsonResult and jsonResult['status'] == "exception"
-                                                          )
+            RemotePythonObject.ComputedRemotePythonObject(
+                future._computation,
+                self,
+                'status' in jsonResult and jsonResult['status'] == "exception"
+                )
             )
 
 
@@ -420,8 +421,8 @@ class Executor(object):
         def onCompleted():
             self._resolve_future(future, True)
 
-        def onComputationCreated(result):
-            self.connection.triggerCompilationOnComputation(result, onCompleted)
+        def onComputationCreated(computation):
+            self.connection.triggerCompilationOnComputation(computation, onCompleted)
 
         self.connection.createComputation(functionHandle, argHandles, onComputationCreated)
 
@@ -429,21 +430,20 @@ class Executor(object):
 
     def _callRemoteObject(self, fnHandle, argHandles):
         future = self._create_future(onCancel=self._cancelComputation)
-        def onComputationCreated(result):
-            if isinstance(result, Exception):
-                self._resolve_future(future, result)
+        def onComputationCreated(computation):
+            if isinstance(computation, Exception):
+                self._resolve_future(future, computation)
                 return
-            computation = result
 
-            future.setComputedValue(computation)
-            self._prioritizeComputation(future)
+            future.set_computation(computation)
+            self._startComputation(future)
 
         self.connection.createComputation(fnHandle, argHandles, onComputationCreated)
         return future
 
-    def _prioritizeComputation(self, future):
-        computation = future._computedValue
-        def onPrioritized(result):
+    def _startComputation(self, future):
+        computation = future._computation
+        def onStarted(result):
             if isinstance(result, Exception):
                 self._resolve_future(future, result)
             else:
@@ -456,9 +456,9 @@ class Executor(object):
             assert isinstance(exception, Exceptions.PyforaError)
             self._resolve_future(future, exception)
 
-        self.connection.prioritizeComputation(
+        self.connection.start_computation(
             computation,
-            onPrioritized,
+            onStarted,
             onComputationCompleted,
             onComputationFailed
             )
