@@ -343,7 +343,6 @@ class MessageProcessor(object):
 
         try:
             objectCls = AllObjectClassesToExpose.classMap[objType]
-            assert objectId is not None
             result = objectCls(objectId if objectId is not None else uuid.uuid4().hex,
                                SubscribableObject.CumulusEnvironment(
                                    self.cumulus_gateway,
@@ -365,9 +364,8 @@ class MessageProcessor(object):
 
         if isinstance(objectArgs, dict):
             if 'objectDefinition_' in objectArgs:
-                assert 'objectId_' in objectArgs
                 return self.extractObjectDefinition(objectArgs['objectDefinition_'],
-                                                    objectArgs['objectId_'])
+                                                    objectArgs.get('objectId_'))
 
             if 'objectId_' in objectArgs:
                 obj_id = objectArgs['objectId_']

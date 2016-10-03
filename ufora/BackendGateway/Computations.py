@@ -38,12 +38,8 @@ class Computations(object):
         self.cumulus_gateway.onComputationResult = self.on_computation_result
 
 
-    def create_computation(self, arg_ids):
-        apply_tuple = self.create_apply_tuple(arg_ids)
-        logging.info("apply tuple: %s", apply_tuple)
-        comp_id = self.cumulus_gateway.getComputationIdForDefinition(
-            self.create_computation_definition(apply_tuple)
-            )
+    def create_computation(self, computation_definition):
+        comp_id = self.cumulus_gateway.getComputationIdForDefinition(computation_definition)
         with self.lock_:
             logging.info("adding computation: %s", comp_id)
             self.pending_computations[comp_id] = None
@@ -127,7 +123,9 @@ class Computations(object):
             elif isinstance(a, ImplValContainer_):
                 terms.append(CumulusNative.ComputationDefinitionTerm.Value(a, None))
             else:
-                terms.append(a.computationDefinitionTerm_)
+                terms.append(CumulusNative.ComputationDefinitionTerm.Subcomputation(
+                    a.computation_definition.asRoot.terms
+                    ))
 
         return CumulusNative.ComputationDefinition.Root(
             CumulusNative.ImmutableTreeVectorOfComputationDefinitionTerm(terms)

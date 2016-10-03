@@ -26,7 +26,10 @@ class Computation(SubscribableObject):
     def __init__(self, id, cumulus_env, args):
         super(Computation, self).__init__(id, cumulus_env)
         self.arg_ids = args['arg_ids']
-        self._computation_id = self.computations.create_computation(self.arg_ids)
+        self.computation_definition = self.computations.create_computation_definition(
+            self.computations.create_apply_tuple(self.arg_ids)
+            )
+        self._computation_id = self.computations.create_computation(self.computation_definition)
 
         self._result = None
         self._status = None
@@ -246,7 +249,3 @@ class Computation(SubscribableObject):
                     (memoryQuotaFailure.amount, memoryQuotaFailure.required)
 
         return {'status': 'failure', 'message': message}
-
-
-
-
