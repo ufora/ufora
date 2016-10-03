@@ -48,6 +48,7 @@ public:
 		Pagelet,
 		BigVectorHandle,
 		DataTask,
+		ExternalProcess,
 		FreeStore
 	};
 
