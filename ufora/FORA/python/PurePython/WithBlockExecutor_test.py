@@ -65,6 +65,14 @@ class WithBlockExecutors_test(unittest.TestCase):
                 res = func()
             self.assertEqual(res.toLocal().result(), func())
 
+    def test_downloading_with_closed_executor_is_exception(self):
+        with self.assertRaises(Exceptions.PyforaError):
+            with self.create_executor(allowCached = False) as fora:
+                with fora.remotely:
+                    b = 10
+
+            result = b.toLocal().result()
+
     def test_with_block_assignment_1(self):
         with self.create_executor() as fora:
             x = 5

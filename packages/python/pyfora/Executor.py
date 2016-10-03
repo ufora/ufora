@@ -311,6 +311,8 @@ class Executor(object):
 
 
     def _downloadComputedValueResult(self, computation, maxBytecount):
+        self._raiseIfClosed()
+        
         future = self._create_future()
 
         def onResultCallback(jsonResult):
