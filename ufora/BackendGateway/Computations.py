@@ -42,31 +42,27 @@ class Computations(object):
         comp_id = self.cumulus_gateway.getComputationIdForDefinition(computation_definition)
         with self.lock_:
             logging.info("adding computation: %s", comp_id)
-            self.pending_computations[comp_id] = None
+            if comp_id not in self.pending_computations:
+                future = Future(lambda: self.cancel(comp_id))
+                self.pending_computations[comp_id] = (future, False)
 
         return comp_id
 
 
     def start_computation(self, comp_id):
         with self.lock_:
-            logging.info("Pending computations: %s", self.pending_computations)
             if comp_id not in self.pending_computations:
                 # TODO: error - computation wasn't created
                 logging.error("Computation doesn't exist: %s", comp_id)
 
-            future = self.pending_computations[comp_id]
-            if future:
+            future, is_started = self.pending_computations[comp_id]
+            if is_started:
                 return future
 
-            future = Future(lambda: self.cancel(comp_id))
-
-            self.pending_computations[comp_id] = future
-            logging.info("Setting computation priority")
             self.cumulus_gateway.setComputationPriority(
                 comp_id,
                 CumulusNative.ComputationPriority(self.priority_allocator.next())
                 )
-            logging.info("Computation priority set")
         return future
 
 
@@ -89,24 +85,24 @@ class Computations(object):
 
 
     def on_computation_result(self, comp_id, result, statistics):
-        logging.info("Computation result: %s", comp_id)
         with self.lock_:
-            future = self.pending_computations.get(comp_id)
-            del self.pending_computations[comp_id]
+            future, is_started = self.pending_computations.get(comp_id)
+            logging.info("result for computation %s: %s. started? %s\npending: %s",
+                         comp_id,
+                         result,
+                         is_started,
+                         self.pending_computations)
         future.set_result((result, statistics))
 
 
     def create_apply_tuple(self, arg_ids):
-        logging.info("arg ids: %s", arg_ids)
         def unwrap(arg):
             if isinstance(arg, int):
-                logging.info("converted objects: %s", self.object_converter.converted_objects)
                 return self.object_converter.converted_objects[arg]
             else:
                 return arg
 
         impl_vals = tuple(unwrap(arg) for arg in arg_ids)
-        logging.info("impl vals: %s", impl_vals)
         return impl_vals[:1] + (ForaValue.FORAValue.symbol_Call.implVal_,) + impl_vals[1:]
 
 

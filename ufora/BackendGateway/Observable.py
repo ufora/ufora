@@ -23,7 +23,8 @@ def observable(f):
             name = name[4:]
         old_value = getattr(self, name)
         f(self, value)
-        self.notify(name, value, old_value)
+        if value != old_value:
+            self.notify(name, value, old_value)
     return wrapper
 
 
@@ -41,6 +42,6 @@ class Observable(object):
 
 
     def notify(self, name, new_value, old_value):
-        for observer in self.observers[name]:
-            observer(name, new_value, old_value)
+        for observer in list(self.observers[name]):
+            observer(self, name, new_value, old_value)
 

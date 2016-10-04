@@ -398,8 +398,19 @@ class Connection(object):
             if not self.closed:
                 onResultCallback(Exceptions.PyforaError(err['message']))
 
+        subscribed_to_result = [False]
+
         def resultChanged(jsonStatus):
-            if not self.closed and jsonStatus is not None:
+            if self.closed:
+                return
+            if jsonStatus is None and not subscribed_to_result[0]:
+                subscribed_to_result[0] = True
+                computation.subscribe_result({
+                    'onSuccess': resultChanged,
+                    'onFailure': onFailure,
+                    'onChanged': resultChanged
+                    })
+            elif jsonStatus is not None:
                 onResultCallback(jsonStatus)
 
         def resultStatusChanged(populated):

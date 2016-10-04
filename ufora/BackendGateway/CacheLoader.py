@@ -21,12 +21,23 @@ import ufora.native.Cumulus as CumulusNative
 
 class VectorSlice(Observable):
     def __init__(self, vector, low_index, high_index):
+        super(VectorSlice, self).__init__()
         self.vector = vector
         self.low_index = low_index
         self.high_index = high_index
 
         self.is_loaded = False
         self._vdids = None
+
+
+    def __str__(self):
+        return ("VectorSlice(vector=%s, low_index=%s, high_index=%s) "
+                "{is_loaded=%s}") % (
+                    self.vector,
+                    self.low_index,
+                    self.high_index,
+                    self.is_loaded
+                    )
 
 
     @observable
@@ -45,6 +56,7 @@ class CacheLoader(object):
         self.vectorDataIDRequestCount_ = {}
         self.vectorDataIDToVectorSlices_ = {}
         self.vdm.setDropUnreferencedPagesWhenFull(True)
+        self.pending_vector_slices = {}
 
         self.cumulus_gateway.onCacheLoad = self.onCacheLoad
 
@@ -100,7 +112,7 @@ class CacheLoader(object):
         lots of arrays of different sizes.
         """
         vector_data_ids = self.vector_data_ids_for_slice(vector_slice)
-        if len(vector_data_ids) > 0 and not vector_slice.isLoaded:
+        if len(vector_data_ids) > 0 and not vector_slice.is_loaded:
             return None
 
         if not self.vectorDataIsLoaded(vector_slice):
@@ -124,7 +136,7 @@ class CacheLoader(object):
 
         if result is None and not self.vectorDataIsLoaded(vector_slice):
             logging.info("CumulusClient: %s was marked loaded but returned None", self)
-            vector_slice.isLoaded = False
+            vector_slice.set_is_loaded(False)
             self.reloadVector(vector_slice)
 
         return result
@@ -186,15 +198,15 @@ class CacheLoader(object):
         res = None
         preventPythonArrayExtraction = False
 
-        vec_slice = VectorSlice(vector_ivc, 0, vector_ivc.getVectorSize())
+        vec_slice = self.get_or_create_vector_slice(vector_ivc, 0, vector_ivc.getVectorSize())
         #see if it's a string. This is the only way to be holding a Vector of char
         if vector_ivc.isVectorOfChar():
             res = self.extractVectorDataAsNumpyArray(vec_slice)
             if res is not None:
-                res = {'string': res.tostring()}
+                return {'string': res.tostring()}
 
         #see if it's simple enough to transmit as numpy data
-        if res is None and len(vector_ivc.getVectorElementsJOR()) == 1 and len(vector_ivc) > 1:
+        if len(vector_ivc.getVectorElementsJOR()) == 1 and len(vector_ivc) > 1:
             res = self.extractVectorDataAsNumpyArrayInChunks(vec_slice)
             if res is not None:
                 firstElement = self.extractVectorItem(vector_ivc, 0)
@@ -208,7 +220,7 @@ class CacheLoader(object):
                         "get the first value"
                         ))
 
-                res = {'firstElement': firstElement, 'contentsAsNumpyArrays': res}
+                return {'firstElement': firstElement, 'contentsAsNumpyArrays': res}
             else:
                 if not self.vectorDataIsLoaded(vec_slice):
                     #there's a race condition where the data could be loaded between now and
@@ -219,19 +231,26 @@ class CacheLoader(object):
         if not preventPythonArrayExtraction and res is None:
             res = self.extractVectorDataAsPythonArray(vec_slice)
             if res is not None:
-                res = {'listContents': res}
+                return {'listContents': res}
 
-        if res is None:
-            def notify_callback(name, new_value, old_value):
-                assert name == 'is_loaded'
-                if new_value != old_value:
-                    callback()
+        def notify_callback(observed_slice, name, new_value, old_value):
+            if new_value:
+                observed_slice.unobserve('is_loaded', notify_callback)
+                callback()
 
-            vec_slice.observe('is_loaded', notify_callback)
-            self.increaseVectorRequestCount(vec_slice)
-            return None
+        vec_slice.observe('is_loaded', notify_callback)
+        logging.info("waiting for page load: %s", vec_slice)
+        self.increaseVectorRequestCount(vec_slice)
+        return None
 
-        return res
+
+    def get_or_create_vector_slice(self, vector, low_index, high_index):
+        vector_slice = self.pending_vector_slices.get((vector, low_index, high_index))
+        if vector_slice is None:
+            vector_slice = VectorSlice(vector, low_index, high_index)
+            self.pending_vector_slices[(vector, low_index, high_index)] = vector_slice
+
+        return vector_slice
 
 
     def onCacheLoad(self, vectorDataID):
@@ -239,8 +258,8 @@ class CacheLoader(object):
             vector_slices = self.vectorDataIDToVectorSlices_.get(vectorDataID, [])
             self.collectOffloadedVectors_()
 
-            for vector_slice in vector_slices:
-                vector_slice.set_is_loaded = self.computeVectorSliceIsLoaded_(vector_slice)
+            for vector_slice in list(vector_slices):
+                vector_slice.set_is_loaded(self.computeVectorSliceIsLoaded_(vector_slice))
 
 
     def collectOffloadedVectors_(self):

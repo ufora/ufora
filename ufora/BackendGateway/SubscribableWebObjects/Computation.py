@@ -12,7 +12,6 @@
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
 
-import logging
 
 from ufora.BackendGateway.SubscribableWebObjects.ObjectClassesToExpose.PyforaToJsonTransformer \
     import PyforaToJsonTransformer
@@ -39,9 +38,7 @@ class Computation(SubscribableObject):
 
     @ExposedFunction
     def start(self, _):
-        logging.info("starting computation")
         future = self.computations.start_computation(self._computation_id)
-        logging.info("computation started")
         future.add_done_callback(self.on_computation_result)
         return True
 
@@ -49,7 +46,6 @@ class Computation(SubscribableObject):
     @ExposedProperty
     def computation_id(self):
         comp_id = self._computation_id.toSimple()
-        logging.info("computation_id: %s", comp_id)
         return comp_id
 
 
@@ -101,14 +97,16 @@ class Computation(SubscribableObject):
         if value is None:
             return None
 
-        def transform_to_json(vector_extractor):
+        vector_extractor = [None]
+        def transform_to_json():
+            assert vector_extractor[0] is not None
             transformer = PyforaToJsonTransformer(max_byte_count)
             result = None
             try:
                 res = self.object_converter.transformPyforaImplval(
                     value,
                     transformer,
-                    vector_extractor)
+                    vector_extractor[0])
 
                 if transformer.anyListsThatNeedLoading:
                     return None
@@ -137,9 +135,8 @@ class Computation(SubscribableObject):
             self.result = result
             return self.result
 
-        vector_extractor = self.cache_loader.get_vector_extractor(value, transform_to_json)
-        as_json = transform_to_json(vector_extractor)
-        logging.info("result as json: %s", as_json)
+        vector_extractor[0] = self.cache_loader.get_vector_extractor(value, transform_to_json)
+        as_json = transform_to_json()
         return as_json
 
 
@@ -187,7 +184,6 @@ class Computation(SubscribableObject):
 
     def on_computation_result(self, future):
         result, stats = future.result()
-        logging.info("computation result: %s", result)
         self.set_computation_result(result)
         self.stats = stats
 
