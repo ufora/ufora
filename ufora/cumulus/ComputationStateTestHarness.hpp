@@ -19,6 +19,7 @@
 #include "../core/threading/CallbackScheduler.hppml"
 #include "ComputationState.hppml"
 #include "../FORA/Core/ExecutionContextConfiguration.hppml"
+#include "../FORA/Serialization/SerializedObject.hpp"
 
 namespace Cumulus {
 

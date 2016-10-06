@@ -36,7 +36,7 @@ public:
 			using namespace boost::python;
 
 			object cls =
-				ValueLikeCPPMLWrapper::exposeValueLikeCppmlType<ComputationResult>()
+				Ufora::python::CPPMLWrapper<ComputationResult>()
 					.class_()
 					.def("deserializedResult", &ComputationResult::deserializedResult)
 					;

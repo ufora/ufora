@@ -89,12 +89,24 @@ SerializedObject::getSerializedData()
 	{
 	return mSerializedData;
 	}
-
+	
+template<>
 void Serializer<SerializedObject, HashingStreamSerializer>::serialize(HashingStreamSerializer& s, const SerializedObject& in)
 	{
 	s.serialize(in.hash());
 	}
 
+template<>
+char CPPMLEquality<PolymorphicSharedPtr<SerializedObject>, void>::cmp(
+				const PolymorphicSharedPtr<SerializedObject>& lhs,
+				const PolymorphicSharedPtr<SerializedObject>& rhs
+				)
+	{
+	return lhs->hash().cmp(rhs->hash());
+	}
+
+
+template<>
 void Serializer<PolymorphicSharedPtr<SerializedObject>, HashingStreamSerializer>::serialize(
 				HashingStreamSerializer& s,
 				const PolymorphicSharedPtr<SerializedObject>& in

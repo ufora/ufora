@@ -138,17 +138,6 @@ private:
 };
 
 
-template<>
-class CPPMLEquality<PolymorphicSharedPtr<SerializedObject>, void> {
-public:
-		static char cmp(	const PolymorphicSharedPtr<SerializedObject>& lhs,
-							const PolymorphicSharedPtr<SerializedObject>& rhs
-							)
-			{
-			return lhs->hash().cmp(rhs->hash());
-			}
-};
-
 template<class serializer_type>
 class Serializer<PolymorphicSharedPtr<SerializedObject>, serializer_type> {
 public:
@@ -252,50 +241,6 @@ void	SerializedObject::deserialize(
 
 	valueStream.deserialize(outVal);
 	}
-
-class HashingStreamSerializer;
-
-template<>
-class Serializer<SerializedObject, HashingStreamSerializer> {
-public:
-		static void serialize(HashingStreamSerializer& s, const SerializedObject& in);
-};
-
-template<>
-class Serializer<PolymorphicSharedPtr<SerializedObject>, HashingStreamSerializer> {
-public:
-		static void serialize(HashingStreamSerializer& s, const PolymorphicSharedPtr<SerializedObject>& in);
-};
-
-
-template<>
-class CPPMLPrettyPrint<PolymorphicSharedPtr<SerializedObject> > {
-public:
-		static void prettyPrint(CPPMLPrettyPrintStream& s, const PolymorphicSharedPtr<SerializedObject>& t)
-			{
-			if (t)
-				streamTo(s, "SerializedObject(" + prettyPrintString(t->hash()) + ")");
-			else
-				streamTo(s, "SerializedObject(<null>)");
-			}
-};
-
-
-template<class T, class T2>
-class CPPMLTransform;
-
-template<>
-class CPPMLTransform<PolymorphicSharedPtr<SerializedObject>, void> {
-public:
-		template<class F>
-		static Nullable<PolymorphicSharedPtr<SerializedObject> > apply(
-							const PolymorphicSharedPtr<SerializedObject>& in,
-							const F& f
-							)
-			{
-			return null();
-			}
-};
 
 
 
