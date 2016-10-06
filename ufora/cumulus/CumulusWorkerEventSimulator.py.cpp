@@ -15,7 +15,7 @@
 ****************************************************************************/
 #include <stdint.h>
 #include <boost/python.hpp>
-#include "../FORA/python/FORAPythonUtil.hppml"
+#include "../core/python/ValueLikeCPPMLWrapper.hppml"
 #include "../FORA/Serialization/SerializedObjectFlattener.hpp"
 #include "../native/Registrar.hpp"
 #include "../core/python/CPPMLWrapper.hpp"

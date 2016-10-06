@@ -19,7 +19,7 @@
 
 #include "../../native/Registrar.hpp"
 #include "../python/utilities.hpp"
-#include "../../FORA/python/FORAPythonUtil.hppml"
+#include "../python/ValueLikeCPPMLWrapper.hppml"
 
 class RandomWhitespaceInserterWrapper :
     public native::module::Exporter<RandomWhitespaceInserterWrapper> {

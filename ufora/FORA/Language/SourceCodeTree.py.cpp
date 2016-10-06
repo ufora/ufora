@@ -15,7 +15,7 @@
 ****************************************************************************/
 #include "SourceCodeTree.hppml"
 
-#include "../python/FORAPythonUtil.hppml"
+#include "../../core/python/ValueLikeCPPMLWrapper.hppml"
 #include <boost/python.hpp>
 #include "../../native/Registrar.hpp"
 #include "../../core/python/CPPMLWrapper.hpp"
@@ -87,7 +87,7 @@ public:
 
 		boost::python::object cls;
 
-		cls = FORAPythonUtil::exposeValueLikeCppmlType<Fora::SourceCodeTree>()
+		cls = ValueLikeCPPMLWrapper::exposeValueLikeCppmlType<Fora::SourceCodeTree>()
 			.class_()
 			.def("Module", constructModuleWithName)
 			.def("Module", constructModuleWithNameAndText)

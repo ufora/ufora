@@ -16,7 +16,7 @@
 #include "Function.hppml"
 
 #include <stdint.h>
-#include "../python/FORAPythonUtil.hppml"
+#include "../../core/python/ValueLikeCPPMLWrapper.hppml"
 #include <boost/python.hpp>
 #include "../../native/Registrar.hpp"
 #include "../../core/python/utilities.hpp"
@@ -69,7 +69,7 @@ public:
 			using namespace boost::python;
 
 			class_<ObjectDefinition>("ObjectDefinition", init<>())
-				.def("__str__", FORAPythonUtil::scopedPrettyPrinter<ObjectDefinition>)
+				.def("__str__", ValueLikeCPPMLWrapper::scopedPrettyPrinter<ObjectDefinition>)
 				.def("toCFG", &objectDefinitionToCFGBasic)
 				.def("termCount", termCount,
 					"Count how many terms there are in the object definition.")

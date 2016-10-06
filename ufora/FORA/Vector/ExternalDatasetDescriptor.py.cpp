@@ -16,7 +16,7 @@
 #include <stdint.h>
 #include <boost/python.hpp>
 #include "ExternalDatasetDescriptor.hppml"
-#include "../python/FORAPythonUtil.hppml"
+#include "../../core/python/ValueLikeCPPMLWrapper.hppml"
 #include "../../core/python/ScopedPyThreads.hpp"
 #include "../../core/python/CPPMLWrapper.hpp"
 #include "../../native/Registrar.hpp"
@@ -38,11 +38,11 @@ public:
 			{
 			using namespace boost::python;
 
-			FORAPythonUtil::exposeValueLikeCppmlType<ExternalDatasetDescriptor>();
-			FORAPythonUtil::exposeValueLikeCppmlType<OdbcRequest>();
-			FORAPythonUtil::exposeValueLikeCppmlType<S3Dataset>();
-			FORAPythonUtil::exposeValueLikeCppmlType<HttpRequest>();
-			FORAPythonUtil::exposeValueLikeCppmlType<FileDataset>();
+			ValueLikeCPPMLWrapper::exposeValueLikeCppmlType<ExternalDatasetDescriptor>();
+			ValueLikeCPPMLWrapper::exposeValueLikeCppmlType<OdbcRequest>();
+			ValueLikeCPPMLWrapper::exposeValueLikeCppmlType<S3Dataset>();
+			ValueLikeCPPMLWrapper::exposeValueLikeCppmlType<HttpRequest>();
+			ValueLikeCPPMLWrapper::exposeValueLikeCppmlType<FileDataset>();
 			}
 };
 

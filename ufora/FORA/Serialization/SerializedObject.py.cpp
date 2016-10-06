@@ -18,7 +18,7 @@
 #include <stdint.h>
 #include <boost/python.hpp>
 #include <boost/format.hpp>
-#include "../python/FORAPythonUtil.hppml"
+#include "../../core/python/ValueLikeCPPMLWrapper.hppml"
 #include "../../native/Registrar.hpp"
 #include "../../core/python/CPPMLWrapper.hpp"
 #include "../../core/python/ScopedPyThreads.hpp"

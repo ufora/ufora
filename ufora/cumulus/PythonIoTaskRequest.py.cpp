@@ -18,7 +18,7 @@
 #include <stdint.h>
 #include <boost/python.hpp>
 #include "../FORA/Vector/VectorDataID.hppml"
-#include "../FORA/python/FORAPythonUtil.hppml"
+#include "../core/python/ValueLikeCPPMLWrapper.hppml"
 #include "../native/Registrar.hpp"
 #include "../core/python/CPPMLWrapper.hpp"
 
@@ -37,7 +37,7 @@ public:
 			using namespace boost::python;
 
 			boost::python::object cls =
-				FORAPythonUtil::exposeValueLikeCppmlType<PythonIoTaskRequest>()
+				ValueLikeCPPMLWrapper::exposeValueLikeCppmlType<PythonIoTaskRequest>()
 					.class_();
 
 			def("PythonIoTaskRequest", cls);

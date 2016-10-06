@@ -17,7 +17,7 @@
 
 #include <stdint.h>
 #include <boost/python.hpp>
-#include "../FORA/python/FORAPythonUtil.hppml"
+#include "../core/python/ValueLikeCPPMLWrapper.hppml"
 #include "../native/Registrar.hpp"
 #include "../core/python/CPPMLWrapper.hpp"
 
@@ -36,7 +36,7 @@ public:
 			using namespace boost::python;
 
 			object cls =
-				FORAPythonUtil::exposeValueLikeCppmlType<CheckpointRequest>()
+				ValueLikeCPPMLWrapper::exposeValueLikeCppmlType<CheckpointRequest>()
 					.class_()
 				;
 

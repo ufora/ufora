@@ -14,7 +14,7 @@
    limitations under the License.
 ****************************************************************************/
 #include "InterpreterTraceTerm.hppml"
-#include "../python/FORAPythonUtil.hppml"
+#include "../../core/python/ValueLikeCPPMLWrapper.hppml"
 #include <boost/python.hpp>
 #include "../../native/Registrar.hpp"
 #include "../../core/python/CPPMLWrapper.hpp"
@@ -31,7 +31,7 @@ public:
 			{
 			using namespace boost::python;
 
-			FORAPythonUtil::exposeValueLikeCppmlType<Fora::InterpreterTraceTerm>();
+			ValueLikeCPPMLWrapper::exposeValueLikeCppmlType<Fora::InterpreterTraceTerm>();
 			}
 };
 

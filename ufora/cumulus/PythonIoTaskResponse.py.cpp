@@ -17,7 +17,7 @@
 
 #include <stdint.h>
 #include <boost/python.hpp>
-#include "../FORA/python/FORAPythonUtil.hppml"
+#include "../core/python/ValueLikeCPPMLWrapper.hppml"
 #include "../native/Registrar.hpp"
 #include "../core/python/CPPMLWrapper.hpp"
 
@@ -37,7 +37,7 @@ public:
 
 
 			boost::python::object cls =
-				FORAPythonUtil::exposeValueLikeCppmlType<PythonIoTaskResponse>()
+				ValueLikeCPPMLWrapper::exposeValueLikeCppmlType<PythonIoTaskResponse>()
 					.class_()
 					;
 

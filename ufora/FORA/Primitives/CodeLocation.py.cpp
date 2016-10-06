@@ -16,7 +16,7 @@
 #include "CodeLocation.hppml"
 
 #include <stdint.h>
-#include "../python/FORAPythonUtil.hppml"
+#include "../../core/python/ValueLikeCPPMLWrapper.hppml"
 #include <boost/python.hpp>
 #include "../../native/Registrar.hpp"
 #include "../../core/python/CPPMLWrapper.hpp"
@@ -48,22 +48,22 @@ public:
 		using namespace boost::python;
 
 		Ufora::python::CPPMLWrapper<CodeDefinitionPoint>().class_()
-			.def("__str__", FORAPythonUtil::scopedPrettyPrinter<CodeDefinitionPoint>)
-			.def("__repr__", FORAPythonUtil::scopedPrettyPrinter<CodeDefinitionPoint>)
+			.def("__str__", ValueLikeCPPMLWrapper::scopedPrettyPrinter<CodeDefinitionPoint>)
+			.def("__repr__", ValueLikeCPPMLWrapper::scopedPrettyPrinter<CodeDefinitionPoint>)
 			.def("ExternalFromStringList", ExternalFromStringList)
 			.staticmethod("ExternalFromStringList")
 			;
 
 		Ufora::python::CPPMLWrapper<CodeLocation>().class_()
-			.def("__str__", FORAPythonUtil::scopedPrettyPrinter<CodeLocation>)
-			.def("__repr__", FORAPythonUtil::scopedPrettyPrinter<CodeLocation>)
-			.def("__hash__", &FORAPythonUtil::hasher<CodeLocation>)
-			.def("__cmp__", &FORAPythonUtil::comparer<CodeLocation>)
+			.def("__str__", ValueLikeCPPMLWrapper::scopedPrettyPrinter<CodeLocation>)
+			.def("__repr__", ValueLikeCPPMLWrapper::scopedPrettyPrinter<CodeLocation>)
+			.def("__hash__", &ValueLikeCPPMLWrapper::hasher<CodeLocation>)
+			.def("__cmp__", &ValueLikeCPPMLWrapper::comparer<CodeLocation>)
 			;
 
 		Ufora::python::CPPMLWrapper<ForaStackTrace>().class_()
-			.def("__str__", FORAPythonUtil::scopedPrettyPrinter<ForaStackTrace>)
-			.def("__repr__", FORAPythonUtil::scopedPrettyPrinter<ForaStackTrace>)
+			.def("__str__", ValueLikeCPPMLWrapper::scopedPrettyPrinter<ForaStackTrace>)
+			.def("__repr__", ValueLikeCPPMLWrapper::scopedPrettyPrinter<ForaStackTrace>)
 			.def("getIDs", getIDs)
 			;
 

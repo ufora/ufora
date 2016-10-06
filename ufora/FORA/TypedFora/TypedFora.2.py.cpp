@@ -21,7 +21,7 @@
 #include "../../native/Registrar.hpp"
 #include "../../core/python/CPPMLWrapper.hpp"
 #include "../../core/python/ScopedPyThreads.hpp"
-#include "../python/FORAPythonUtil.hppml"
+#include "../../core/python/ValueLikeCPPMLWrapper.hppml"
 #include "../../core/containers/ImmutableTreeVector.py.hpp"
 #include "../Core/ClassMediator.hppml"
 #include "../Native/NativeCode.hppml"
@@ -38,14 +38,14 @@ public:
 			{
 			using namespace boost::python;
 
-			FORAPythonUtil::exposeValueLikeCppmlType<TypedFora::ResultSignature>();
-			FORAPythonUtil::exposeValueLikeCppmlType<TypedFora::BlockID>();
-			FORAPythonUtil::exposeValueLikeCppmlType<TypedFora::Block>();
-			FORAPythonUtil::exposeValueLikeCppmlType<TypedFora::Continuation>();
-			FORAPythonUtil::exposeValueLikeCppmlType<TypedFora::MakeTupleArgument>();
-			FORAPythonUtil::exposeValueLikeCppmlType<TypedFora::MetadataInstruction>();
-			FORAPythonUtil::exposeValueLikeCppmlType<TypedFora::MetadataVariable>();
-			FORAPythonUtil::exposeValueLikeCppmlType<TypedFora::MetadataStackFrame>();
+			ValueLikeCPPMLWrapper::exposeValueLikeCppmlType<TypedFora::ResultSignature>();
+			ValueLikeCPPMLWrapper::exposeValueLikeCppmlType<TypedFora::BlockID>();
+			ValueLikeCPPMLWrapper::exposeValueLikeCppmlType<TypedFora::Block>();
+			ValueLikeCPPMLWrapper::exposeValueLikeCppmlType<TypedFora::Continuation>();
+			ValueLikeCPPMLWrapper::exposeValueLikeCppmlType<TypedFora::MakeTupleArgument>();
+			ValueLikeCPPMLWrapper::exposeValueLikeCppmlType<TypedFora::MetadataInstruction>();
+			ValueLikeCPPMLWrapper::exposeValueLikeCppmlType<TypedFora::MetadataVariable>();
+			ValueLikeCPPMLWrapper::exposeValueLikeCppmlType<TypedFora::MetadataStackFrame>();
 			}
 };
 

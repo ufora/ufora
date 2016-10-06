@@ -21,7 +21,7 @@
 #include "../../native/Registrar.hpp"
 #include "../../core/python/CPPMLWrapper.hpp"
 #include "../../core/python/ScopedPyThreads.hpp"
-#include "../python/FORAPythonUtil.hppml"
+#include "../../core/python/ValueLikeCPPMLWrapper.hppml"
 #include "../../core/containers/ImmutableTreeVector.py.hpp"
 #include "../Core/ClassMediator.hppml"
 #include "../Native/NativeCode.hppml"
@@ -73,26 +73,26 @@ public:
 			PythonWrapper<ImmutableTreeVector<TypedFora::Type> >
 				::exportPythonInterface("TypedFora::Type");
 
-			FORAPythonUtil::exposeValueLikeCppmlType<TypedFora::RefcountStyle>();
-			FORAPythonUtil::exposeValueLikeCppmlType<TypedFora::CallTarget>();
-			FORAPythonUtil::exposeValueLikeCppmlType<TypedFora::TransferTarget>();
-			FORAPythonUtil::exposeValueLikeCppmlType<TypedFora::Callable>();
-			FORAPythonUtil::exposeValueLikeCppmlType<TypedFora::Expression>()
+			ValueLikeCPPMLWrapper::exposeValueLikeCppmlType<TypedFora::RefcountStyle>();
+			ValueLikeCPPMLWrapper::exposeValueLikeCppmlType<TypedFora::CallTarget>();
+			ValueLikeCPPMLWrapper::exposeValueLikeCppmlType<TypedFora::TransferTarget>();
+			ValueLikeCPPMLWrapper::exposeValueLikeCppmlType<TypedFora::Callable>();
+			ValueLikeCPPMLWrapper::exposeValueLikeCppmlType<TypedFora::Expression>()
 				.class_()
 				.def("type", &expressionType)
 				.def("GetItem", &createGetItem)
 				.def("GetSlice", &createGetSlice)
 				.def("MakeTuple", &createMakeTuple)
 				;
-			FORAPythonUtil::exposeValueLikeCppmlType<TypedFora::ContinuationFrame>();
-			FORAPythonUtil::exposeValueLikeCppmlType<TypedFora::Type>();
-			FORAPythonUtil::exposeValueLikeCppmlType<TypedFora::Variable>()
+			ValueLikeCPPMLWrapper::exposeValueLikeCppmlType<TypedFora::ContinuationFrame>();
+			ValueLikeCPPMLWrapper::exposeValueLikeCppmlType<TypedFora::Type>();
+			ValueLikeCPPMLWrapper::exposeValueLikeCppmlType<TypedFora::Variable>()
 				.class_()
 				.def("Temp", TypedFora::Variable::Temp)
 				.staticmethod("Temp")
 				;
 
-			FORAPythonUtil::exposeValueLikeCppmlType<TypedFora::InlineNativeOperationArg>();
+			ValueLikeCPPMLWrapper::exposeValueLikeCppmlType<TypedFora::InlineNativeOperationArg>();
 			}
 };
 

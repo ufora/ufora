@@ -18,7 +18,7 @@
 #include <boost/python.hpp>
 #include "../../native/Registrar.hpp"
 #include "../../core/python/CPPMLWrapper.hpp"
-#include "../python/FORAPythonUtil.hppml"
+#include "../../core/python/ValueLikeCPPMLWrapper.hppml"
 
 class CSTValueWrapper :
 	public native::module::Exporter<CSTValueWrapper> {

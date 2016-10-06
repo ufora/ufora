@@ -17,7 +17,7 @@
 
 #include <stdint.h>
 #include <boost/python.hpp>
-#include "../python/FORAPythonUtil.hppml"
+#include "../../core/python/ValueLikeCPPMLWrapper.hppml"
 #include "../../native/Registrar.hpp"
 #include "../../core/python/CPPMLWrapper.hpp"
 
@@ -34,7 +34,7 @@ public:
 			using namespace boost::python;
 
 			object cls =
-				FORAPythonUtil::exposeValueLikeCppmlType<Fora::PageId>().class_()
+				ValueLikeCPPMLWrapper::exposeValueLikeCppmlType<Fora::PageId>().class_()
 				;
 
 			def("PageId", cls);

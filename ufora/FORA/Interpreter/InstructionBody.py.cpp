@@ -22,7 +22,7 @@
 #include "../../native/Registrar.hpp"
 #include "../../core/python/CPPMLWrapper.hpp"
 #include "../../core/python/ScopedPyThreads.hpp"
-#include "../python/FORAPythonUtil.hppml"
+#include "../../core/python/ValueLikeCPPMLWrapper.hppml"
 #include "../../core/containers/ImmutableTreeVector.py.hpp"
 
 using namespace Fora::Interpreter;
