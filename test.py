@@ -35,7 +35,7 @@ import ufora
 import ufora.config.Mainline as Mainline
 
 import ufora.util.AssertStableThreadCount as AssertStableThreadCount
-import ufora.util.SubprocessingModified as subprocess
+import subprocess
 
 import ufora.FORA.python.FORA as FORA
 import ufora.FORA.test.test as FORASemanticsTest
