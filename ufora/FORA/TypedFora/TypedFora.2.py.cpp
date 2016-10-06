@@ -38,14 +38,14 @@ public:
 			{
 			using namespace boost::python;
 
-			FORAPythonUtil::exposeValueLikeCppmlType<TypedFora::ResultSignature>(false);
-			FORAPythonUtil::exposeValueLikeCppmlType<TypedFora::BlockID>(false);
-			FORAPythonUtil::exposeValueLikeCppmlType<TypedFora::Block>(false);
-			FORAPythonUtil::exposeValueLikeCppmlType<TypedFora::Continuation>(false);
-			FORAPythonUtil::exposeValueLikeCppmlType<TypedFora::MakeTupleArgument>(false);
-			FORAPythonUtil::exposeValueLikeCppmlType<TypedFora::MetadataInstruction>(false);
-			FORAPythonUtil::exposeValueLikeCppmlType<TypedFora::MetadataVariable>(false);
-			FORAPythonUtil::exposeValueLikeCppmlType<TypedFora::MetadataStackFrame>(false);
+			FORAPythonUtil::exposeValueLikeCppmlType<TypedFora::ResultSignature>();
+			FORAPythonUtil::exposeValueLikeCppmlType<TypedFora::BlockID>();
+			FORAPythonUtil::exposeValueLikeCppmlType<TypedFora::Block>();
+			FORAPythonUtil::exposeValueLikeCppmlType<TypedFora::Continuation>();
+			FORAPythonUtil::exposeValueLikeCppmlType<TypedFora::MakeTupleArgument>();
+			FORAPythonUtil::exposeValueLikeCppmlType<TypedFora::MetadataInstruction>();
+			FORAPythonUtil::exposeValueLikeCppmlType<TypedFora::MetadataVariable>();
+			FORAPythonUtil::exposeValueLikeCppmlType<TypedFora::MetadataStackFrame>();
 			}
 };
 

@@ -34,7 +34,7 @@ public:
 			using namespace boost::python;
 
 			object cls =
-				FORAPythonUtil::exposeValueLikeCppmlTypeSimpleSerializers<Fora::PageId>().class_()
+				FORAPythonUtil::exposeValueLikeCppmlType<Fora::PageId>().class_()
 				;
 
 			def("PageId", cls);

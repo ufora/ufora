@@ -51,7 +51,7 @@ public:
 			using namespace boost::python;
 
 			object cls =
-				FORAPythonUtil::exposeValueLikeCppmlTypeSimpleSerializers<ComputationPriority>()
+				FORAPythonUtil::exposeValueLikeCppmlType<ComputationPriority>()
 					.class_()
 					.def("withPrioritySource", &ComputationPriority::withPrioritySource)
 					;

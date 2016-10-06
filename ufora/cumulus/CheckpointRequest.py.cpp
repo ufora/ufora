@@ -36,7 +36,7 @@ public:
 			using namespace boost::python;
 
 			object cls =
-				FORAPythonUtil::exposeValueLikeCppmlTypeSimpleSerializers<CheckpointRequest>()
+				FORAPythonUtil::exposeValueLikeCppmlType<CheckpointRequest>()
 					.class_()
 				;
 

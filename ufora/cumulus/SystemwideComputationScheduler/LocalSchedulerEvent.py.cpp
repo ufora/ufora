@@ -43,9 +43,6 @@ public:
 				;
 
 			PythonWrapper<ImmutableTreeVector<LocalSchedulerEvent> >::exportPythonInterface("LocalSchedulerEvent")
-				.def("__getstate__", &FORAPythonUtil::serializeEntireObjectGraph<ImmutableTreeVector<LocalSchedulerEvent> >)
-				.def("__setstate__", &FORAPythonUtil::deserializeEntireObjectGraph<ImmutableTreeVector<LocalSchedulerEvent> >)
-				.enable_pickling()
 				;
 
 			def("LocalSchedulerEvent", cls);

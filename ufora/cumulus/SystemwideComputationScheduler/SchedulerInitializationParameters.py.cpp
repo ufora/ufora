@@ -38,7 +38,7 @@ public:
 			using namespace boost::python;
 
 			object cls =
-				FORAPythonUtil::exposeValueLikeCppmlTypeSimpleSerializers<SchedulerInitializationParameters>()
+				FORAPythonUtil::exposeValueLikeCppmlType<SchedulerInitializationParameters>()
 					.class_()
 				;
 

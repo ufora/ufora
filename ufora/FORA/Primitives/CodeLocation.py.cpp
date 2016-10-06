@@ -52,9 +52,6 @@ public:
 			.def("__repr__", FORAPythonUtil::scopedPrettyPrinter<CodeDefinitionPoint>)
 			.def("ExternalFromStringList", ExternalFromStringList)
 			.staticmethod("ExternalFromStringList")
-			.def("__getstate__", &FORAPythonUtil::serializer<CodeDefinitionPoint>)
-			.def("__setstate__", &FORAPythonUtil::deserializer<CodeDefinitionPoint>)
-			.enable_pickling()
 			;
 
 		Ufora::python::CPPMLWrapper<CodeLocation>().class_()
@@ -62,18 +59,12 @@ public:
 			.def("__repr__", FORAPythonUtil::scopedPrettyPrinter<CodeLocation>)
 			.def("__hash__", &FORAPythonUtil::hasher<CodeLocation>)
 			.def("__cmp__", &FORAPythonUtil::comparer<CodeLocation>)
-			.def("__getstate__", &FORAPythonUtil::serializer<CodeLocation>)
-			.def("__setstate__", &FORAPythonUtil::deserializer<CodeLocation>)
-			.enable_pickling()
 			;
 
 		Ufora::python::CPPMLWrapper<ForaStackTrace>().class_()
 			.def("__str__", FORAPythonUtil::scopedPrettyPrinter<ForaStackTrace>)
 			.def("__repr__", FORAPythonUtil::scopedPrettyPrinter<ForaStackTrace>)
-			.def("__getstate__", &FORAPythonUtil::serializer<ForaStackTrace>)
-			.def("__setstate__", &FORAPythonUtil::deserializer<ForaStackTrace>)
 			.def("getIDs", getIDs)
-			.enable_pickling()
 			;
 
 		PythonWrapper<ImmutableTreeVector<CodeLocation> >::exportPythonInterface("CodeLocation");

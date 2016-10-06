@@ -56,11 +56,8 @@ public:
 			.def("__init__", make_constructor(constructFromNothing))
 			.def("__str__", &CSTValueToString)
 			.def("__repr__", &CSTValueToString)
-			.def("__getstate__", &FORAPythonUtil::serializer<CSTValue>)
-			.def("__setstate__", &FORAPythonUtil::deserializer<CSTValue>)
 			.add_property("hash", &CSTValueHash)
 			.def("getIVC", &CSTValueGetIVC)
-			.enable_pickling()
 			;
 		}
 

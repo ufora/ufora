@@ -36,7 +36,7 @@ public:
 			using namespace boost::python;
 
 			object cls =
-				FORAPythonUtil::exposeValueLikeCppmlTypeSimpleSerializers<CumulusClientId>()
+				FORAPythonUtil::exposeValueLikeCppmlType<CumulusClientId>()
 					.class_()
 				;
 

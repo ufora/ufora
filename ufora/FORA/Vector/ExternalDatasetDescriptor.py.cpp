@@ -38,11 +38,11 @@ public:
 			{
 			using namespace boost::python;
 
-			FORAPythonUtil::exposeValueLikeCppmlType<ExternalDatasetDescriptor>(false);
-			FORAPythonUtil::exposeValueLikeCppmlType<OdbcRequest>(false);
-			FORAPythonUtil::exposeValueLikeCppmlType<S3Dataset>(false);
-			FORAPythonUtil::exposeValueLikeCppmlType<HttpRequest>(false);
-			FORAPythonUtil::exposeValueLikeCppmlType<FileDataset>(false);
+			FORAPythonUtil::exposeValueLikeCppmlType<ExternalDatasetDescriptor>();
+			FORAPythonUtil::exposeValueLikeCppmlType<OdbcRequest>();
+			FORAPythonUtil::exposeValueLikeCppmlType<S3Dataset>();
+			FORAPythonUtil::exposeValueLikeCppmlType<HttpRequest>();
+			FORAPythonUtil::exposeValueLikeCppmlType<FileDataset>();
 			}
 };
 

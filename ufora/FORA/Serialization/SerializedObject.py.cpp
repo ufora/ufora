@@ -69,36 +69,6 @@ public:
 		return so1->hash();
 		}
 
-	static std::string
-	SerializedObjectSerializer(PolymorphicSharedPtr<SerializedObject>& inObj)
-		{
-		return FORAPythonUtil::serializer(inObj);
-		}
-
-	static void SerializedObjectDeserializer(
-								PolymorphicSharedPtr<SerializedObject>& inObj,
-								std::string inData
-								)
-		{
-		//we have to do some trickery because our serializers work on boost::shared_ptrs
-		//and expect to be given a blank shared ptr
-		PolymorphicSharedPtr<SerializedObject> toReturn;
-
-		FORAPythonUtil::deserializer(toReturn, inData);
-
-		*inObj = *toReturn;
-		}
-
-	static PolymorphicSharedPtr<SerializedObject>
-					deserializeEntireObjectGraphFromString(std::string dataStr)
-		{
-		return SerializedObjectInflater::inflateOnce(
-			PolymorphicSharedPtr<NoncontiguousByteBlock>(
-				new NoncontiguousByteBlock(std::move(dataStr))
-				)
-			);
-		}
-
 	static std::string SerializedObjectToString(PolymorphicSharedPtr<SerializedObject>& inObject)
 		{
 		return inObject->toString();
@@ -107,13 +77,6 @@ public:
 	static uword_t SerializedObjectSize(PolymorphicSharedPtr<SerializedObject>& in)
 		{
 		return in->getSerializedData()->totalByteCount();
-		}
-
-	static std::string serializeEntireObjectGraphToString(PolymorphicSharedPtr<SerializedObject>& o)
-		{
-		ScopedPyThreads releaseTheGil;
-
-		return SerializedObjectFlattener::flattenOnce(o)->toString();
 		}
 
 	static PolymorphicSharedPtr<SerializedObject> encodeStringInSerializedObject(std::string s)
@@ -133,15 +96,10 @@ public:
 			.def("__cmp__", SerializedObjectCmp)
 			.def("__hash__", SerializedObjectPyHash)
 			.add_property("hash", SerializedObjectHash)
-			.def("__getstate__", SerializedObjectSerializer)
-			.def("__setstate__", SerializedObjectDeserializer)
-			.def("serializeEntireObjectGraphToString", serializeEntireObjectGraphToString)
 			.def("__str__", SerializedObjectToString)
 			.def("__len__", SerializedObjectSize)
-			.enable_pickling()
 			;
 
-		def("deserializeEntireObjectGraphFromString", &deserializeEntireObjectGraphFromString);
 		def("encodeStringInSerializedObject", &encodeStringInSerializedObject);
 		}
 

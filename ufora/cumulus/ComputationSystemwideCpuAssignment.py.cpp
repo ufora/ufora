@@ -36,7 +36,7 @@ public:
 			using namespace boost::python;
 
 			boost::python::object cls =
-				FORAPythonUtil::exposeValueLikeCppmlTypeSimpleSerializers<ComputationSystemwideCpuAssignment>()
+				FORAPythonUtil::exposeValueLikeCppmlType<ComputationSystemwideCpuAssignment>()
 					.class_()
 					.add_property(
 							"cpusAssignedToChildren",

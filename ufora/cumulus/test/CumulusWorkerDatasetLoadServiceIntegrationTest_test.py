@@ -540,6 +540,10 @@ class CumulusWorkerDatasetLoadServiceIntegrationTest(unittest.TestCase):
             worker = None
             vdm = None
             eventHandler = None
+        except Exception as e:
+            import traceback
+            logging.error("exception: %s", traceback.format_exc())
+            raise
         finally:
             simulation.teardown()
 

@@ -80,6 +80,22 @@ public:
 			return out;
 			}
 
+		template<class T>
+		static std::string simpleSerializer(const T& in)
+			{
+			ScopedPyThreads threads;
+
+			return ::serialize<T>(in);
+			}
+
+		template<class T>
+		static void simpleDeserializer(T& out, std::string inByteBlock)
+			{
+			ScopedPyThreads threads;
+
+			out = ::deserialize<T>(inByteBlock);
+			}
+
 		void exportPythonWrapper()
 			{
 			using namespace boost::python;
@@ -99,9 +115,8 @@ public:
 				.def("__hash__", &hash)
 				.def("__cmp__", &HashCMP)
 				.def("__getitem__", &hashGetItem)
-				.def("__getstate__", &serialize<Hash >)
-				.def("__setstate__", &setStateDeserialize<Hash >)
-				.enable_pickling()
+				.def("__getstate__", simpleSerializer<Hash>)
+				.def("__setstate__", simpleDeserializer<Hash>)
 				;
 
 			PythonWrapper<ImmutableTreeSet<Hash> >::exportPythonInterface("Hash");

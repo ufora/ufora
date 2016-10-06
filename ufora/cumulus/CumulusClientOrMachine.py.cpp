@@ -31,12 +31,31 @@ public:
 			return "Cumulus";
 			}
 
+		template<class T>
+		static std::string simpleSerializer(const T& in)
+			{
+			ScopedPyThreads threads;
+
+			return ::serialize<T>(in);
+			}
+
+		template<class T>
+		static void simpleDeserializer(T& out, std::string inByteBlock)
+			{
+			ScopedPyThreads threads;
+
+			out = ::deserialize<T>(inByteBlock);
+			}
+
 		void exportPythonWrapper()
 			{
 			using namespace boost::python;
 
 			boost::python::object cls =
-				FORAPythonUtil::exposeValueLikeCppmlTypeSimpleSerializers<CumulusClientOrMachine>().class_();
+				FORAPythonUtil::exposeValueLikeCppmlType<CumulusClientOrMachine>().class_()
+					.def("__getstate__", simpleSerializer<CumulusClientOrMachine>)
+					.def("__setstate__", simpleDeserializer<CumulusClientOrMachine>)
+					;
 
 			def("CumulusClientOrMachine", cls);
 			}

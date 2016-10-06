@@ -42,9 +42,6 @@ public:
 				;
 
 			PythonWrapper<ImmutableTreeVector<ActiveComputationsEvent> >::exportPythonInterface("ActiveComputationsEvent")
-				.def("__getstate__", &FORAPythonUtil::serializeEntireObjectGraph<ImmutableTreeVector<ActiveComputationsEvent> >)
-				.def("__setstate__", &FORAPythonUtil::deserializeEntireObjectGraph<ImmutableTreeVector<ActiveComputationsEvent> >)
-				.enable_pickling()
 				;
 
 			def("ActiveComputationsEvent", cls);

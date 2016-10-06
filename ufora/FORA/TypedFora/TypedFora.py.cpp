@@ -73,26 +73,26 @@ public:
 			PythonWrapper<ImmutableTreeVector<TypedFora::Type> >
 				::exportPythonInterface("TypedFora::Type");
 
-			FORAPythonUtil::exposeValueLikeCppmlType<TypedFora::RefcountStyle>(false);
-			FORAPythonUtil::exposeValueLikeCppmlType<TypedFora::CallTarget>(false);
-			FORAPythonUtil::exposeValueLikeCppmlType<TypedFora::TransferTarget>(false);
-			FORAPythonUtil::exposeValueLikeCppmlType<TypedFora::Callable>(false);
-			FORAPythonUtil::exposeValueLikeCppmlType<TypedFora::Expression>(false)
+			FORAPythonUtil::exposeValueLikeCppmlType<TypedFora::RefcountStyle>();
+			FORAPythonUtil::exposeValueLikeCppmlType<TypedFora::CallTarget>();
+			FORAPythonUtil::exposeValueLikeCppmlType<TypedFora::TransferTarget>();
+			FORAPythonUtil::exposeValueLikeCppmlType<TypedFora::Callable>();
+			FORAPythonUtil::exposeValueLikeCppmlType<TypedFora::Expression>()
 				.class_()
 				.def("type", &expressionType)
 				.def("GetItem", &createGetItem)
 				.def("GetSlice", &createGetSlice)
 				.def("MakeTuple", &createMakeTuple)
 				;
-			FORAPythonUtil::exposeValueLikeCppmlType<TypedFora::ContinuationFrame>(false);
-			FORAPythonUtil::exposeValueLikeCppmlType<TypedFora::Type>(false);
-			FORAPythonUtil::exposeValueLikeCppmlType<TypedFora::Variable>(false)
+			FORAPythonUtil::exposeValueLikeCppmlType<TypedFora::ContinuationFrame>();
+			FORAPythonUtil::exposeValueLikeCppmlType<TypedFora::Type>();
+			FORAPythonUtil::exposeValueLikeCppmlType<TypedFora::Variable>()
 				.class_()
 				.def("Temp", TypedFora::Variable::Temp)
 				.staticmethod("Temp")
 				;
 
-			FORAPythonUtil::exposeValueLikeCppmlType<TypedFora::InlineNativeOperationArg>(false);
+			FORAPythonUtil::exposeValueLikeCppmlType<TypedFora::InlineNativeOperationArg>();
 			}
 };
 

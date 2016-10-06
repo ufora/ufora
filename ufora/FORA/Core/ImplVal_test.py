@@ -151,20 +151,6 @@ class TestImplValContainer(unittest.TestCase):
         member = self.memberFromString("object { x: self.x }", 'x')
         self.assertTrue(member is None)
 
-    def test_serializationOfMutableVectors(self):
-        #verify that if we serialize two copies of the same vector that we get the same
-        #actual value back out
-        mutVecPair = FORA.eval("let x = MutableVector(Float64).create(10, 0.0); (x,x)", keepAsForaValue = True)
-        mutVecPairSer = FORA.extractImplValContainer(mutVecPair).serializeEntireObjectGraph()
-
-        mutVecPair2 = ivc()
-        mutVecPair2.deserializeEntireObjectGraph(mutVecPairSer)
-
-        mutVecPair2 = FORA.ForaValue.FORAValue(mutVecPair2)
-
-        self.assertTrue(FORA.eval("fun((x,y)) { x[0] = 1.0;  y[0] is 1.0 }")(mutVecPair2))
-        self.assertTrue(FORA.eval("fun((x,y)) { x is y }")(mutVecPair2))
-
     def test_vectorSlicing(self):
         obj = FORA.extractImplValContainer(
                 FORA.eval("Vector.range(20)[3,-2,2]")
