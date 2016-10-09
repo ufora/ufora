@@ -1,0 +1,376 @@
+/***************************************************************************
+    Copyright 2016 Ufora Inc.
+ 
+    Licensed under the Apache License, Version 2.0 (the "License");
+    you may not use this file except in compliance with the License.
+    You may obtain a copy of the License at
+ 
+        http://www.apache.org/licenses/LICENSE-2.0
+ 
+    Unless required by applicable law or agreed to in writing, software
+    distributed under the License is distributed on an "AS IS" BASIS,
+    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    See the License for the specific language governing permissions and
+    limitations under the License.
+****************************************************************************/
+
+
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <signal.h>
+#include <boost/lexical_cast.hpp>
+
+
+#include "../../core/Logging.hpp"
+#include "../../core/lassert.hpp"
+#include "OnDemandMemoryRegions.hppml"
+
+namespace {
+
+//return an interator to the largest key that's <= 'inKey', or "end" if none
+//exists
+template<class K, class V>
+typename std::map<K,V>::const_iterator block_containing(const std::map<K,V>& inMap, const K& inKey)
+	{
+	if (inMap.size() == 0)
+		return inMap.end();
+
+	auto it = inMap.lower_bound(inKey);
+
+	if (it != inMap.end() && it->first == inKey)
+		return it;
+
+	if (it == inMap.begin())
+		return inMap.end();
+
+	it--;
+
+	lassert(!(inKey < it->first));
+
+	return it;
+	}
+
+boost::mutex singletonMutex;
+OnDemandMemoryRegions* currentMemoryRegions = nullptr;
+
+void sighandler(int i, siginfo_t* info, void* dat)
+	{
+	auto regions = OnDemandMemoryRegions::currentActiveRegions();
+
+	if (regions == nullptr)
+		{
+		LOG_CRITICAL << "Segmentation fault without an active OnDemandMemoryRegions.";
+		exit(1);
+		}
+
+	regions->blockOnAddress(info->si_addr);
+	}
+
+}
+
+OnDemandMemoryRegions::OnDemandMemoryRegions(
+            boost::function1<void, BlockingThread> inOnThreadBlocked,
+            boost::function0<void*> inOnExtractCurrentBlockedThreadInfo,
+            std::string sharedMemoryPrefix
+            ) : 
+		mSharedMemoryPrefix(sharedMemoryPrefix),
+		mOnThreadBlocked(inOnThreadBlocked),
+		mOnExtractCurrentBlockedThreadInfo(inOnExtractCurrentBlockedThreadInfo),
+		mTotalBytesShared(0),
+		mTotalBytesMappable(0)
+	{
+		{
+		boost::mutex::scoped_lock lock(singletonMutex);
+		lassert_dump(!currentMemoryRegions, "only one OnDemandMemoryRegions can be active at once");
+		currentMemoryRegions = this;
+
+		mOldSigActionPtr = new struct sigaction;
+
+		struct sigaction new_action;
+
+		new_action.sa_sigaction = &sighandler;
+		new_action.sa_flags = SA_SIGINFO;
+
+		int code = sigaction(SIGSEGV, &new_action, mOldSigActionPtr);
+		}
+	}
+
+OnDemandMemoryRegions::~OnDemandMemoryRegions()
+	{
+	lassert_dump(!mBlockingThreads.size(), "makes no sense to have any threads blocking at teardown");
+
+		{
+		boost::mutex::scoped_lock lock(singletonMutex);
+
+		currentMemoryRegions = nullptr;
+
+		sigaction(SIGSEGV, mOldSigActionPtr, nullptr);
+
+		delete mOldSigActionPtr;
+		}
+
+	cleanup_();
+	}
+
+void OnDemandMemoryRegions::cleanup_()
+	{
+	for (auto mappableRegion: mMappableMemoryRecords)
+		if (::munmap(mappableRegion.second.address(), mappableRegion.second.size()))
+			LOG_ERROR << "munmap failed: " << strerror(errno);
+	for (auto mappableRegion: mSharedMemoryRecords)
+		{
+		if (::munmap(mappableRegion.second.address(), mappableRegion.second.size()))
+			LOG_ERROR << "munmap failed: " << strerror(errno);
+
+		close(mappableRegion.second.fileDescriptor());
+		
+		shm_unlink(mappableRegion.second.name().c_str());
+		}
+	}
+
+void OnDemandMemoryRegions::blockOnAddress(void* addr)
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+
+	auto addrCharPtr = (uint8_t*)addr;
+
+	//find the memory pointer that's closest
+	auto it = block_containing(mMappableMemoryRecords, addrCharPtr);
+
+	if (it == mMappableMemoryRecords.end() || (addrCharPtr - it->second.address()) >= it->second.size())
+		{
+		LOG_CRITICAL << "Address " << addr << " doesn't correspond to any address in the mapping pool";
+		exit(1);
+		}
+
+	void* info = mOnExtractCurrentBlockedThreadInfo();
+
+	if (mBlockingThreads.find(info) != mBlockingThreads.end())
+		{	
+		LOG_CRITICAL << "The same thread is marked as blocking twice! This should be impossible.";
+		exit(1);
+		}
+
+	do {
+		//see if there is a mapped region for this already
+		auto it_2 = block_containing(mMappedMemoryRecords, addrCharPtr);
+		if (it_2 != mMappedMemoryRecords.end() && (addrCharPtr - it_2->second.address()) < it_2->second.bytesToMap())
+			{
+			mBlockingThreads.erase(info);
+			return;
+			}
+		
+		boost::shared_ptr<boost::condition> conditionPtr(new boost::condition);
+
+		mBlockingThreads[info] = BlockingThread(it->second.address(), addrCharPtr - it->second.address(), info);
+
+		mBlockingThreadConditions[addrCharPtr].push_back(conditionPtr);
+
+		mOnThreadBlocked(mBlockingThreads[info]);
+
+		conditionPtr->wait(lock);
+		
+		} while (true);
+	}
+
+OnDemandMemoryRegions* OnDemandMemoryRegions::currentActiveRegions()
+	{
+	boost::mutex::scoped_lock lock(singletonMutex);
+	
+	return currentMemoryRegions;
+	}
+
+uint8_t* OnDemandMemoryRegions::allocateSharedRegion(uint64_t bytecount)
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+
+	std::string segmentName = mSharedMemoryPrefix + boost::lexical_cast<std::string>(mSharedMemoryRecords.size());
+
+	int shm_fd = shm_open(segmentName.c_str(), O_RDWR | O_CREAT, 0x777);
+
+	if (shm_fd == -1)
+		{
+		LOG_ERROR << "Failed to allocate a shared-memory segment of size " << bytecount / 1024 / 1024.0 << " MB: " 
+			<< strerror(errno);
+
+		return nullptr;
+		}
+
+	if (ftruncate(shm_fd, bytecount) == -1)
+		{
+		LOG_ERROR << "Failed to allocate a shared-memory segment of size " << bytecount / 1024 / 1024.0 << " MB: " 
+			<< strerror(errno);
+
+		shm_unlink(segmentName.c_str());
+
+		return nullptr;
+		}
+
+	uint8_t* addr = (uint8_t*)::mmap(0, bytecount, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
+
+	if (addr == (uint8_t*)-1)
+		{
+		LOG_ERROR << "Failed to allocate a shared-memory segment of size " << bytecount / 1024 / 1024.0 << " MB: " 
+			<< strerror(errno);
+
+		shm_unlink(segmentName.c_str());
+
+		return nullptr;
+		}
+
+	mSharedMemoryRecords[addr] = SharedMemoryRecord(addr, segmentName, shm_fd, bytecount);
+
+	mTotalBytesShared += bytecount;
+
+	return addr;
+	}
+
+void OnDemandMemoryRegions::freeSharedRegion(uint8_t* addr)
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+
+	auto it = mSharedMemoryRecords.find(addr);
+	lassert(it != mSharedMemoryRecords.end());
+
+	if (::munmap(it->second.address(), it->second.size()))
+		{
+		LOG_CRITICAL << "munmap failed: " << strerror(errno);
+		lassert(false);
+		}
+
+	mSharedMemoryRecords.erase(it);
+	}
+
+uint8_t* OnDemandMemoryRegions::allocateMappableRegion(uint64_t bytecount)
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+
+	uint8_t* addr = (uint8_t*)::mmap(0, bytecount, PROT_NONE, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
+
+	if (addr == (uint8_t*)-1)
+		{
+		LOG_ERROR << "Failed to mmap " << bytecount / 1024 / 1024.0 << " MB of mappable memory address.";
+		return nullptr;
+		}
+
+	mMappableMemoryRecords[addr] = MappableMemoryRecord(addr, bytecount);
+
+	mTotalBytesMappable += bytecount;
+	
+	return addr;
+	}
+
+//release a mappable region and unmap all mapped shared memory 
+void OnDemandMemoryRegions::releaseMappableRegion(uint8_t* region)
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+
+	auto it = mMappableMemoryRecords.find(region);
+
+	lassert(it != mMappableMemoryRecords.end());
+
+	mTotalBytesMappable -= it->second.size();
+
+	if (::munmap(it->second.address(), it->second.size()))
+		{
+		LOG_CRITICAL << "munmap failed: " << strerror(errno);
+		lassert(false);
+		}
+	
+	mMappableMemoryRecords.erase(it);
+	}
+
+//perform mappings
+bool OnDemandMemoryRegions::mapShareableRegion(
+        uint8_t* shareableRegion, 
+        uint64_t shareableRegionOffset, 
+        uint8_t* mappableRegion,
+        uint64_t mappableRegionOffset,
+        uint64_t bytesToMap
+        )
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+
+	auto shareableIt = mSharedMemoryRecords.find(shareableRegion);
+
+	if (shareableIt == mSharedMemoryRecords.end())
+		return false;
+
+	if (::mmap(mappableRegion + mappableRegionOffset, 
+			bytesToMap, 
+			PROT_READ | PROT_WRITE, 
+			MAP_FIXED | MAP_SHARED, 
+			shareableIt->second.fileDescriptor(), 
+			shareableRegionOffset
+			) == (void*)-1)
+		{
+		LOG_CRITICAL << "failed to map the shared region";
+		return false;
+		}
+
+	mMappedMemoryRecords[mappableRegion + mappableRegionOffset] = 
+		MappedMemoryRecord(
+			shareableRegion,
+			shareableRegionOffset,
+			mappableRegion,
+			mappableRegionOffset,
+			bytesToMap
+			);
+
+	uint8_t* activeRegionBase = mappableRegion + mappableRegionOffset;
+
+	while (true)
+		{
+		auto it = mBlockingThreadConditions.lower_bound(activeRegionBase);
+		if (it != mBlockingThreadConditions.end() && it->first >= activeRegionBase && it->first < activeRegionBase + bytesToMap)
+			{
+			for (auto ptr: it->second)
+				ptr->notify_all();
+			mBlockingThreadConditions.erase(it);
+			}
+		else
+			return true;
+		}
+	}
+
+bool OnDemandMemoryRegions::unmap(
+        uint8_t* mappableRegion,
+        uint64_t mappableRegionOffset,
+        uint64_t bytesToMap
+        )
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+
+	auto it = mMappedMemoryRecords.find(mappableRegion + mappableRegionOffset);
+	
+	lassert(it != mMappedMemoryRecords.end());
+	lassert(bytesToMap == it->second.bytesToMap());
+
+	mMappedMemoryRecords.erase(it);
+
+	return ::munmap(mappableRegion + mappableRegionOffset, bytesToMap) == 0;
+	}
+
+uint64_t OnDemandMemoryRegions::bytesOfMappableRegions() const
+	{
+	return mTotalBytesMappable;
+	}
+
+uint32_t OnDemandMemoryRegions::blockedThreadCount() const
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+
+	return mBlockingThreads.size();
+	}
+
+void OnDemandMemoryRegions::getAllBlockingThreads(std::vector<BlockingThread>& outThreads)
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+
+	outThreads.clear();
+
+	for (auto& kv: mBlockingThreads)
+		outThreads.push_back(kv.second);
+	}
+
