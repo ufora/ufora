@@ -274,6 +274,11 @@ private:
 
 	AO_t mRefcount;
 
+	//if the VectorHandle points to entirely homogenous packed data,
+	//and we can fit it all entirely in the same address space, then
+	//this field is populated
+	uint8_t* mBasePackedDataPtr; 
+
 	mutable Fora::PageletTreePtr mPageletTreePtr;
 
 	mutable ForaValueArray* mUnpagedValues;
