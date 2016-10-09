@@ -1,0 +1,146 @@
+/***************************************************************************
+    Copyright 2016 Ufora Inc.
+ 
+    Licensed under the Apache License, Version 2.0 (the "License");
+    you may not use this file except in compliance with the License.
+    You may obtain a copy of the License at
+ 
+        http://www.apache.org/licenses/LICENSE-2.0
+ 
+    Unless required by applicable law or agreed to in writing, software
+    distributed under the License is distributed on an "AS IS" BASIS,
+    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    See the License for the specific language governing permissions and
+    limitations under the License.
+****************************************************************************/
+
+#pragma once
+
+#include <boost/function.hpp>
+#include <boost/thread.hpp>
+#include <boost/thread/condition.hpp>
+#include <map>
+
+struct sigaction;
+
+/****************
+OnDemandMemoryRegions
+
+Manages multiple views of the same shared memory mapped into different
+portions of the address space.
+
+This class uses signal handling, so there can only be one active per process.
+*****************/
+
+class OnDemandMemoryRegions {
+public:
+    @type BlockingThread = 
+        uint8_t* mappableRegion,
+        uint64_t offsetInRegion,
+        void* blockingThreadPtr
+        ;
+
+    static OnDemandMemoryRegions* currentActiveRegions();
+
+    //note that the provided callbacks are called under lock!
+    OnDemandMemoryRegions(
+            boost::function1<void, BlockingThread> inOnThreadBlocked,
+            boost::function0<void*> inOnExtractCurrentBlockedThreadInfo,
+            std::string sharedMemoryPrefix
+            );
+
+    ~OnDemandMemoryRegions();
+
+    //allocate a shared region. This is backed by actual memory.
+    //returns nullptr if we can't allocate more space.
+    uint8_t* allocateSharedRegion(uint64_t bytecount);
+
+    //free a shared region. all mapped regions should be unmapped by now.
+    void freeSharedRegion(uint8_t* addr);
+
+    //allocate a mappable region. If we can't allocate any more, returns nullptr
+    uint8_t* allocateMappableRegion(uint64_t bytecount);
+
+    //release a mappable region and unmap all mapped shared memory 
+    void releaseMappableRegion(uint8_t* region);
+
+    //map a shared region to a mappable region. Returns true on succcess.
+    bool mapShareableRegion(
+            uint8_t* shareableRegion, 
+            uint64_t shareableRegionOffset, 
+            uint8_t* mappableRegion,
+            uint64_t mappableRegionOffset,
+            uint64_t bytesToMap
+            );
+
+    //map a shared region to a mappable region. Returns true on succcess.
+    bool unmap(
+            uint8_t* mappableRegion,
+            uint64_t mappableRegionOffset,
+            uint64_t bytesToMap
+            );
+
+    uint64_t bytesOfMappableRegions() const;
+
+    uint32_t blockedThreadCount() const;
+
+    void getAllBlockingThreads(std::vector<BlockingThread>& outThreads);
+
+    void blockOnAddress(void* address);
+
+private:
+    void cleanup_();
+
+    @type SharedMemoryRecord = 
+        uint8_t* address,
+        std::string name,
+        int fileDescriptor,
+        uint64_t size
+        ;
+
+    @type MappableMemoryRecord = 
+        uint8_t* address,
+        uint64_t size
+        ;
+
+    @type MappedMemoryRecord = 
+        uint8_t* shareableRegion, 
+        uint64_t shareableRegionOffset, 
+        uint8_t* mappableRegion,
+        uint64_t mappableRegionOffset,
+        uint64_t bytesToMap
+    {
+    public:
+        uint8_t* address() const
+            {
+            return mappableRegion() + mappableRegionOffset();
+            }
+    };
+
+
+    mutable boost::mutex mMutex;
+
+    uint64_t mTotalBytesShared;
+
+    uint64_t mTotalBytesMappable;
+    
+    boost::function1<void, BlockingThread> mOnThreadBlocked;
+
+    boost::function0<void*> mOnExtractCurrentBlockedThreadInfo;
+
+    std::string mSharedMemoryPrefix;
+
+    std::map<uint8_t*, SharedMemoryRecord> mSharedMemoryRecords;
+
+    std::map<uint8_t*, MappableMemoryRecord> mMappableMemoryRecords;
+
+    std::map<uint8_t*, MappedMemoryRecord> mMappedMemoryRecords;
+
+    std::map<void*, BlockingThread> mBlockingThreads;
+
+    std::map<uint8_t*, std::vector<boost::shared_ptr<boost::condition> > > mBlockingThreadConditions;
+
+    struct sigaction* mOldSigActionPtr;
+};
+
+

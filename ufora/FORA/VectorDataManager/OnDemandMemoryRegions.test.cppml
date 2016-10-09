@@ -1,0 +1,280 @@
+/***************************************************************************
+    Copyright 2016 Ufora Inc.
+ 
+    Licensed under the Apache License, Version 2.0 (the "License");
+    you may not use this file except in compliance with the License.
+    You may obtain a copy of the License at
+ 
+        http://www.apache.org/licenses/LICENSE-2.0
+ 
+    Unless required by applicable law or agreed to in writing, software
+    distributed under the License is distributed on an "AS IS" BASIS,
+    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    See the License for the specific language governing permissions and
+    limitations under the License.
+****************************************************************************/
+
+#include "OnDemandMemoryRegions.hppml"
+#include "../../core/math/Random.hpp"
+#include "../../core/threading/ScopedThreadLocalContext.hpp"
+#include "../../core/UnitTest.hpp"
+#include "../../core/Logging.hpp"
+#include "../../core/containers/MapWithIndex.hpp"
+#include "../../core/threading/Queue.hpp"
+
+
+BOOST_AUTO_TEST_CASE( test_OnDemandMemoryRegions_singleton )
+	{
+	uint64_t PAGE_SIZE = getpagesize();
+
+	BOOST_CHECK(OnDemandMemoryRegions::currentActiveRegions() == nullptr);
+
+	OnDemandMemoryRegions regions(
+		[](OnDemandMemoryRegions::BlockingThread t) { },
+		[]() -> void* { return nullptr; },
+		"/ufora_test"
+		);
+
+	BOOST_CHECK(OnDemandMemoryRegions::currentActiveRegions() == &regions);
+
+	auto another = [] {
+		OnDemandMemoryRegions regions2(
+			[](OnDemandMemoryRegions::BlockingThread t) { },
+			[]() -> void* { return nullptr; },
+			"/ufora_test"
+			);
+		};
+
+	BOOST_CHECK_THROW(another(), std::logic_error);
+	}
+
+BOOST_AUTO_TEST_CASE( test_OnDemandMemoryRegions_access_memory )
+	{
+	uint64_t PAGE_SIZE = getpagesize();
+
+	Queue<OnDemandMemoryRegions::BlockingThread> blocking;
+
+	OnDemandMemoryRegions regions(
+		[&](OnDemandMemoryRegions::BlockingThread t) { blocking.write(t); },
+		[]() -> void* { return nullptr; },
+		"/ufora_test"
+		);
+
+	uint64_t readSize = PAGE_SIZE * 128 * 4;
+	uint64_t writeSize = PAGE_SIZE * 128;
+
+	uint8_t* writeable = regions.allocateSharedRegion(writeSize);
+
+	for (long k = 0; k < writeSize; k++)
+		writeable[k] = 1;
+
+	uint8_t* mappable = regions.allocateMappableRegion(readSize);
+
+	bool isDone = false;
+	uint64_t accumulator = 0;
+
+	auto readerThread = [&]() {
+		for (long k = 0; k < readSize; k++)
+			accumulator += mappable[k];
+
+		isDone = true;
+		};
+
+	boost::thread thread(readerThread);
+
+	long mapCount = 0;
+
+	while (!isDone)
+		{
+		OnDemandMemoryRegions::BlockingThread thread;
+		if (blocking.getTimeout(thread, 0.01))
+			{
+			uint64_t offset = thread.offsetInRegion();
+			offset -= offset % PAGE_SIZE;
+
+			uint64_t offsetInWriteable = offset % writeSize;
+
+			uint8_t* mappableChunk = thread.mappableRegion();
+
+			mapCount += 1;
+
+			regions.mapShareableRegion(writeable, offsetInWriteable, mappable, offset, PAGE_SIZE);
+			}
+		}
+	
+	thread.join();
+
+	BOOST_CHECK_EQUAL(mapCount, readSize / PAGE_SIZE);
+	BOOST_CHECK_EQUAL(accumulator, readSize);
+	}
+
+BOOST_AUTO_TEST_CASE( test_OnDemandMemoryRegions_many_threads )
+	{
+	uint64_t PAGE_SIZE = getpagesize();
+
+	/***************************
+
+	create many threads (50 to 100)
+
+	create 10 regions of memory each of which has 50 pages
+
+	have the threads read essentially at random from these, and
+	have them check that the contents of the pages is what they
+	expect. 8 byte memory address contains (region_ix, offset_ix) as
+	a tuple.
+
+	allocate 20 pages of real memory. these can be assigned to
+	one of the given memory areas. assign them to new slots randomly,
+	removing old slots.
+	***************************/
+
+
+	Queue<OnDemandMemoryRegions::BlockingThread> blockingThreads;
+
+	OnDemandMemoryRegions regions(
+		[&](OnDemandMemoryRegions::BlockingThread t) { blockingThreads.write(t); },
+		[]() -> void* { return (void*)(uint64_t)Ufora::threading::ScopedThreadLocalContext<int>::get(); },
+		"/ufora_test"
+		);
+
+	try {
+		std::vector<uint8_t*> big_regions;
+
+		long big_region_pages = 20;
+
+		for (long k = 0; k < 10; k++)
+			big_regions.push_back(regions.allocateMappableRegion(PAGE_SIZE * big_region_pages));
+
+		long writeable_pages = 20;
+
+		uint8_t* writeable = regions.allocateSharedRegion(PAGE_SIZE * writeable_pages);
+
+		MapWithIndex<int, std::pair<uint8_t*, uint64_t> > writablePageMappedTo;
+		
+		Queue<int> threadErrors;
+		Queue<int> threadsComplete;
+
+		auto threadFunc = [&](int whichThreadAmI) {
+			try {
+				Ufora::threading::ScopedThreadLocalContext<int> contextSetter(whichThreadAmI);
+
+				Ufora::math::Random::Uniform<double> random(whichThreadAmI + 1);
+
+				for (long k = 0; k < 1000;k++)
+					{
+					long whichRegion = random() * big_regions.size();
+					long whichBlock = random() * big_region_pages;
+					long whichOffset = random() * PAGE_SIZE / sizeof(std::pair<int32_t, int32_t>);
+
+					uint8_t* addr = big_regions[whichRegion] + whichBlock * PAGE_SIZE + whichOffset * sizeof(std::pair<int32_t, int32_t>);
+
+					auto valueRead = ((std::pair<int32_t, int32_t>*)addr)[0];
+
+					int32_t expectedOffset = (whichOffset + whichBlock * (PAGE_SIZE / sizeof(std::pair<int32_t, int32_t>)));
+
+					if (valueRead.first != whichRegion || valueRead.second != expectedOffset)
+						{
+						threadErrors.write(whichThreadAmI);
+						}
+					}
+				}
+			catch(std::logic_error& e)
+				{
+				LOG_ERROR << e.what();
+				threadErrors.write(whichThreadAmI);
+				}
+
+			threadsComplete.write(whichThreadAmI);
+			};
+
+		std::vector<boost::shared_ptr<boost::thread> > threads;
+		for (long k = 0; k < 100; k++)
+			threads.push_back(boost::shared_ptr<boost::thread>(new boost::thread(threadFunc, k)));
+
+		Ufora::math::Random::Uniform<double> rnd(1);
+
+		long blockingCounts = 0;
+
+		while (threadsComplete.size() != threads.size())
+			{
+			OnDemandMemoryRegions::BlockingThread thread;
+
+			if (blockingThreads.getTimeout(thread, 0.01))
+				{
+				blockingCounts++;
+
+				uint8_t* mappableChunk = thread.mappableRegion();
+				uint64_t offset = thread.offsetInRegion();
+
+				//which big_region is it?
+				long whichRegion = std::find(big_regions.begin(), big_regions.end(), mappableChunk) - big_regions.begin();
+				lassert(whichRegion >= 0 && whichRegion < big_regions.size());
+
+				long whichPage = offset / PAGE_SIZE;
+
+				//check whether we've already mapped this region. because of race conditions, we could be getting
+				//old cache-misses that are now active
+				if (!writablePageMappedTo.hasValue(std::make_pair(mappableChunk, whichPage * PAGE_SIZE)))
+					{
+					//map one of our writeable pages. 
+					long whichWriteablePage = rnd() * writeable_pages;
+
+					//unmap it if already mappe
+					if (writablePageMappedTo.hasKey(whichWriteablePage))
+						{
+						regions.unmap(
+							writablePageMappedTo.getValue(whichWriteablePage).first,
+							writablePageMappedTo.getValue(whichWriteablePage).second, 
+							PAGE_SIZE
+							);
+						}
+
+					std::pair<int32_t, int32_t>* blockAddr = (std::pair<int32_t, int32_t>*)(writeable + PAGE_SIZE * whichWriteablePage);
+					
+					//write into the memory
+					for (long k = 0; k < PAGE_SIZE / sizeof(std::pair<int32_t, int32_t>); k++)
+						blockAddr[k].first = whichRegion;
+
+					for (long k = 0; k < PAGE_SIZE / sizeof(std::pair<int32_t, int32_t>); k++)
+						blockAddr[k].second = whichPage * (PAGE_SIZE / sizeof(std::pair<int32_t, int32_t>)) + k;
+
+					writablePageMappedTo.set(whichWriteablePage, std::make_pair(mappableChunk, whichPage * PAGE_SIZE));
+
+					lassert(
+						regions.mapShareableRegion(
+							writeable,
+							whichWriteablePage * PAGE_SIZE,
+							mappableChunk,
+							whichPage * PAGE_SIZE,
+							PAGE_SIZE
+							)
+						);
+					}
+				}
+			else
+				{
+				if (regions.blockedThreadCount())
+					{
+					std::vector<OnDemandMemoryRegions::BlockingThread> threads;
+					regions.getAllBlockingThreads(threads);
+					for (auto t: threads)
+						blockingThreads.write(t);
+					}
+				}
+			}
+
+		for (auto t: threads)
+			t->join();
+
+		BOOST_CHECK(threadErrors.size() == 0);
+		}
+	catch(std::logic_error& e)
+		{
+		LOG_ERROR << e.what();
+		throw;
+		}
+
+	}
+
+
+
