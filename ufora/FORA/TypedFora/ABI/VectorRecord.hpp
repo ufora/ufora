@@ -21,7 +21,6 @@
 #include "../../../core/math/Hash.hpp"
 #include "../../../core/math/IntegerSequence.hppml"
 #include "../../Axioms/ReturnValue.hpp"
-
 #include <boost/unordered_map.hpp>
 
 class MemoryPool;
@@ -82,6 +81,8 @@ public:
 	VectorRecord(const VectorRecord& in);
 
 	~VectorRecord();
+
+	MemoryPool* owningMemoryPool() const;
 
 	static VectorRecord createWithinExecutionContext(ForaValueArray* array);
 
@@ -198,6 +199,8 @@ public:
 		{
 		return mOffset;
 		}
+
+	uint64_t vecHandleRefcount() const;
 
 	//is this nonempty?
 	operator bool() const

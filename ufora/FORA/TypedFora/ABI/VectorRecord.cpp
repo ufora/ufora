@@ -91,6 +91,20 @@ VectorRecord::~VectorRecord()
 		mDataPtr->decrementRefcount();
 	}
 
+uint64_t VectorRecord::vecHandleRefcount() const
+	{
+	if (!mDataPtr)
+		return 0;
+	return mDataPtr->refcount();
+	}
+
+MemoryPool* VectorRecord::owningMemoryPool() const
+	{
+	if (mDataPtr == nullptr)
+		return nullptr;
+	return mDataPtr->owningMemoryPool();
+	}
+
 Fora::BigVectorId VectorRecord::pagedValuesIdentity() const
 	{
 	if (mDataPtr)
