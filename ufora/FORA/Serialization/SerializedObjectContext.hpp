@@ -22,7 +22,6 @@
 #include "../Vector/VectorDataID.hppml"
 #include "../Vector/MutableVectorRecord.hppml"
 #include "../TypedFora/ABI/VectorRecord.hpp"
-#include "../TypedFora/ABI/VectorHandle.hpp"
 #include "../Core/CSTValue.hppml"
 #include "../Core/ClassMediator.hppml"
 #include "../ControlFlowGraph/ControlFlowGraph.hppml"
