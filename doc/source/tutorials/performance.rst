@@ -21,13 +21,13 @@ For achieving maximum single-threaded code, the main takeaways are:
 * Numerical calculations involving ints and floats are super fast - very close to what you can get with C.
 * There is no penalty for using higher-order functions, ``yield``, classes, etc.
   pyfora can usually optimize it all away.
-* Repeatedly assigning to a variable in a way that causes it to assume many different types will caues
+* Repeatedly assigning to a variable in a way that causes it to assume many different types will cause
   a slow-down in code compilation. Avoid repeatedly assigning different types to one variable in a loop.
   Similarly, ``for x in someList:`` might be slower if the types in someList are heterogeneous.
 * Tuples with a structure that is stable throughout your program (e.g. they always have three elements)
   will be very fast.
 * Tuples where the number of elements varies with program data will be slow - use lists for this.
-* Lists prefer to be homogenously typed - e.g. a list with only floats in it will be faster to access
+* Lists prefer to be homogeneously typed - e.g. a list with only floats in it will be faster to access
   than a list with floats and ints.
 * There is more overhead for using a list in pyfora than in CPython - prefer a few large lists to a lot of small ones. [#performance_defect]_
 * Deeply nested lists of lists may be slow. [#performance_defect]_
@@ -80,8 +80,8 @@ higher-order functions and classes. In general, this is a thorny problem for any
 speed up python because in regular python programs, it's possible to modify class and instance methods
 during the execution of the program. This means that any generated code in tight loops has to repeatedly
 check to see whether some method call has changed[#mutating_code]_.
-Because this is disabled in pyfora code, pyfora can agressively optimize away these checks,
-perform agressive function inlining, and generally perform a lot of the optimizations you see in
+Because this is disabled in pyfora code, pyfora can aggressively optimize away these checks,
+perform aggressive function inlining, and generally perform a lot of the optimizations you see in
 compilers optimizing statically typed languages like C++ or Java.
 This allows you to refactor your code into classes and objects without paying a performance penalty.
 
@@ -121,7 +121,7 @@ This extends to classes. For instance, if you write::
         def __call__(self, x):
             return self.f(self.g(x))
 
-you will get idential performance if you write ``loopSum(1000000, lambda x: x * 10.0 + 20.0)`` and
+you will get identical performance if you write ``loopSum(1000000, lambda x: x * 10.0 + 20.0)`` and
 ``loopSum(1000000, Compose(Multiply(10.0), Add(20.0)))`` - they boil down to the same mathematical operations,
 and because pyfora doesn't allow class methods to be modified, it can reason about the code well
 enough to produce fast machine-code.
@@ -157,7 +157,7 @@ Tuples as Structure
 ^^^^^^^^^^^^^^^^^^^
 
 Speaking of "types", pyfora considers function instances, class instances, and tuples to be "structural".
-This means that the compiler will agressively track type information about the contents of these objects.
+This means that the compiler will aggressively track type information about the contents of these objects.
 So, for instance, ``lambda x: x + y`` is a different type if ``y`` is an integer or a float in the surrounding scope.
 Similarly, ``(x, y)`` tracks the type information of both ``x`` and ``y``.
 This is one of the reasons why there is no penalty for putting values into objects or tuples - the
@@ -211,9 +211,9 @@ types of the individual objects inside of a list. Specifically, that means that 
 have the same type - they're both 'list of int and float', whereas ``(1, 2.0)`` and ``(2.0, 1)`` are
 different types.
 
-Lists are fastest when they're homogenous (e.g. entirely containing elements of the same type).
+Lists are fastest when they're homogeneous (e.g. entirely containing elements of the same type).
 This is because the pyfora VM can pack data elements very tightly (since they all have the same layout)
-and can generate very efficient lookup code. Lists with heterogenous types are still fast,
+and can generate very efficient lookup code. Lists with heterogeneous types are still fast,
 but the more types there are, the more code the compiler needs to generate in order to work with them,
 so try to keep the total number of types small.
 
@@ -304,10 +304,10 @@ Adaptive Parallelism
 ^^^^^^^^^^^^^^^^^^^^
 
 pyfora's parallelism is adaptive and dynamic - it doesn't know ahead of time how the workload is
-distributed across your functions. It operates by agressively splitting stackframes until cores are
+distributed across your functions. It operates by aggressively splitting stackframes until cores are
 saturated, waiting for threads to finish, and then splitting additional threads.
 
-This model is particularly effective when your functions have different runtimes depending on their input.
+This model is particularly effective when your functions have different run times depending on their input.
 For instance, consider::
 
     def isPrime(p):
@@ -339,14 +339,14 @@ out of native code and back into the interpreter.
 
 The one caveat here is that function calls have stack-frame overhead. Code that's optimized for maximum
 performance sometimes has conditions to switch it out of a recursive "parallelizable" form and into a loop.
-This is a tradeoff between single-threaded performance and parallelism granularity.
+This is a trade-off between single-threaded performance and parallelism granularity.
 
 
 List Comprehensions and Sum are Parallel
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 By default, list comprehensions like ``[isPrime(x) for x in xrange(10000000)]`` are parallel if the
-generator in the righthand side supports the ``__pyfora_generator__`` parallelism model, which both ``xrange()``,
+generator in the right-hand side supports the ``__pyfora_generator__`` parallelism model, which both ``xrange()``,
 and lists support out of the box.
 
 Similarly, functions like ``sum()`` are parallel if their argument supports the ``__pyfora_generator__`` interface.
@@ -360,7 +360,7 @@ performing the addition operations linearly from left to right. In the parallel 
     (f(0)+f(1)) + (f(2)+f(3))
 
 when addition is associative. Usually this produces the same results, but it's not always true.
-For instance, roundoff errors in floating point arithmetic mean that floating point addition is not
+For instance, round-off errors in floating point arithmetic mean that floating point addition is not
 perfectly associative [#float_associativity]_ .
 As this is a deviation from standard python, we plan to make it an optional feature in the future.
 
@@ -457,3 +457,4 @@ the list that are nearby in the index space [#streaming_read]_ .
     In a good implementation, this should allow for a very low per-value overhead scattered value read.
 
 .. _llvm: http://llvm.org/
+
