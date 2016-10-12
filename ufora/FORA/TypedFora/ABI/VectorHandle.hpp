@@ -269,6 +269,11 @@ public:
 		return mHomogenousVectorStash;
 		}
 
+	uint8_t* basePackedDataPtr() const
+		{
+		return mBasePackedDataPtr;
+		}
+
 private:
 	friend ostream& operator<<(ostream& s, VectorHandle* handle);
 

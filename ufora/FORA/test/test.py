@@ -91,8 +91,8 @@ def sanitizeErrString(errString):
     """pack the error string into a single line of a few characters. include the beginning and end"""
     errString = errString.replace("\n", " ").replace("\t", " ")
 
-    if len(errString) > 500:
-        errString = errString[:250] + " ... " + errString[-250:]
+    if len(errString) > 2500:
+        errString = errString[:1250] + " ... " + errString[-1250:]
     return errString
 
 def printTestResults(moduleName, testName, testResultWithTimes, verbose = False):
