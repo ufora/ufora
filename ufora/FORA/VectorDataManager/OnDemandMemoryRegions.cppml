@@ -52,19 +52,36 @@ typename std::map<K,V>::const_iterator block_containing(const std::map<K,V>& inM
 	}
 
 boost::mutex singletonMutex;
-OnDemandMemoryRegions* currentMemoryRegions = nullptr;
+std::set<OnDemandMemoryRegions*> activeMemoryRegions;
+struct sigaction* oldSigActionPtr;
+
+void cleanupAndTerminateProcess()
+	{
+	boost::mutex::scoped_lock lock(singletonMutex);
+
+	LOG_CRITICAL << "OnDemandMemoryRegions terminating process.";
+	fflush(stdout);
+	fflush(stderr);
+
+	for (auto regionPtr: activeMemoryRegions)
+		regionPtr->preTerminationCleanup();
+
+	_exit(1);
+	}
 
 void sighandler(int i, siginfo_t* info, void* dat)
 	{
-	auto regions = OnDemandMemoryRegions::currentActiveRegions();
+	OnDemandMemoryRegions* regionPtr = OnDemandMemoryRegions::curRegionPtr();
 
-	if (regions == nullptr)
+	if (regionPtr)
 		{
-		LOG_CRITICAL << "Segmentation fault without an active OnDemandMemoryRegions.";
-		exit(1);
+		regionPtr->blockOnAddress(info->si_addr);
+		return;
 		}
 
-	regions->blockOnAddress(info->si_addr);
+	LOG_CRITICAL << "Segmentation fault without an active OnDemandMemoryRegions taking responsibility for it.";
+
+	cleanupAndTerminateProcess();
 	}
 
 }
@@ -74,7 +91,7 @@ OnDemandMemoryRegions::OnDemandMemoryRegions(
             boost::function0<void*> inOnExtractCurrentBlockedThreadInfo,
             std::string sharedMemoryPrefix
             ) : 
-		mSharedMemoryPrefix(sharedMemoryPrefix),
+		mSharedMemoryPrefix(sharedMemoryPrefix + "_0"),
 		mOnThreadBlocked(inOnThreadBlocked),
 		mOnExtractCurrentBlockedThreadInfo(inOnExtractCurrentBlockedThreadInfo),
 		mTotalBytesShared(0),
@@ -82,18 +99,60 @@ OnDemandMemoryRegions::OnDemandMemoryRegions(
 	{
 		{
 		boost::mutex::scoped_lock lock(singletonMutex);
-		lassert_dump(!currentMemoryRegions, "only one OnDemandMemoryRegions can be active at once");
-		currentMemoryRegions = this;
 
-		mOldSigActionPtr = new struct sigaction;
+		auto anyHaveOurPrefix = [&]() {
+			for (auto other: activeMemoryRegions)
+				if (other->mSharedMemoryPrefix == mSharedMemoryPrefix)
+					return true;
+			return false;
+			};
 
-		struct sigaction new_action;
+		long count = 1;
+		while (anyHaveOurPrefix())
+			{
+			count++;
+			mSharedMemoryPrefix = sharedMemoryPrefix + "_" + boost::lexical_cast<std::string>(count);
+			}
 
-		new_action.sa_sigaction = &sighandler;
-		new_action.sa_flags = SA_SIGINFO;
+		activeMemoryRegions.insert(this);
 
-		int code = sigaction(SIGSEGV, &new_action, mOldSigActionPtr);
+		if (activeMemoryRegions.size() == 1)
+			{
+			oldSigActionPtr = new struct sigaction;
+
+			struct sigaction new_action;
+
+			memset(&new_action, 0, sizeof(new_action));
+
+			new_action.sa_sigaction = &sighandler;
+			new_action.sa_flags = SA_SIGINFO;
+  			sigemptyset(&new_action.sa_mask);
+
+			int code = sigaction(SIGSEGV, &new_action, oldSigActionPtr);
+
+			if (code)
+				{
+				LOG_ERROR << "Failed to install signal handler: " << strerror(errno);
+				fflush(stdout);
+				fflush(stderr);
+				_exit(0);
+				}
+			}
 		}
+	}
+
+OnDemandMemoryRegions* OnDemandMemoryRegions::curRegionPtr()
+	{
+	boost::mutex::scoped_lock lock(singletonMutex);
+
+	for (auto regionPtr: activeMemoryRegions)
+		{
+		void* threadInfo = regionPtr->currentThreadInfo();
+		if (threadInfo)
+			return regionPtr;
+		}
+
+	return nullptr;
 	}
 
 OnDemandMemoryRegions::~OnDemandMemoryRegions()
@@ -103,14 +162,46 @@ OnDemandMemoryRegions::~OnDemandMemoryRegions()
 		{
 		boost::mutex::scoped_lock lock(singletonMutex);
 
-		currentMemoryRegions = nullptr;
+		activeMemoryRegions.erase(this);
 
-		sigaction(SIGSEGV, mOldSigActionPtr, nullptr);
+		if (activeMemoryRegions.size() == 0)
+			{
+			int code = sigaction(SIGSEGV, oldSigActionPtr, nullptr);
 
-		delete mOldSigActionPtr;
+			lassert_dump(code == 0, "sigaction failed: " << strerror(errno));
+
+			delete oldSigActionPtr;
+			}
 		}
 
 	cleanup_();
+	}
+
+void OnDemandMemoryRegions::preTerminationCleanup()
+	{
+	for (auto mappableRegion: mMappableMemoryRecords)
+		if (::munmap(mappableRegion.second.address(), mappableRegion.second.size()))
+			{
+			LOG_CRITICAL << "failed to munmap: " << strerror(errno);
+			fflush(stdout);
+			fflush(stderr);
+			}
+
+	for (auto mappableRegion: mSharedMemoryRecords)
+		{
+		close(mappableRegion.second.fileDescriptor());		
+		if (shm_unlink(mappableRegion.second.name().c_str()))
+			{
+			LOG_CRITICAL << "failed to unlink " << mappableRegion.second.name() << ": " << strerror(errno);
+			fflush(stdout);
+			fflush(stderr);
+			}
+		}	
+	}
+
+void* OnDemandMemoryRegions::currentThreadInfo()
+	{
+	return mOnExtractCurrentBlockedThreadInfo();
 	}
 
 void OnDemandMemoryRegions::cleanup_()
@@ -140,8 +231,8 @@ void OnDemandMemoryRegions::blockOnAddress(void* addr)
 
 	if (it == mMappableMemoryRecords.end() || (addrCharPtr - it->second.address()) >= it->second.size())
 		{
-		LOG_CRITICAL << "Address " << addr << " doesn't correspond to any address in the mapping pool";
-		exit(1);
+		LOG_CRITICAL << "Address " << addr << " doesn't correspond to any address in the mapping pool.";
+		cleanupAndTerminateProcess();
 		}
 
 	void* info = mOnExtractCurrentBlockedThreadInfo();
@@ -149,7 +240,7 @@ void OnDemandMemoryRegions::blockOnAddress(void* addr)
 	if (mBlockingThreads.find(info) != mBlockingThreads.end())
 		{	
 		LOG_CRITICAL << "The same thread is marked as blocking twice! This should be impossible.";
-		exit(1);
+		cleanupAndTerminateProcess();
 		}
 
 	do {
@@ -174,18 +265,22 @@ void OnDemandMemoryRegions::blockOnAddress(void* addr)
 		} while (true);
 	}
 
-OnDemandMemoryRegions* OnDemandMemoryRegions::currentActiveRegions()
+void OnDemandMemoryRegions::setSignalMaskOnCurrentThread()
 	{
-	boost::mutex::scoped_lock lock(singletonMutex);
-	
-	return currentMemoryRegions;
+	sigset_t signal_mask;
+	sigemptyset(&signal_mask);
+	sigaddset(&signal_mask, SIGSEGV);
+	lassert_dump(
+		pthread_sigmask(SIG_UNBLOCK, &signal_mask, nullptr) == 0,
+		"failed to set signal mask: " << strerror(errno)
+		);
 	}
 
 uint8_t* OnDemandMemoryRegions::allocateSharedRegion(uint64_t bytecount)
 	{
 	boost::mutex::scoped_lock lock(mMutex);
 
-	std::string segmentName = mSharedMemoryPrefix + boost::lexical_cast<std::string>(mSharedMemoryRecords.size());
+	std::string segmentName = mSharedMemoryPrefix + "_" + boost::lexical_cast<std::string>(mSharedMemoryRecords.size());
 
 	int shm_fd = shm_open(segmentName.c_str(), O_RDWR | O_CREAT, 0x777);
 
@@ -223,6 +318,8 @@ uint8_t* OnDemandMemoryRegions::allocateSharedRegion(uint64_t bytecount)
 
 	mTotalBytesShared += bytecount;
 
+	fullMemoryBarrier();
+
 	return addr;
 	}
 
@@ -258,6 +355,8 @@ uint8_t* OnDemandMemoryRegions::allocateMappableRegion(uint64_t bytecount)
 
 	mTotalBytesMappable += bytecount;
 	
+	fullMemoryBarrier();
+
 	return addr;
 	}
 
@@ -297,17 +396,21 @@ bool OnDemandMemoryRegions::mapShareableRegion(
 	if (shareableIt == mSharedMemoryRecords.end())
 		return false;
 
-	if (::mmap(mappableRegion + mappableRegionOffset, 
+	void* result = ::mmap(mappableRegion + mappableRegionOffset, 
 			bytesToMap, 
 			PROT_READ | PROT_WRITE, 
 			MAP_FIXED | MAP_SHARED, 
 			shareableIt->second.fileDescriptor(), 
 			shareableRegionOffset
-			) == (void*)-1)
+			);
+
+	if (result == (void*)-1)
 		{
 		LOG_CRITICAL << "failed to map the shared region";
 		return false;
 		}
+
+	lassert(result == mappableRegion + mappableRegionOffset);
 
 	mMappedMemoryRecords[mappableRegion + mappableRegionOffset] = 
 		MappedMemoryRecord(
