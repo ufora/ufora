@@ -29,7 +29,9 @@ OnDemandMemoryRegions
 Manages multiple views of the same shared memory mapped into different
 portions of the address space.
 
-This class uses signal handling, so there can only be one active per process.
+Multiple instances of this can exist. Users need to ensure that the
+'inOnExtractCurrentBlockedThreadInfo' correctly identifies the thread
+with the right ODMR.
 *****************/
 
 class OnDemandMemoryRegions {
@@ -40,16 +42,24 @@ public:
         void* blockingThreadPtr
         ;
 
-    static OnDemandMemoryRegions* currentActiveRegions();
-
     //note that the provided callbacks are called under lock!
     OnDemandMemoryRegions(
+            //called when a thread blocks
             boost::function1<void, BlockingThread> inOnThreadBlocked,
+            //called to identify the thread. Should return null if the thread is not governed
+            //by this OnDemandMemoryRegions instance
             boost::function0<void*> inOnExtractCurrentBlockedThreadInfo,
             std::string sharedMemoryPrefix
             );
 
     ~OnDemandMemoryRegions();
+
+    void* currentThreadInfo();
+
+    //needs to be called on any thread that wants its segfaults to be handled.
+    void setSignalMaskOnCurrentThread();
+
+    static OnDemandMemoryRegions* curRegionPtr();
 
     //allocate a shared region. This is backed by actual memory.
     //returns nullptr if we can't allocate more space.
@@ -87,6 +97,8 @@ public:
     void getAllBlockingThreads(std::vector<BlockingThread>& outThreads);
 
     void blockOnAddress(void* address);
+
+    void preTerminationCleanup();
 
 private:
     void cleanup_();
@@ -139,8 +151,6 @@ private:
     std::map<void*, BlockingThread> mBlockingThreads;
 
     std::map<uint8_t*, std::vector<boost::shared_ptr<boost::condition> > > mBlockingThreadConditions;
-
-    struct sigaction* mOldSigActionPtr;
 };
 
 

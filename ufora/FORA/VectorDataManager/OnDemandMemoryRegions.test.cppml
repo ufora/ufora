@@ -21,91 +21,140 @@
 #include "../../core/Logging.hpp"
 #include "../../core/containers/MapWithIndex.hpp"
 #include "../../core/threading/Queue.hpp"
-
-
-BOOST_AUTO_TEST_CASE( test_OnDemandMemoryRegions_singleton )
-	{
-	uint64_t PAGE_SIZE = getpagesize();
-
-	BOOST_CHECK(OnDemandMemoryRegions::currentActiveRegions() == nullptr);
-
-	OnDemandMemoryRegions regions(
-		[](OnDemandMemoryRegions::BlockingThread t) { },
-		[]() -> void* { return nullptr; },
-		"/ufora_test"
-		);
-
-	BOOST_CHECK(OnDemandMemoryRegions::currentActiveRegions() == &regions);
-
-	auto another = [] {
-		OnDemandMemoryRegions regions2(
-			[](OnDemandMemoryRegions::BlockingThread t) { },
-			[]() -> void* { return nullptr; },
-			"/ufora_test"
-			);
-		};
-
-	BOOST_CHECK_THROW(another(), std::logic_error);
-	}
+#include "../../core/Clock.hpp"
 
 BOOST_AUTO_TEST_CASE( test_OnDemandMemoryRegions_access_memory )
 	{
+		{
+		uint64_t PAGE_SIZE = getpagesize();
+
+		Queue<OnDemandMemoryRegions::BlockingThread> blocking;
+
+		OnDemandMemoryRegions regions(
+			[&](OnDemandMemoryRegions::BlockingThread t) { blocking.write(t); },
+			[]() -> void* { return (void*)1; },
+			"/ufora_test"
+			);
+
+		uint64_t readSize = PAGE_SIZE * 128 * 4;
+		uint64_t writeSize = PAGE_SIZE * 128;
+
+		uint8_t* writeable = regions.allocateSharedRegion(writeSize);
+
+		for (long k = 0; k < writeSize; k++)
+			writeable[k] = 1;
+
+		uint8_t* mappable = regions.allocateMappableRegion(readSize);
+
+		bool isDone = false;
+		uint64_t accumulator = 0;
+
+		auto readerThread = [&]() {
+			regions.setSignalMaskOnCurrentThread();
+
+			for (long k = 0; k < readSize; k++)
+				accumulator += mappable[k];
+
+			isDone = true;
+			};
+
+		boost::thread thread(readerThread);
+
+		long mapCount = 0;
+
+		while (!isDone)
+			{
+			OnDemandMemoryRegions::BlockingThread thread;
+			if (blocking.getTimeout(thread, 0.01))
+				{
+				uint64_t offset = thread.offsetInRegion();
+				offset -= offset % PAGE_SIZE;
+
+				uint64_t offsetInWriteable = offset % writeSize;
+
+				uint8_t* mappableChunk = thread.mappableRegion();
+
+				mapCount += 1;
+
+				regions.mapShareableRegion(writeable, offsetInWriteable, mappable, offset, PAGE_SIZE);
+				}
+			}
+		
+		thread.join();
+
+		BOOST_CHECK_EQUAL(mapCount, readSize / PAGE_SIZE);
+		BOOST_CHECK_EQUAL(accumulator, readSize);
+		}
+	}
+
+BOOST_AUTO_TEST_CASE( test_OnDemandMemoryRegions_mutiple_region_handlers )
+	{
 	uint64_t PAGE_SIZE = getpagesize();
 
-	Queue<OnDemandMemoryRegions::BlockingThread> blocking;
+	Queue<OnDemandMemoryRegions::BlockingThread> blocking1;
+	Queue<OnDemandMemoryRegions::BlockingThread> blocking2;
 
-	OnDemandMemoryRegions regions(
-		[&](OnDemandMemoryRegions::BlockingThread t) { blocking.write(t); },
-		[]() -> void* { return nullptr; },
+	OnDemandMemoryRegions regions1(
+		[&](OnDemandMemoryRegions::BlockingThread t) { blocking1.write(t); },
+		[]() -> void* { 
+			if (!Ufora::threading::ScopedThreadLocalContext<int>::has())
+				return nullptr;
+			return (void*)((uint64_t)(Ufora::threading::ScopedThreadLocalContext<int>::get() == 0 ? 1 : 0)); 
+			},
 		"/ufora_test"
 		);
 
-	uint64_t readSize = PAGE_SIZE * 128 * 4;
-	uint64_t writeSize = PAGE_SIZE * 128;
+	OnDemandMemoryRegions regions2(
+		[&](OnDemandMemoryRegions::BlockingThread t) { blocking2.write(t); },
+		[]() -> void* { 
+			if (!Ufora::threading::ScopedThreadLocalContext<int>::has())
+				return nullptr;
+			return (void*)((uint64_t)(Ufora::threading::ScopedThreadLocalContext<int>::get() == 1 ? 1 : 0)); 
+			},
+		"/ufora_test"
+		);
 
-	uint8_t* writeable = regions.allocateSharedRegion(writeSize);
+	uint8_t* writeable1 = regions1.allocateSharedRegion(PAGE_SIZE);
+	uint8_t* writeable2 = regions2.allocateSharedRegion(PAGE_SIZE);
 
-	for (long k = 0; k < writeSize; k++)
-		writeable[k] = 1;
+	uint8_t* readable1 = regions1.allocateMappableRegion(PAGE_SIZE);
+	uint8_t* readable2 = regions2.allocateMappableRegion(PAGE_SIZE);
 
-	uint8_t* mappable = regions.allocateMappableRegion(readSize);
+	auto thread1Func = [&]() {
+		regions1.setSignalMaskOnCurrentThread();
 
-	bool isDone = false;
-	uint64_t accumulator = 0;
+		int whichThread = 0;
+		Ufora::threading::ScopedThreadLocalContext<int> contextSetter(whichThread);
 
-	auto readerThread = [&]() {
-		for (long k = 0; k < readSize; k++)
-			accumulator += mappable[k];
+		lassert(OnDemandMemoryRegions::curRegionPtr() == &regions1);
+		fullMemoryBarrier();
 
-		isDone = true;
+		*readable1 = 10;
 		};
 
-	boost::thread thread(readerThread);
+	auto thread2Func = [&]() {
+		regions2.setSignalMaskOnCurrentThread();
 
-	long mapCount = 0;
+		int whichThread = 1;
+		Ufora::threading::ScopedThreadLocalContext<int> contextSetter(whichThread);
+		
+		lassert(OnDemandMemoryRegions::curRegionPtr() == &regions2);
+		fullMemoryBarrier();
+		
+		*readable2 = 10;
+		};
 
-	while (!isDone)
-		{
-		OnDemandMemoryRegions::BlockingThread thread;
-		if (blocking.getTimeout(thread, 0.01))
-			{
-			uint64_t offset = thread.offsetInRegion();
-			offset -= offset % PAGE_SIZE;
+	boost::shared_ptr<boost::thread> thread1(new boost::thread(thread1Func));
+	boost::shared_ptr<boost::thread> thread2(new boost::thread(thread2Func));
 
-			uint64_t offsetInWriteable = offset % writeSize;
+	auto blocked1 = blocking1.get();
+	auto blocked2 = blocking2.get();
 
-			uint8_t* mappableChunk = thread.mappableRegion();
+	regions1.mapShareableRegion(writeable1,0,readable1,0,PAGE_SIZE);
+	regions2.mapShareableRegion(writeable2,0,readable2,0,PAGE_SIZE);
 
-			mapCount += 1;
-
-			regions.mapShareableRegion(writeable, offsetInWriteable, mappable, offset, PAGE_SIZE);
-			}
-		}
-	
-	thread.join();
-
-	BOOST_CHECK_EQUAL(mapCount, readSize / PAGE_SIZE);
-	BOOST_CHECK_EQUAL(accumulator, readSize);
+	thread1->join();
+	thread2->join();
 	}
 
 BOOST_AUTO_TEST_CASE( test_OnDemandMemoryRegions_many_threads )
@@ -133,7 +182,7 @@ BOOST_AUTO_TEST_CASE( test_OnDemandMemoryRegions_many_threads )
 
 	OnDemandMemoryRegions regions(
 		[&](OnDemandMemoryRegions::BlockingThread t) { blockingThreads.write(t); },
-		[]() -> void* { return (void*)(uint64_t)Ufora::threading::ScopedThreadLocalContext<int>::get(); },
+		[]() -> void* { return (void*)((uint64_t)Ufora::threading::ScopedThreadLocalContext<int>::get() + 1); },
 		"/ufora_test"
 		);
 
@@ -155,6 +204,8 @@ BOOST_AUTO_TEST_CASE( test_OnDemandMemoryRegions_many_threads )
 		Queue<int> threadsComplete;
 
 		auto threadFunc = [&](int whichThreadAmI) {
+			regions.setSignalMaskOnCurrentThread();
+			
 			try {
 				Ufora::threading::ScopedThreadLocalContext<int> contextSetter(whichThreadAmI);
 
