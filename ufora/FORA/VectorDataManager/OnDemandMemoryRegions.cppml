@@ -155,6 +155,11 @@ OnDemandMemoryRegions* OnDemandMemoryRegions::curRegionPtr()
 	return nullptr;
 	}
 
+uint64_t OnDemandMemoryRegions::pageSize() const
+	{
+	return getpagesize();
+	}
+
 OnDemandMemoryRegions::~OnDemandMemoryRegions()
 	{
 	lassert_dump(!mBlockingThreads.size(), "makes no sense to have any threads blocking at teardown");
@@ -226,41 +231,68 @@ void OnDemandMemoryRegions::blockOnAddress(void* addr)
 
 	auto addrCharPtr = (uint8_t*)addr;
 
-	//find the memory pointer that's closest
-	auto it = block_containing(mMappableMemoryRecords, addrCharPtr);
 
-	if (it == mMappableMemoryRecords.end() || (addrCharPtr - it->second.address()) >= it->second.size())
 		{
-		LOG_CRITICAL << "Address " << addr << " doesn't correspond to any address in the mapping pool.";
-		cleanupAndTerminateProcess();
-		}
-
-	void* info = mOnExtractCurrentBlockedThreadInfo();
-
-	if (mBlockingThreads.find(info) != mBlockingThreads.end())
-		{	
-		LOG_CRITICAL << "The same thread is marked as blocking twice! This should be impossible.";
-		cleanupAndTerminateProcess();
-		}
-
-	do {
 		//see if there is a mapped region for this already
 		auto it_2 = block_containing(mMappedMemoryRecords, addrCharPtr);
 		if (it_2 != mMappedMemoryRecords.end() && (addrCharPtr - it_2->second.address()) < it_2->second.bytesToMap())
-			{
-			mBlockingThreads.erase(info);
 			return;
+		}
+		
+
+	void* info = mOnExtractCurrentBlockedThreadInfo();
+
+	BlockingThread thread;
+
+		{
+		//find the memory pointer that's closest
+		auto it = block_containing(mMappableMemoryRecords, addrCharPtr);
+
+		if (it == mMappableMemoryRecords.end() || (addrCharPtr - it->second.address()) >= it->second.size())
+			{
+			LOG_CRITICAL << "Address " << addr << " doesn't correspond to any address in the mapping pool.";
+			cleanupAndTerminateProcess();
+			}
+
+		if (mBlockingThreads.find(info) != mBlockingThreads.end())
+			{	
+			LOG_CRITICAL << "The same thread is marked as blocking twice! This should be impossible.";
+			cleanupAndTerminateProcess();
+			}
+
+		thread = BlockingThread(it->second.address(), addrCharPtr - it->second.address(), info);
+		mBlockingThreads[info] = thread;
+		}
+
+	do {
+		lock.unlock();
+		mOnThreadBlocked(thread);
+		lock.lock();
+
+		//check if we can exit
+			{
+			auto it_2 = block_containing(mMappedMemoryRecords, addrCharPtr);
+			if (it_2 != mMappedMemoryRecords.end() && (addrCharPtr - it_2->second.address()) < it_2->second.bytesToMap())
+				{
+				mBlockingThreads.erase(info);
+				return;
+				}		
 			}
 		
 		boost::shared_ptr<boost::condition> conditionPtr(new boost::condition);
 
-		mBlockingThreads[info] = BlockingThread(it->second.address(), addrCharPtr - it->second.address(), info);
-
 		mBlockingThreadConditions[addrCharPtr].push_back(conditionPtr);
 
-		mOnThreadBlocked(mBlockingThreads[info]);
-
 		conditionPtr->wait(lock);
+
+			{
+			auto it_2 = block_containing(mMappedMemoryRecords, addrCharPtr);
+			if (it_2 != mMappedMemoryRecords.end() && (addrCharPtr - it_2->second.address()) < it_2->second.bytesToMap())
+				{
+				mBlockingThreads.erase(info);
+				return;
+				}		
+			}
 		
 		} while (true);
 	}

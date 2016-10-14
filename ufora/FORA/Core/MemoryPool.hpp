@@ -49,6 +49,7 @@ public:
 		BigVectorHandle,
 		DataTask,
 		ExternalProcess,
+		ExternalSharedMemory,
 		FreeStore
 	};
 

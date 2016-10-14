@@ -1,0 +1,206 @@
+/***************************************************************************
+    Copyright 2016 Ufora Inc.
+ 
+    Licensed under the Apache License, Version 2.0 (the "License");
+    you may not use this file except in compliance with the License.
+    You may obtain a copy of the License at
+ 
+        http://www.apache.org/licenses/LICENSE-2.0
+ 
+    Unless required by applicable law or agreed to in writing, software
+    distributed under the License is distributed on an "AS IS" BASIS,
+    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    See the License for the specific language governing permissions and
+    limitations under the License.
+****************************************************************************/
+#include "IntegerRanges.hppml"
+
+#include "../UnitTest.hpp"
+#include "../UnitTestCppml.hpp"
+
+
+template<bool collapse>
+class IntegerRangesTest {
+public:
+	void addRange(IntegerRange range)
+		{
+		mRanges.addRange(range);
+
+		mRangesProxy.insert(range);
+
+		if (collapse)
+			dedup();
+
+		check();
+		}
+
+	void dedup()
+		{
+		for (auto r1: mRangesProxy)
+			for (auto r2: mRangesProxy)
+				if (r1 != r2 && r1.intersect(r2).size() || r1.low() == r2.high() || r1.high() == r2.low())
+					{
+					mRangesProxy.erase(r1);
+					mRangesProxy.erase(r2);
+					mRangesProxy.insert(IntegerRange(std::min(r1.low(),r2.low()), std::max(r1.high(),r2.high())));
+
+					dedup();
+					return;
+					}
+		}
+
+	void removeRange(IntegerRange range)
+		{
+		if (collapse)
+			{
+			std::set<IntegerRange> newRanges;
+			for (auto r: mRangesProxy)
+				if (r.intersect(range).size())
+					{
+					if (r.low() < range.low())
+						newRanges.insert(IntegerRange(r.low(), range.low()));
+					if (range.high() < r.high())
+						newRanges.insert(IntegerRange(range.high(), r.high()));
+					}
+				else
+					newRanges.insert(r);
+
+			mRangesProxy = newRanges;
+			}
+		else
+			{
+			lassert(mRangesProxy.find(range) != mRangesProxy.end());
+			mRangesProxy.erase(range);
+			}
+
+		mRanges.removeRange(range);
+
+		check();
+		}
+
+	void check()
+		{
+		checkValues(-10, 40);
+		checkSubdivide(IntegerRange(-10, 5));
+		checkSubdivide(IntegerRange(-5, 10));
+		checkSubdivide(IntegerRange(-5, 30));
+		checkSubdivide(IntegerRange(10, 30));
+		checkSubdivide(IntegerRange(5, 60));
+		checkSubdivide(IntegerRange(-10, 60));
+		}
+
+	void checkValues(int64_t low, int64_t high)
+		{
+		for (long k = low; k <= high; k++)
+			checkValue(k);
+		}
+
+	void checkSubdivide(IntegerRange range)
+		{
+		std::vector<IntegerRange> overlapping, notCovered;
+
+		mRanges.subdivide(range, overlapping, notCovered);
+
+		BOOST_CHECK_EQUAL_CPPML_MESSAGE(overlapping, computeOverlapping(range), range);
+		BOOST_CHECK_EQUAL_CPPML_MESSAGE(notCovered, computeNotCovered(range), range);
+		}
+
+	std::vector<IntegerRange> computeOverlapping(IntegerRange range)
+		{
+		std::vector<IntegerRange> subs;
+		for (auto r: mRangesProxy)
+			if (r.intersect(range).size())
+				subs.push_back(r);
+
+		std::sort(subs.begin(), subs.end());
+
+		return subs;
+		}
+
+	std::vector<IntegerRange> computeNotCovered(IntegerRange range)
+		{
+		std::vector<IntegerRange> subs;
+
+		for (long k = range.low(); k < range.high(); k++)
+			if (!mRanges.contains(k))
+				{
+				for (long j = k + 1; j <= range.high(); j++)
+					if (mRanges.contains(j) || j == range.high())
+						{
+						subs.push_back(IntegerRange(k,j));
+						k = j;
+						j = range.high() + 1;
+						}
+				}
+
+		std::sort(subs.begin(), subs.end());
+
+		return subs;
+		}
+
+	void checkValue(int64_t val)
+		{
+		BOOST_CHECK_EQUAL_CPPML_MESSAGE(
+			mRanges.rangeContaining(val),
+			rangeContaining(val),
+			val
+			);
+		BOOST_CHECK_EQUAL_CPPML_MESSAGE(
+			mRanges.contains(val),
+			!rangeContaining(val).isNull(),
+			val
+			);
+		}
+
+	Nullable<IntegerRange> rangeContaining(int64_t val)
+		{
+		for (auto r: mRangesProxy)
+			if (r.low() <= val && val < r.high())
+				return null() << r;
+		return null();
+		}
+
+private:
+	IntegerRanges<collapse> mRanges;
+
+	std::set<IntegerRange> mRangesProxy;
+};
+
+
+BOOST_AUTO_TEST_CASE( test_math_IntegerRanges )
+	{
+	IntegerRangesTest<false> ranges;
+
+	ranges.addRange(IntegerRange(0, 10));
+	ranges.addRange(IntegerRange(20, 30));
+	ranges.addRange(IntegerRange(15, 18));
+	ranges.addRange(IntegerRange(10, 15));
+	ranges.removeRange(IntegerRange(15, 18));
+	ranges.addRange(IntegerRange(18, 19));
+	}
+
+
+BOOST_AUTO_TEST_CASE( test_math_IntegerRangesContiguous )
+	{
+	IntegerRangesTest<true> ranges;
+
+	ranges.addRange(IntegerRange(0, 10));
+	ranges.addRange(IntegerRange(10, 20));
+	ranges.addRange(IntegerRange(15, 25));
+	ranges.addRange(IntegerRange(20, 30));
+	ranges.removeRange(IntegerRange(5, 25));
+	ranges.addRange(IntegerRange(10, 20));
+	ranges.removeRange(IntegerRange(9, 11));
+	ranges.removeRange(IntegerRange(14, 17));
+	ranges.addRange(IntegerRange(15, 16));
+	ranges.removeRange(IntegerRange(3, 22));
+	}
+
+
+BOOST_AUTO_TEST_CASE( test_math_IntegerRangesContiguous_2 )
+	{
+	IntegerRangesTest<true> ranges;
+
+	ranges.addRange(IntegerRange(10, 20));
+	ranges.addRange(IntegerRange(0, 20));
+	}

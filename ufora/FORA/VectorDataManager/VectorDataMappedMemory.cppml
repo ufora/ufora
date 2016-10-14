@@ -19,15 +19,17 @@
 #include "OnDemandMemoryRegions.hppml"
 #include "../Core/ExecutionContext.hppml"
 #include "VectorDataManager.hppml"
+#include "../TypedFora/ABI/BigVectorLayouts.hppml"
+#include "../Core/ExecutionContextImpl.hppml"
 
-class VectorDataMappedMemoryImpl {
+class VectorDataMappedMemoryImpl : public PolymorphicSharedPtrBase<VectorDataMappedMemoryImpl> {
 public:
     VectorDataMappedMemoryImpl(
                 PolymorphicSharedPtr<CallbackScheduler> inCallbackScheduler,
                 PolymorphicSharedPtr<VectorDataMemoryManager> inVDMM,
                 PolymorphicSharedPtr<TypedFora::Abi::BigVectorLayouts> inBigVectorLayouts
                 ) :
-            mThreadBlockedEvent(inCallbackScheduler),
+            mDataLoadRequiredEvent(inCallbackScheduler),
             mVDMM(inVDMM),
             mPageLayouts(inBigVectorLayouts),
             mMemoryRegions(
@@ -36,12 +38,59 @@ public:
                 "/ufora"
                 )
         {
-
+        mPageDataPlacement.reset(
+            new PageDataPlacements(
+                mMemoryRegions.pageSize(),
+                [&](PhysicalMemoryAllocation alloc) {
+                    return mMemoryRegions.allocateSharedRegion(
+                        mMemoryRegions.roundUpToPageSize(alloc.byteRange().size())
+                        );
+                    },
+                [&](PhysicalMemoryAllocation dealloc, uint8_t* ptr) {
+                    mMemoryRegions.freeSharedRegion(ptr);
+                    },
+                [&](uint8_t* sharedBase, uint64_t sharedOffset, uint8_t* mapBase, uint64_t mapOffset, uint64_t bytecount) {
+                    return mMemoryRegions.mapShareableRegion(sharedBase, sharedOffset, mapBase, mapOffset, bytecount);
+                    },
+                [&](Fora::PageId page, IntegerRange range) {
+                    mDataLoadRequiredEvent.broadcast(
+                        VectorDataMappedMemory::DataLoadRequiredEvent(
+                            page,
+                            range
+                            )
+                        );                        
+                    }
+                )
+            );
         }
 
     void onThreadBlocked(OnDemandMemoryRegions::BlockingThread thread)
         {
+        boost::mutex::scoped_lock lock(mMutex);
 
+        Nullable<pair<BigvecOrPageId, int64_t> > addr = 
+            mPageDataPlacement->translateMappingAddress(
+                thread.mappableRegion(), 
+                thread.offsetInRegion()
+                );
+
+        lassert_dump(addr, "ExecutionContext accessed a mappable region for which we have no definition.");
+
+        Fora::PageId pageTouched;
+        @match BigvecOrPageId(addr->first)
+            -| Page(p) ->> { pageTouched = p; }
+            -| Bigvec(b) ->> { pageTouched = mPageLayouts->getLayoutForId(b).pageAtIndex(addr->second); }
+
+        auto context = ((Fora::Interpreter::ExecutionContext*)thread.blockingThreadPtr());
+
+        context->getImpl()->touchedBigvecMemory(pageTouched);
+
+        mPageDataPlacement->markThreadBlockedOn(addr->first, addr->second);
+
+        performBackgroundCopyTasks_(lock);
+
+        if (!mPageDataPlacement->byteIsMapped(addr->first, addr->second))
+            context->interrupt();
         }
 
     void* extractCurrentBlockedThreadInfo()
@@ -58,38 +107,134 @@ public:
         return nullptr;
         }
 
+    uint8_t* allocateAddressForPage(const Fora::PageId& inPage, int64_t valueCount, int64_t valueStride)
+        {
+        boost::mutex::scoped_lock lock(mMutex);
+
+        mPageAddressRefcounts[inPage]++;
+        
+        if (mPageAddressRefcounts[inPage] > 1)
+            return mPageDataPlacement->getMappableAddress(BigvecOrPageId::Page(inPage));
+
+        uint64_t bytecount = mMemoryRegions.roundUpToPageSize(valueCount * valueStride);
+
+        auto ptr = mMemoryRegions.allocateMappableRegion(bytecount);
+
+        lassert(ptr);
+
+        mPageDataPlacement->setMappableAddress(BigvecOrPageId::Page(inPage), ptr, bytecount);
+
+        return ptr;
+        }
+
+    void deallocateAddressForPage(const Fora::PageId& inPage)
+        {
+        boost::mutex::scoped_lock lock(mMutex);
+
+        mPageAddressRefcounts[inPage]--;
+
+        if (mPageAddressRefcounts[inPage] == 0)
+            {
+            uint8_t* addr = mPageDataPlacement->getMappableAddress(BigvecOrPageId::Page(inPage));
+
+            mMemoryRegions.releaseMappableRegion(addr);
+
+            mPageDataPlacement->dropMappingTarget(BigvecOrPageId::Page(inPage));
+            }
+        }
+
     uint8_t* addressForBigvec(const Fora::BigVectorId& id)
         {
-        return nullptr;
+        boost::mutex::scoped_lock lock(mMutex);
+
+        if (id.jor().size() != 1 || !id.jor()[0].type() || !id.jor()[0].type()->isPOD())
+            return nullptr;
+
+        uint8_t* ptr = mPageDataPlacement->getMappableAddress(BigvecOrPageId::Bigvec(id));
+
+        if (ptr)
+            return ptr;
+
+        mPageDataPlacement->addBigVecPageLayout(mPageLayouts->getLayoutForId(id));
+
+        uint64_t bytecount = mMemoryRegions.roundUpToPageSize(id.size() * id.jor()[0].type()->size());
+
+        ptr = mMemoryRegions.allocateMappableRegion(bytecount);
+        if (!ptr)
+            return nullptr;
+
+        mPageDataPlacement->setMappableAddress(BigvecOrPageId::Bigvec(id), ptr, bytecount);
+
+        return ptr;
         }
 
     void bigvecDroppedAcrossEntireSystem(const Fora::BigVectorId& id)
         {
+        boost::mutex::scoped_lock lock(mMutex);
+
+        uint8_t* ptr = mPageDataPlacement->getMappableAddress(BigvecOrPageId::Bigvec(id));
+        if (!ptr)
+            return;
+
+        mMemoryRegions.releaseMappableRegion(ptr);
+
+        mPageDataPlacement->dropMappingTarget(BigvecOrPageId::Bigvec(id));
         }
    
     bool allocatePageData(
-                    const VectorDataID& inPage, 
+                    const Fora::PageId& inPage, 
                     IntegerRange valueRange,
                     uint64_t homogenousStride,
-                    boost::function<void (uint8_t*)> inPopulateFunc
+                    uint8_t* addr
                     )
         {
-        return false;
+        boost::mutex::scoped_lock lock(mMutex);
+
+        mPageDataPlacement->allocatePageData(inPage, valueRange * homogenousStride, addr);
+
+        performBackgroundCopyTasks_(lock);
+
+        return true;
         }
 
-    void deallocatePageData(const VectorDataID& inPage)
+    void deallocatePageData(const Fora::PageId& inPage)
         {
+        boost::mutex::scoped_lock lock(mMutex);
+
+        //invalidate all references to 'inPage'
+        mPageDataPlacement->dropAllDataForPage(inPage);
+
+        //free any memory we happen to need in the background
+        performBackgroundCopyTasks_(lock);
         }
 
-    EventBroadcaster<VectorDataMappedMemory::ThreadBlockedEvent>& getThreadBlockedEvent()
+    EventBroadcaster<VectorDataMappedMemory::DataLoadRequiredEvent>& getOnDataLoadRequiredEvent()
         {
-        return mThreadBlockedEvent;
+        return mDataLoadRequiredEvent;
         }
 
 private:
+    void performBackgroundCopyTasks_(boost::mutex::scoped_lock& ioLock)
+        {
+        while (Nullable<DataCopyTask> p = mPageDataPlacement->extractTask())
+            {
+            ioLock.unlock();
+
+            p->copy();
+
+            ioLock.lock();
+
+            mPageDataPlacement->taskComplete(*p);
+            }
+        }
+
     boost::mutex mMutex;
 
-    EventBroadcaster<VectorDataMappedMemory::ThreadBlockedEvent> mThreadBlockedEvent;
+    boost::shared_ptr<PageDataPlacements> mPageDataPlacement;
+
+    map<Fora::PageId, int64_t> mPageAddressRefcounts;
+    
+    EventBroadcaster<VectorDataMappedMemory::DataLoadRequiredEvent> mDataLoadRequiredEvent;
 
     PolymorphicSharedPtr<VectorDataMemoryManager> mVDMM;
 
@@ -119,36 +264,46 @@ uint8_t* VectorDataMappedMemory::addressForBigvec(const Fora::BigVectorId& id)
     return mImpl->addressForBigvec(id);
     }
 
+uint8_t* VectorDataMappedMemory::allocateAddressForPage(const Fora::PageId& inPage, int64_t valueCount, int64_t valueStride)
+    {
+    return mImpl->allocateAddressForPage(inPage, valueCount, valueStride);
+    }
+
+void VectorDataMappedMemory::deallocateAddressForPage(const Fora::PageId& inPage)
+    {
+    mImpl->deallocateAddressForPage(inPage);
+    }
+
 void VectorDataMappedMemory::bigvecDroppedAcrossEntireSystem(const Fora::BigVectorId& id)
     {
     mImpl->addressForBigvec(id);
     }
 
 bool VectorDataMappedMemory::allocatePageData(
-                const VectorDataID& inPage, 
+                const Fora::PageId& inPage, 
                 IntegerRange valueRange,
                 uint64_t homogenousStride,
-                boost::function<void (uint8_t*)> inPopulateFunc
+                uint8_t* addr
                 )
     {
-    return mImpl->allocatePageData(inPage, valueRange, homogenousStride, inPopulateFunc);
+    return mImpl->allocatePageData(inPage, valueRange, homogenousStride, addr);
     }
 
 void VectorDataMappedMemory::visitPageData(
-                const VectorDataID& inPage,
+                const Fora::PageId& inPage,
                 boost::function<void (uint8_t*, IntegerRange)> inVisitFunc
                 )
     {
-    
+    lassert_dump(false, "not implemented");
     }
 
 
-void VectorDataMappedMemory::deallocatePageData(const VectorDataID& inPage)
+void VectorDataMappedMemory::deallocatePageData(const Fora::PageId& inPage)
     {
     mImpl->deallocatePageData(inPage);
     }
 
-EventBroadcaster<VectorDataMappedMemory::ThreadBlockedEvent>& VectorDataMappedMemory::getThreadBlockedEvent()
+EventBroadcaster<VectorDataMappedMemory::DataLoadRequiredEvent>& VectorDataMappedMemory::getOnDataLoadRequiredEvent()
     {
-    return mImpl->getThreadBlockedEvent();
+    return mImpl->getOnDataLoadRequiredEvent();
     }
