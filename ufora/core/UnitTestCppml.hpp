@@ -19,7 +19,14 @@
 #include "UnitTest.hpp"
 
 #define BOOST_CHECK_EQUAL_CPPML(l,r) \
-	BOOST_CHECK_MESSAGE(cppmlCmp(l,r) == 0, \
-		prettyPrintString(l) << " != " << prettyPrintString(r) \
-		)
+   BOOST_CHECK_MESSAGE(cppmlCmp(l,r) == 0, \
+      prettyPrintString(l) << " != " << prettyPrintString(r) \
+      )
+
+
+#define BOOST_CHECK_EQUAL_CPPML_MESSAGE(l,r,m) \
+   BOOST_CHECK_MESSAGE(cppmlCmp(l,r) == 0, \
+      prettyPrintString(l) << " != " << prettyPrintString(r) << ": " << \
+      prettyPrintString(m) \
+      )
 

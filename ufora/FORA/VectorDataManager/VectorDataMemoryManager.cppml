@@ -85,7 +85,8 @@ VectorDataMemoryManager::VectorDataMemoryManager(
 		mTotalBytesMmappedHighWaterMark(0),
 		mPageletBytesWithinDataTasks(0),
 		mTotalBytesUsedByDataTasks(0),
-		mTotalBytesUsedByExternalProcesses(0)
+		mTotalBytesUsedByExternalProcesses(0),
+		mTotalBytesUsedByExternalSharedMemory(0)
 
 	{
 	LOG_INFO << "VectorDataMemoryManager created with "
@@ -135,7 +136,8 @@ VectorDataMemoryManager::VectorDataMemoryManager(
 		mTotalBytesMmappedHighWaterMark(0),
 		mPageletBytesWithinDataTasks(0),
 		mTotalBytesUsedByDataTasks(0),
-		mTotalBytesUsedByExternalProcesses(0)
+		mTotalBytesUsedByExternalProcesses(0),
+		mTotalBytesUsedByExternalSharedMemory(0)
 	{
 	LOG_INFO << "VectorDataMemoryManager created with "
 		<< inMaxBytesPerPool / 1024 / 1024.0 << " MB max bytes per pool."
@@ -159,6 +161,7 @@ VectorDataMemoryManager::~VectorDataMemoryManager()
 			<< "FreeSmall: " << mFreeSmallBlocks.size() * mSmallAllocSize / 1024 / 1024.0 << " MB. "
 			<< "LargeAllocs: " << mLargeAllocTracker.bytesUsed() / 1024 / 1024.0 << " MB "
 			<< "External: " << mTotalBytesUsedByExternalProcesses / 1024 / 1024.0 << " MB. "
+			<< "ExternalShared: " << mTotalBytesUsedByExternalSharedMemory / 1024 / 1024.0 << " MB. "
 			<< "MMAP from OS: " << mTotalBytesMmapped / 1024 / 1024.0 << " MB. "
 			<< "MAX: " << mMaxTotalBytes / 1024 / 1024.0 << " MB. "
 			<< "TCM (u): " << Ufora::Memory::getTotalBytesAllocated() / 1024 / 1024.0 << " MB. "
@@ -369,6 +372,7 @@ void VectorDataMemoryManager::logMapFailed_()
 				<< "\tAllocatedButUnused: " << mLargeAllocTracker.bytesUnused() / 1024 / 1024.0 << " MB.\n"
 				<< "\tLargestUnallocatedSlab: " << mLargeAllocTracker.sizeOfLargestUnusedBlock() / 1024 / 1024.0 << " MB.\n"
 				<< "\tExternal: " << mTotalBytesUsedByExternalProcesses / 1024 / 1024.0 << " MB.\n"
+				<< "\tExternalShared: " << mTotalBytesUsedByExternalSharedMemory / 1024 / 1024.0 << " MB.\n"
 				<< "\tMMAP from OS: " << mTotalBytesMmapped / 1024 / 1024.0 << " MB.\n"
 				<< "\tMAX: " << mMaxTotalBytes / 1024 / 1024.0 << " MB.\n"
 				<< "TCM (u): " << Ufora::Memory::getTotalBytesAllocated() / 1024 / 1024.0 << " MB. "
@@ -717,7 +721,6 @@ bool VectorDataMemoryManager::permitAllocation(MemoryPool* inPool, uint64_t size
 	return result;
 	}
 
-
 bool VectorDataMemoryManager::allocateExternalMemory(uint64_t inBytes)	
 	{
 	boost::mutex::scoped_lock lock(mMutex);
@@ -735,6 +738,25 @@ void VectorDataMemoryManager::releaseExternalMemory(uint64_t inBytes)
 	boost::mutex::scoped_lock lock(mMutex);
 
 	bytecountChange_(-inBytes, MemoryPool::MemoryPoolType::ExternalProcess);
+	}
+
+void VectorDataMemoryManager::releaseExternalSharedMemory(uint64_t inBytes)
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+
+	bytecountChange_(-inBytes, MemoryPool::MemoryPoolType::ExternalSharedMemory);
+	}
+	
+bool VectorDataMemoryManager::allocateExternalSharedMemory(uint64_t inBytes)
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+
+	if (mTotalBytesUsed + inBytes > mMaxTotalBytes)
+		return false;
+
+	bytecountChange_(inBytes, MemoryPool::MemoryPoolType::ExternalSharedMemory);
+
+	return true;
 	}
 
 bool VectorDataMemoryManager::permitAllocationAndBlockUntilAvailable_(
@@ -831,6 +853,13 @@ uint64_t VectorDataMemoryManager::totalBytesUsedByExternalProcesses() const
 	boost::mutex::scoped_lock lock(mMutex);
 
 	return mTotalBytesUsedByExternalProcesses;
+	}
+
+uint64_t VectorDataMemoryManager::totalBytesUsedByExternalSharedMemory() const
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+
+	return mTotalBytesUsedByExternalSharedMemory;
 	}
 
 uint64_t VectorDataMemoryManager::totalBytesOfUnallocatedECMemory_() const
@@ -940,6 +969,9 @@ void VectorDataMemoryManager::bytecountChange_(
 
 	if (type == MemoryPool::MemoryPoolType::ExternalProcess)
 		mTotalBytesUsedByExternalProcesses += netBytes;
+
+	if (type == MemoryPool::MemoryPoolType::ExternalSharedMemory)
+		mTotalBytesUsedByExternalSharedMemory += netBytes;
 
 	if (type == MemoryPool::MemoryPoolType::ExecutionContext)
 		mTotalBytesUsedByExecutionContexts += netBytes;

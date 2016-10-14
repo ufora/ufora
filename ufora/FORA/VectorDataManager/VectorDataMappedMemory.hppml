@@ -17,7 +17,8 @@
 
 #include "../../core/EventBroadcaster.hpp"
 #include "BigVectorId.hppml"
-#include "../Vector/VectorDataID.hppml"
+#include "PageId.hppml"
+#include "PageDataPlacements.hppml"
 
 class OnDemandMemoryRegions;
 class VectorDataMemoryManager;
@@ -45,13 +46,12 @@ class ExecutionContext;
 
 class VectorDataMappedMemoryImpl;
 
-class VectorDataMappedMemory {
+class VectorDataMappedMemory : public PolymorphicSharedPtrBase<VectorDataMappedMemory> {
 public:
-    @type ThreadBlockedEvent = 
-            PolymorphicSharedPtr<Fora::Interpreter::ExecutionContext> context,
-            Fora::BigVectorId bigvec,
-            IntegerRange neededIndices
-            ;
+    @type DataLoadRequiredEvent = 
+        Fora::PageId page,
+        IntegerRange neededIndices
+        ;
 
     VectorDataMappedMemory(
             PolymorphicSharedPtr<CallbackScheduler> inCallbackScheduler,
@@ -63,6 +63,17 @@ public:
     //amenable to this kind of mapping, or has been dropped, then this may return nullptr.
     uint8_t* addressForBigvec(const Fora::BigVectorId& id);
 
+    //get an address for the memory contained in a page. This is usually only mapped
+    //temporarily, when clients need to access a page with an off-alignment (say, because
+    //a homogenous POD vector has been appended to a vector of another type and clients
+    //are reading from both at the same time.. If we've already called this once,
+    //we merely incref and return the existing pointer
+    uint8_t* allocateAddressForPage(const Fora::PageId& inPage, int64_t valueCount, int64_t valueStride);
+
+    //deallocate an address for a page. This decrefs. When the number of decrefs hits zero,
+    //the pointer is no longer valid.
+    void deallocateAddressForPage(const Fora::PageId& inPage);
+
     //drop this bigvec and invalidate all pointers to it
     void bigvecDroppedAcrossEntireSystem(const Fora::BigVectorId& id);
    
@@ -72,26 +83,26 @@ public:
     //the data from the VDMM. The data is not considered active until the populate
     //func returns
     bool allocatePageData(
-                    const VectorDataID& inPage, 
+                    const Fora::PageId& inPage, 
                     IntegerRange valueRange,
                     uint64_t homogenousStride,
-                    boost::function<void (uint8_t*)> inPopulateFunc
+                    uint8_t* addr
                     );
 
 
     void visitPageData(
-                    const VectorDataID& inPage,
+                    const Fora::PageId& inPage,
                     boost::function<void (uint8_t*, IntegerRange)> inVisitFunc
                     );
 
     //remove the given data from the mapping (deallocating it completely)
-    void deallocatePageData(const VectorDataID& inPage);
+    void deallocatePageData(const Fora::PageId& inPage);
 
     //a thread has blocked
-    EventBroadcaster<ThreadBlockedEvent>& getThreadBlockedEvent();
+    EventBroadcaster<DataLoadRequiredEvent>& getOnDataLoadRequiredEvent();
 
 private:
-    boost::shared_ptr<VectorDataMappedMemoryImpl> mImpl;
+    PolymorphicSharedPtr<VectorDataMappedMemoryImpl> mImpl;
 };
 
 
