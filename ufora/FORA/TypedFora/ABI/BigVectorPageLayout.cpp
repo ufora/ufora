@@ -38,7 +38,7 @@ BigVectorPageLayout::BigVectorPageLayout(
 							hash_type inGuid
 							)
 	{
-	vectorIdentities() = vectorIdentities() + VectorDataIDSlice(id, IntegerSequence(count));
+	vectorIdentities() = vectorIdentities() + VectorDataIDSlice(id, IntegerRange(0, count));
 	cumulativeSizes() = cumulativeSizes() + (int64_t)count;
 	cumulativeBytecounts() = cumulativeBytecounts() + (uint64_t)id.getPage().bytecount();
 	identity() = Fora::BigVectorId(
@@ -55,7 +55,7 @@ BigVectorPageLayout::BigVectorPageLayout(
 							hash_type inGuid
 							)
 	{
-	vectorIdentities() = vectorIdentities() + VectorDataIDSlice(id, IntegerSequence(count));
+	vectorIdentities() = vectorIdentities() + VectorDataIDSlice(id, IntegerRange(0, count));
 	cumulativeSizes() = cumulativeSizes() + (int64_t)count;
 	cumulativeBytecounts() = cumulativeBytecounts() + (uint64_t)id.getPage().bytecount();
 	identity() = Fora::BigVectorId(
@@ -136,6 +136,16 @@ ImmutableTreeVector<VectorDataIDSlice> addIfNonempty(
 	return vec;
 	}
 
+ImmutableTreeVector<pair<Fora::PageId, IntegerSequence> > addIfNonempty(
+										ImmutableTreeVector<pair<Fora::PageId, IntegerSequence> > vec,
+										pair<Fora::PageId, IntegerSequence> slice
+										)
+	{
+	if (slice.second.size())
+		return vec + slice;
+	return vec;
+	}
+
 int64_t sliceContaining(ImmutableTreeSet<int64_t> cumulativeSizes, int64_t offset)
 	{
 	int64_t lb = cumulativeSizes.lowerBound(offset);
@@ -151,15 +161,15 @@ int64_t sliceContaining(ImmutableTreeSet<int64_t> cumulativeSizes, int64_t offse
 
 }
 
-ImmutableTreeVector<VectorDataIDSlice> BigVectorPageLayout::slicesCoveringRange(IntegerSequence sequence) const
+ImmutableTreeVector<VectorDataIDSlice> BigVectorPageLayout::slicesCoveringRange(IntegerRange sequence) const
 	{
 	if (!sequence.size() || !cumulativeSizes().size())
 		return emptyTreeVec();
 
-	sequence = sequence.intersect(IntegerSequence(size()));
+	sequence = sequence.intersect(IntegerRange(0, size()));
 
-	int64_t highValue = sequence.largestValue();
-	int64_t lowValue = sequence.smallestValue();
+	int64_t lowValue = sequence.low();
+	int64_t highValue = sequence.high() - 1;
 
 	int64_t sliceContainingLowValue = sliceContaining(cumulativeSizes(), lowValue);
 	int64_t sliceContainingHighValue = sliceContaining(cumulativeSizes(), highValue);
@@ -171,9 +181,7 @@ ImmutableTreeVector<VectorDataIDSlice> BigVectorPageLayout::slicesCoveringRange(
 		{
 		tr = addIfNonempty(
 			tr,
-			vectorIdentities()[slice].slice(
-				sequence.offset(-startIndex(slice))
-				)
+			vectorIdentities()[slice].slice(sequence - startIndex(slice))
 			);
 		}
 
@@ -197,13 +205,62 @@ ImmutableTreeVector<VectorDataIDSlice> BigVectorPageLayout::slicesCoveringRange(
 	return tr;
 	}
 
+ImmutableTreeVector<pair<Fora::PageId, IntegerSequence> > BigVectorPageLayout::slicesCoveringRange(IntegerSequence sequence) const
+	{
+	if (!sequence.size() || !cumulativeSizes().size())
+		return emptyTreeVec();
+
+	sequence = sequence.intersect(IntegerSequence(size()));
+
+	int64_t highValue = sequence.largestValue();
+	int64_t lowValue = sequence.smallestValue();
+
+	int64_t sliceContainingLowValue = sliceContaining(cumulativeSizes(), lowValue);
+	int64_t sliceContainingHighValue = sliceContaining(cumulativeSizes(), highValue);
+
+	ImmutableTreeVector<pair<Fora::PageId, IntegerSequence> > tr;
+
+	for (long slice = sliceContainingLowValue;
+				slice <= sliceContainingHighValue && slice < vectorIdentities().size(); slice++)
+		{
+		tr = addIfNonempty(
+			tr,
+			make_pair(
+				vectorIdentities()[slice].vector().getPage(),
+				IntegerSequence(vectorIdentities()[slice].slice()).slice(
+					sequence.offset(-startIndex(slice))
+					)
+				)
+			);
+		}
+
+	uint64_t totalCt = 0;
+	for (long k = 0; k < tr.size(); k++)
+		totalCt += tr[k].second.size();
+
+	lassert_dump(
+		totalCt == sequence.size(),
+		totalCt << " != " << sequence.size() << ": "
+			<< prettyPrintString(vectorIdentities())
+			<< " -> "
+			<< prettyPrintString(tr)
+			<< " and "
+			<< prettyPrintString(sequence)
+			<< " over range " << sliceContainingLowValue << " to " << sliceContainingHighValue
+			<< " which contain values " << lowValue << " and " << highValue
+			<< ". cum sizes are " << prettyPrintString(cumulativeSizes())
+		);
+
+	return tr;
+	}
+
 ImmutableTreeVector<VectorDataIDSlice>
 								BigVectorPageLayout::slicesCoveringRange(
 											int64_t lowValue,
 											int64_t highValue
 											) const
 	{
-	return slicesCoveringRange(IntegerSequence(highValue - lowValue, lowValue));
+	return slicesCoveringRange(IntegerRange(lowValue, highValue));
 	}
 
 int64_t BigVectorPageLayout::sliceSize(long slice) const
@@ -317,117 +374,29 @@ BigVectorPageLayout BigVectorPageLayout::concatenate(
 BigVectorPageLayout BigVectorPageLayout::slice(
 					int64_t low,
 					int64_t high,
-					int64_t stride,
 					hash_type inGuid
 					)
 	{
-	return slice(null() << low, null() << high, null() << stride, inGuid);
-	}
-
-BigVectorPageLayout BigVectorPageLayout::slice(
-					int64_t low,
-					int64_t high,
-					hash_type inGuid
-					)
-	{
-	return slice(null() << low, null() << high, null(), inGuid);
+	return slice(null() << low, null() << high, inGuid);
 	}
 
 BigVectorPageLayout BigVectorPageLayout::slice(
 					Nullable<int64_t> low,
 					Nullable<int64_t> high,
-					Nullable<int64_t> stride,
 					hash_type inGuid
 					)
 	{
-	IntegerSequence newRange = IntegerSequence(size()).slice(low,high,stride);
+	IntegerRange newRange = IntegerRange(0, size()).slice(low,high);
 
 	return slice(newRange, inGuid);
 	}
 
-BigVectorPageLayout BigVectorPageLayout::slice(IntegerSequence newRange, hash_type inGuid)
+BigVectorPageLayout BigVectorPageLayout::slice(IntegerRange newRange, hash_type inGuid)
 	{
-	int64_t lowVal = newRange.offset();
-	int64_t highVal = newRange.endValue();
-	int64_t strideVal = newRange.stride();
+	int64_t lowVal = newRange.low();
+	int64_t highVal = newRange.high();
 
-	lassert(strideVal != 0);
-
-	if (newRange.size() == 0)
-		return BigVectorPageLayout();
-
-	if (strideVal > 0)
-		{
-		if (strideVal == 1)
-			return BigVectorPageLayout(slicesCoveringRange(lowVal, highVal), jor(), inGuid);
-
-		ImmutableTreeVector<VectorDataIDSlice> ids = slicesCoveringRange(lowVal, highVal);
-
-		ImmutableTreeVector<VectorDataIDSlice> newIds;
-
-		long cumulativeOffset = 0;
-
-		for (long k = 0; k < ids.size(); k++)
-			{
-			int64_t suboffset = strideVal - cumulativeOffset % strideVal;
-			if (suboffset == strideVal)
-				suboffset = 0;
-
-			VectorDataIDSlice subslice =
-				ids[k].slice(null() << suboffset, null(), null() << strideVal);
-
-			if (subslice.size())
-				newIds = newIds + subslice;
-
-			cumulativeOffset = cumulativeOffset + ids[k].size();
-			}
-
-		return BigVectorPageLayout(newIds, jor(), inGuid);
-		}
-	else
-		{
-		IntegerSequence containingRange(newRange.containingRange());
-
-		ImmutableTreeVector<VectorDataIDSlice> ids =
-			slicesCoveringRange(containingRange);
-
-		long totalSize = 0;
-		for (auto i: ids)
-			totalSize += i.size();
-
-		lassert(totalSize == containingRange.size());
-
-		ImmutableTreeVector<VectorDataIDSlice> newIds;
-
-		long cumulativeOffset = 0;
-
-		long positiveStride = -strideVal;
-
-		for (long k = (long)ids.size() - 1; k >= 0; k--)
-			{
-			long offset = 0;
-
-			if (cumulativeOffset % positiveStride)
-				offset = positiveStride - (cumulativeOffset % positiveStride);
-
-			if (offset < ids[k].size())
-				{
-				VectorDataIDSlice subslice =
-					ids[k].slice(
-						null() << (ids[k].size() - 1 - offset),
-						null(),
-						null() << strideVal
-						);
-
-				if (subslice.size())
-					newIds = newIds + subslice;
-				}
-
-			cumulativeOffset = cumulativeOffset + ids[k].size();
-			}
-
-		return BigVectorPageLayout(newIds, jor(), inGuid);
-		}
+	return BigVectorPageLayout(slicesCoveringRange(lowVal, highVal), jor(), inGuid);
 	}
 
 
