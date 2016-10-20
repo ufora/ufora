@@ -31,14 +31,13 @@ public:
 				);
 		}
 
-	VectorDataIDSlice element(int64_t index, int64_t low, int64_t high, int64_t stride = 1)
+	VectorDataIDSlice element(int64_t index, int64_t low, int64_t high)
 		{
 		return VectorDataIDSlice(
 			vdid(index),
-			IntegerSequence(
-				(high - low) / stride,
+			IntegerRange(
 				low,
-				stride
+				high
 				)
 			);
 		}

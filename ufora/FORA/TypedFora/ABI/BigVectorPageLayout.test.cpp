@@ -87,21 +87,6 @@ BOOST_AUTO_TEST_CASE( test_slicing )
 	BOOST_CHECK_EQUAL_CPPML(id.slice(1,2, hash_type()), id2);
 	BOOST_CHECK_EQUAL_CPPML(id.slice(2,3, hash_type()), id3);
 	BOOST_CHECK_EQUAL_CPPML(id.slice(3,4, hash_type()), id4);
-
-	BOOST_CHECK_EQUAL_CPPML(id.slice(0, 5, 2, hash_type()),
-		BigVectorPageLayout::concatenate(
-			id1.slice(0, 1, 2, hash_type()),
-			id3.slice(0, 1, 2, hash_type()),
-			hash_type()
-			)
-		);
-	BOOST_CHECK_EQUAL_CPPML(id.slice(1, 5, 2, hash_type()),
-		BigVectorPageLayout::concatenate(
-			id2.slice(0, 1, 2, hash_type()),
-			id4.slice(0, 1, 2, hash_type()),
-			hash_type()
-			)
-		);
 	}
 
 BOOST_AUTO_TEST_CASE( test_sliceAndConcat )

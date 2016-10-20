@@ -35,7 +35,7 @@ public:
 
 		static VectorDataIDSlice createVectorDataIDSlice(VectorDataID& vdid, int64_t low, int64_t high)
 			{
-			return VectorDataIDSlice(vdid, IntegerSequence(high - low, low));
+			return VectorDataIDSlice(vdid, IntegerRange(low, high));
 			}
 
 		void exportPythonWrapper()
