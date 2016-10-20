@@ -61,8 +61,8 @@ fi
 clean_command="rm -rf .waf-*-* ; ./waf clean > /dev/null ; rm -rf .build > /dev/null"
 reset_axioms_command="PYTHONPATH=/volumes/src ufora/scripts/resetAxiomSearchFunction.py"
 rebuild_axioms_command="PYTHONPATH=/volumes/src ufora/scripts/rebuildAxiomSearchFunction.py"
-configure_command="CC=clang-3.5 CXX=clang++-3.5 ./waf configure"
-build_once_command="CC=clang-3.5 CXX=clang++-3.5 ./waf install"
+configure_command="CC=clang CXX=clang++ ./waf configure"
+build_once_command="CC=clang CXX=clang++ ./waf install"
 
 build_command="$reset_axioms_command; $configure_command; $build_once_command; $rebuild_axioms_command; $build_once_command"
 

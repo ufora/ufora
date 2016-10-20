@@ -12,7 +12,7 @@
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
 
-FROM ubuntu:14.04
+FROM ubuntu:16.04
 MAINTAINER Ronen Hilewicz <ronen@ufora.com>
 # This image is used to build Ufora packages on Ubuntu 14.04
 # It includes a build of python that links against libtcmalloc.so
@@ -21,19 +21,21 @@ MAINTAINER Ronen Hilewicz <ronen@ufora.com>
 RUN apt-get update && apt-get install -y \
     bison \
     ccache \
-    clang-3.5 \
+    clang \
+    clang-3.8 \
+    llvm-3.5 \
+    libclang-3.5 \
+    libclang-3.8-dev \
     curl \
     gdb \
     gfortran \
     git \
     libblas-dev \
-    libboost-date-time1.55-dev \
-    libboost-filesystem1.55-dev \
-    libboost-python1.55-dev \
-    libboost-regex1.55-dev \
-    libboost-thread1.55-dev \
-    libboost-test1.55-dev \
-    libclang-3.5-dev \
+    libboost-date-time1.58-dev \
+    libboost-filesystem1.58-dev \
+    libboost-python1.58-dev \
+    libboost-thread1.58-dev \
+    libboost-test1.58-dev \
     libffi-dev \
     libgoogle-perftools-dev \
     liblapack-dev \
@@ -44,7 +46,8 @@ RUN apt-get update && apt-get install -y \
     rsync \
     software-properties-common \
     unixodbc-dev \
-    wget
+    wget \
+    initramfs-tools
 
 
 # Python 2.7.9 - built from source to link against libtcmalloc
@@ -53,7 +56,7 @@ RUN apt-get build-dep -y python2.7 && \
     wget -nv https://www.python.org/ftp/python/2.7.9/Python-2.7.9.tar.xz && \
     tar xf Python-2.7.9.tar.xz
 RUN cd /tmp/Python-2.7.9 && \
-    CC=clang-3.5 CXX=clang++-3.5 ./configure --prefix=/usr/local --enable-shared --with-libs='-ltcmalloc' --with-system-ffi --enable-ipv6 --enable-unicode=ucs4 --with-ensurepip=upgrade && \
+    CC=gcc CXX=g++ ./configure --prefix=/usr/local --enable-shared --with-libs='-ltcmalloc' --with-system-ffi --enable-ipv6 --enable-unicode=ucs4 --with-ensurepip=upgrade && \
     make && make install && ldconfig && \
     /usr/local/bin/python -m ensurepip && \
     rm -rf /tmp/Python-2.7.9*
@@ -61,7 +64,9 @@ RUN cd /tmp/Python-2.7.9 && \
 
 # Required python modules
 RUN pip install cython
-RUN pip install --allow-unverified pyodbc\
+
+RUN pip install --allow-unverified \
+    pyodbc \
     requests \
     boto \
     hdfs \
@@ -69,12 +74,13 @@ RUN pip install --allow-unverified pyodbc\
     numpy \
     pyodbc \
     pexpect \
-    pandas \
     scipy \
     wsaccel \
     psutil \
     jupyter
 
+
+RUN pip install  pandas
 
 # NodeJS
 RUN curl -sL https://deb.nodesource.com/setup_4.x | bash -
@@ -87,8 +93,6 @@ ENV CCACHE_DIR /volumes/ccache
 ENV CCACHE_COMPILERCHECK content
 
 
-RUN ln -s /usr/bin/clang-3.5 /usr/bin/clang
-RUN ln -s /usr/bin/clang++-3.5 /usr/bin/clang++
 RUN mkdir /var/core
 
 #install CUDA
