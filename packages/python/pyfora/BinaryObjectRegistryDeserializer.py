@@ -18,6 +18,7 @@ import json
 import os
 import struct
 
+
 class Deserializer(object):
     def readByte(self):
         res = struct.unpack("<b", self.grabBytes(1))[0]

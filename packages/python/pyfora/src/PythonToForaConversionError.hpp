@@ -20,7 +20,7 @@
 
 class PythonToForaConversionError : public std::runtime_error {
 public:
-    PythonToForaConversionError(const std::string& s) : std::runtime_error(s)
+    explicit PythonToForaConversionError(const std::string& s) : std::runtime_error(s)
         {
         }
 };

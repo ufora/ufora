@@ -23,6 +23,7 @@
 class Json {
 public:
     static std::string dumps(const PyObject* obj);
+    static PyObject* loads(const std::string& s);
 
 private:
     // singleton instance
@@ -35,8 +36,8 @@ private:
     Json();
 
     // don't implement these next two for singleton pattern
-    Json(const Json&);
-    void operator=(const Json&);
+    Json(const Json&) = delete;
+    void operator=(const Json&) = delete;
 
     PyObject* mJsonModule;
 };

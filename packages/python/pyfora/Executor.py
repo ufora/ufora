@@ -22,7 +22,7 @@ their result
 import pyfora.Future as Future
 import pyfora.Exceptions as Exceptions
 import pyfora.RemotePythonObject as RemotePythonObject
-import pyfora.PythonObjectRehydrator as PythonObjectRehydrator
+from pyfora.PythonObjectRehydrator import PythonObjectRehydrator
 import pyfora.BinaryObjectRegistry as BinaryObjectRegistry
 import pyfora.PyObjectWalker as PyObjectWalker
 from pyfora.UnresolvedFreeVariableExceptions import UnresolvedFreeVariableExceptionWithTrace
@@ -75,7 +75,7 @@ class Executor(object):
         self.pureImplementationMappings = \
             pureImplementationMappings or PyObjectWalkerDefaults.mappings
         self.binaryObjectRegistry = BinaryObjectRegistry.BinaryObjectRegistry()
-        self.objectRehydrator = PythonObjectRehydrator.PythonObjectRehydrator(
+        self.objectRehydrator = PythonObjectRehydrator(
             self.pureImplementationMappings
             )
 

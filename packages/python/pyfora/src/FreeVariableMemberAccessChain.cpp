@@ -28,7 +28,7 @@ FreeVariableMemberAccessChain::FreeVariableMemberAccessChain(
 std::string FreeVariableMemberAccessChain::str() const
     {
     std::ostringstream oss;
-    for (long ix = 0; ix < mVariables.size(); ++ix)
+    for (size_type ix = 0; ix < mVariables.size(); ++ix)
         {
         if (ix != 0) {
             oss << ".";

@@ -29,9 +29,8 @@ private:
 
     Ast();
 
-    // don't define to provide singleton pattern
-    Ast(const Ast&);
-    void operator=(const Ast&);
+    Ast(const Ast&) = delete;
+    void operator=(const Ast&) = delete;
 
     PyObject* mAstModule;
     };

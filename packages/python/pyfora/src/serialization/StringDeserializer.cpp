@@ -15,6 +15,8 @@
 ****************************************************************************/
 #include "StringDeserializer.hpp"
 
+#include <sstream>
+#include <stdexcept>
 
 StringDeserializer::StringDeserializer(const std::vector<char>& data)
     : mData(data),
@@ -23,45 +25,36 @@ StringDeserializer::StringDeserializer(const std::vector<char>& data)
     }
 
 
-char StringDeserializer::readByte()
+StringDeserializer::StringDeserializer(const std::string& data)
+    : mData(data.begin(), data.end()),
+      mIndex(0)
     {
-    char res = mData[mIndex];
-    mIndex += 1;
+    }
+
+
+StringDeserializer::StringDeserializer(const char* data, size_t size)
+    : mData(data, data + size),
+      mIndex(0)
+    {
+    }
+
+
+const char* StringDeserializer::_grabBytes(size_t nBytes)
+    {
+    if (mIndex + nBytes > mData.size()) {
+        std::ostringstream err;
+        err << "attempting to read too many bytes from string buffer! "
+            << "in StringDeserializer::_grabBytes. "
+            << "mIndex = " << mIndex
+            << ", nBytes = " << nBytes
+            << ", mData.size() = " << mData.size()
+            ;
+
+        throw std::runtime_error(err.str());
+        }
+
+    char* res = &mData[mIndex];
+    mIndex += nBytes;
     return res;
     }
 
-
-int32_t StringDeserializer::readInt32() {
-    int32_t res = *(reinterpret_cast<int32_t*>(&mData[mIndex]));
-    mIndex += sizeof(int32_t);
-    return res;
-    }
-
-
-int64_t StringDeserializer::readInt64() {
-    int64_t res = *(reinterpret_cast<int64_t*>(&mData[mIndex]));
-    mIndex += sizeof(int64_t);
-    return res;
-    }
-
-
-double StringDeserializer::readFloat64() {
-    double res = *(reinterpret_cast<double*>(&mData[mIndex]));
-    mIndex += sizeof(double);
-    return res;
-    }
-    
-
-void StringDeserializer::readInt64s(std::vector<int64_t>& ioInts) {
-    int64_t count = readInt64();
-    for (int64_t ix = 0; ix < count; ++ix)
-        ioInts.push_back(readInt64());
-    }
-    
-
-std::string StringDeserializer::readString() {
-    int64_t count = readInt32();
-    std::string res = std::string(&mData[mIndex], count);
-    mIndex += count;
-    return res;
-    }

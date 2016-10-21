@@ -108,19 +108,39 @@ public:
     void defineNamedSingleton(int64_t objectId,
                               const char* singletonName,
                               uint64_t singletonNameSize);
+
+    template<class T>
     void defineFunction(
-        int64_t objectId,
-        int64_t sourceFileId,
-        int64_t linenumber,
-        const std::map<FreeVariableMemberAccessChain, int64_t>& chainToId
-        );
+            int64_t objectId,
+            int64_t sourceFileId,
+            int32_t linenumber,
+            const T& chainToId
+            )
+        {
+        mStringBuilder.addInt64(objectId);
+        mStringBuilder.addByte(CODE_FUNCTION);
+        mStringBuilder.addInt64(sourceFileId);
+        mStringBuilder.addInt32(linenumber);
+        _writeFreeVariableResolutions(chainToId);
+        }
+
+    template<class T>
     void defineClass(
-        int64_t objectId,
-        int64_t sourceFileId,
-        int64_t lineNumber,
-        const std::map<FreeVariableMemberAccessChain, int64_t>& chainToId,
-        const std::vector<int64_t> baseClassIds
-        );
+            int64_t objectId,
+            int64_t sourceFileId,
+            int32_t lineNumber,
+            const T& chainToId,
+            const std::vector<int64_t> baseClassIds
+            )
+        {
+        mStringBuilder.addInt64(objectId);
+        mStringBuilder.addByte(CODE_CLASS);
+        mStringBuilder.addInt64(sourceFileId);
+        mStringBuilder.addInt32(lineNumber);
+        _writeFreeVariableResolutions(chainToId);
+        mStringBuilder.addInt64s(baseClassIds);
+        }
+
     void defineUnconvertible(int64_t objectId, const PyObject* modulePathOrNone);
     void defineClassInstance(
         int64_t objectId,
@@ -129,11 +149,21 @@ public:
     void defineInstanceMethod(int64_t objectId,
                               int64_t instanceId,
                               const std::string& methodName);
+
+    template<class T>
     void defineWithBlock(
-        int64_t objectId,
-        const std::map<FreeVariableMemberAccessChain, int64_t>& chainToId,
-        int64_t sourceFileId,
-        int64_t lineNumber);
+            int64_t objectId,
+            const T& chainToId,
+            int64_t sourceFileId,
+            int32_t lineNumber)
+        {
+        mStringBuilder.addInt64(objectId);
+        mStringBuilder.addByte(CODE_WITH_BLOCK);
+        _writeFreeVariableResolutions(chainToId);
+        mStringBuilder.addInt64(sourceFileId);
+        mStringBuilder.addInt32(lineNumber);
+        }
+
     void definePyAbortException(int64_t objectId,
                                 const std::string& typeName,
                                 int64_t argsId);
@@ -162,6 +192,8 @@ private:
     void _writeFreeVariableResolutions(
         const std::map<FreeVariableMemberAccessChain, int64_t>& chainToId
         );
+
+    void _writeFreeVariableResolutions(PyObject* chainToId);
 
     std::string _computedValueDataString(const PyObject* computedValueArg) const;
 

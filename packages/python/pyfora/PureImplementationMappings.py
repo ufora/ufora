@@ -103,6 +103,7 @@ class PureImplementationMappings(object):
 
     def pureInstanceToMappable(self, instance):
         mapper = self.pyforaTypeToMapping[typeOfInstance(instance)]
+
         return mapper.mapPyforaInstanceToPythonInstance(instance)
 
 

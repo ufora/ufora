@@ -42,9 +42,10 @@ private:
 
     // implement, but keep private for singleton pattern
     PyAstFreeVariableAnalyses();
+
     // don't implement these next two methods for the singleton pattern
-    PyAstFreeVariableAnalyses(const PyAstFreeVariableAnalyses&);
-    void operator=(const PyAstFreeVariableAnalyses&);
+    PyAstFreeVariableAnalyses(const PyAstFreeVariableAnalyses&) = delete;
+    void operator=(const PyAstFreeVariableAnalyses&) = delete;
 
     void _initPyAstFreeVariableAnalysesModule();
     void _initGetFreeVariableMemberAccessChainsFun();

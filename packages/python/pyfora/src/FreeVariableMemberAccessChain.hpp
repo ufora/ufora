@@ -21,7 +21,11 @@
 
 class FreeVariableMemberAccessChain {
 public:
-    FreeVariableMemberAccessChain(const std::vector<std::string>& variables);
+    typedef std::vector<std::string>::size_type size_type;
+
+    explicit FreeVariableMemberAccessChain(
+        const std::vector<std::string>& variables
+        );
 
     FreeVariableMemberAccessChain()
         {
@@ -29,11 +33,11 @@ public:
 
     std::string str() const;
 
-    std::vector<std::string>::size_type size() const {
+    size_type size() const {
         return mVariables.size();
         }
 
-    std::string var(std::vector<std::string>::size_type ix) const
+    std::string var(size_type ix) const
         {
         return mVariables[ix];
         }

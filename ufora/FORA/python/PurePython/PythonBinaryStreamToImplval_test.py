@@ -24,7 +24,7 @@ import ufora.cumulus.test.InMemoryCumulusSimulation as InMemoryCumulusSimulation
 import pyfora.BinaryObjectRegistry as BinaryObjectRegistry
 import pyfora.PureImplementationMappings as PureImplementationMappings
 import pyfora.PyObjectWalker as PyObjectWalker
-import pyfora.PythonObjectRehydrator as PythonObjectRehydrator
+from pyfora.PythonObjectRehydrator import PythonObjectRehydrator
 
 
 class PythonBinaryStreamToImplvalTest(unittest.TestCase):

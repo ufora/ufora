@@ -50,8 +50,8 @@ private:
     // implement, but keep private for singleton pattern
     PyAstUtil();
     // don't implement for these next two methods for the singleton pattern
-    PyAstUtil(const PyAstUtil&);
-    void operator=(const PyAstUtil&);
+    PyAstUtil(const PyAstUtil&) = delete;
+    void operator=(const PyAstUtil&) = delete;
 
     void _initPyAstUtilModule();
     void _initGetSourceFilenameAndTextFun();

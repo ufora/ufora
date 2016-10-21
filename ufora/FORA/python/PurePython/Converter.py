@@ -195,7 +195,6 @@ class Converter(object):
             return (
                 self.convertPackedHomogenousDataAsList(
                     objectId,
-                    dependencyGraph,
                     objectIdToObjectDefinition
                     )
                 )
@@ -301,7 +300,7 @@ class Converter(object):
                 "don't know how to convert lists or tuples which reference themselves"
                 )
 
-    def convertPackedHomogenousDataAsList(self, listId, dependencyGraph, objectIdToObjectDefinition):
+    def convertPackedHomogenousDataAsList(self, listId, objectIdToObjectDefinition):
         packedData = objectIdToObjectDefinition[listId]
 
         return self.nativeConverterAdaptor.createListFromPackedData(
@@ -503,7 +502,6 @@ class Converter(object):
         elif isinstance(objectDefinition, TypeDescription.PackedHomogenousData):
             self.convertedValues[objectId] = self.convertPackedHomogenousDataAsList(
                     objectId,
-                    dependencyGraph,
                     objectIdToObjectDefinition
                     )
         else:

@@ -23,7 +23,7 @@ import pyfora.PyObjectWalker as PyObjectWalker
 import pyfora.ObjectRegistry as ObjectRegistry
 import pyfora.BinaryObjectRegistry as BinaryObjectRegistry
 import pyfora.BinaryObjectRegistryDeserializer as BinaryObjectRegistryDeserializer
-import pyfora.PythonObjectRehydrator as PythonObjectRehydrator
+from pyfora.PythonObjectRehydrator import PythonObjectRehydrator
 import pyfora.TypeDescription as TypeDescription
 import ufora.FORA.python.PurePython.Converter as Converter
 import ufora.FORA.python.PurePython.PyforaToJsonTransformer as PyforaToJsonTransformer
@@ -63,6 +63,7 @@ def roundtripConvert(toConvert, vdm, allowUserCodeModuleLevelLookups = False):
     t1 = time.time()
 
     registry = ObjectRegistry.ObjectRegistry()
+
     BinaryObjectRegistryDeserializer.deserializeFromString(binaryObjectRegistry.str(), registry, lambda x:x)
 
     t2 = time.time()
@@ -85,13 +86,12 @@ def roundtripConvert(toConvert, vdm, allowUserCodeModuleLevelLookups = False):
         )
 
     needsLoad = False
-    result = {'data': outputStream.str(), 'root_id': root_id}
 
     t5 = time.time()
 
-    rehydrator = PythonObjectRehydrator.PythonObjectRehydrator(
+    rehydrator = PythonObjectRehydrator(
         mappings, 
-        allowUserCodeModuleLevelLookups=allowUserCodeModuleLevelLookups
+        allowUserCodeModuleLevelLookups
         )
 
     finalResult = rehydrator.convertEncodedStringToPythonObject(outputStream.str(), root_id)
@@ -196,7 +196,7 @@ class ConverterTest(unittest.TestCase):
                 )
             assert not needsLoading
 
-            rehydrator = PythonObjectRehydrator.PythonObjectRehydrator(mappings, allowUserCodeModuleLevelLookups=False)
+            rehydrator = PythonObjectRehydrator(mappings, False)
 
             convertedInstance = rehydrator.convertEncodedStringToPythonObject(stream.str(), root_id)
 

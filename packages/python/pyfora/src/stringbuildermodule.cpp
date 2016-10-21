@@ -40,7 +40,7 @@ PyStringBuilder_new(PyTypeObject* type, PyObject* args, PyObject* kwds)
     PyStringBuilder* self;
 
     self = (PyStringBuilder*)type->tp_alloc(type, 0);
-    if (self != NULL) {
+    if (self != nullptr) {
         self->nativeStringBuilder = new StringBuilder();
         }
 
@@ -67,11 +67,11 @@ PyStringBuilder_init(PyStringBuilder* self, PyObject* args, PyObject* kwds)
 static PyObject*
 PyStringBuilder_addString(PyStringBuilder* self, PyObject* args)
     {
-    char* s = NULL;
+    const char* s = nullptr;
     int length = -1;
 
     if (!PyArg_ParseTuple(args, "s#", &s, &length)) {
-        return NULL;
+        return nullptr;
         }
 
     self->nativeStringBuilder->addString(s, length);
@@ -86,7 +86,7 @@ PyStringBuilder_addByte(PyStringBuilder* self, PyObject* args)
     char b = 0;
 
     if (!PyArg_ParseTuple(args, "b", &b)) {
-        return NULL;
+        return nullptr;
         }
 
     self->nativeStringBuilder->addByte(b);
@@ -101,7 +101,7 @@ PyStringBuilder_addInt32(PyStringBuilder* self, PyObject* args)
     int i = 0;
 
     if (!PyArg_ParseTuple(args, "i", &i)) {
-        return NULL;
+        return nullptr;
         }
 
     self->nativeStringBuilder->addInt32(i);
@@ -116,7 +116,7 @@ PyStringBuilder_addInt64(PyStringBuilder* self, PyObject* args)
     long int l = 0;
 
     if (!PyArg_ParseTuple(args, "l", &l)) {
-        return NULL;
+        return nullptr;
         }
 
     self->nativeStringBuilder->addInt64(l);
@@ -131,7 +131,7 @@ PyStringBuilder_addFloat64(PyStringBuilder* self, PyObject* args)
     double d = 0.0;
 
     if (!PyArg_ParseTuple(args, "d", &d)) {
-        return NULL;
+        return nullptr;
         }
 
     self->nativeStringBuilder->addFloat64(d);
@@ -143,23 +143,23 @@ PyStringBuilder_addFloat64(PyStringBuilder* self, PyObject* args)
 static PyObject*
 PyStringBuilder_addInt64s(PyStringBuilder* self, PyObject* args)
     {
-    PyObject* obj = NULL;
-    PyObject* iterator = NULL;
-    PyObject* item = NULL;
-    PyObject* exc = NULL;
+    PyObject* obj = nullptr;
+    PyObject* iterator = nullptr;
+    PyObject* item = nullptr;
+    PyObject* exc = nullptr;
     std::vector<int64_t> ints;
 
     if (!PyArg_ParseTuple(args, "O", &obj)) {
-        return NULL;
+        return nullptr;
         }
 
     iterator = PyObject_GetIter(obj);
-    if (iterator == NULL) {
+    if (iterator == nullptr) {
         PyErr_SetString(
             PyExc_TypeError,
             "argument must be iterable"
             );
-        return NULL;
+        return nullptr;
         }
 
     while ((item = PyIter_Next(iterator))) {
@@ -168,7 +168,7 @@ PyStringBuilder_addInt64s(PyStringBuilder* self, PyObject* args)
                 PyExc_TypeError,
                 "all elements in the iterable must be integers"
                 );
-            return NULL;
+            return nullptr;
             }
 
         ints.push_back(PyInt_AsLong(item));
@@ -182,7 +182,7 @@ PyStringBuilder_addInt64s(PyStringBuilder* self, PyObject* args)
 
     if ((exc = PyErr_Occurred())) {
         PyErr_SetString(exc, "an error occurred");
-        return NULL;
+        return nullptr;
         }
 
     Py_RETURN_NONE;
@@ -192,24 +192,24 @@ PyStringBuilder_addInt64s(PyStringBuilder* self, PyObject* args)
 static PyObject*
 PyStringBuilder_addStrings(PyStringBuilder* self, PyObject* args)
     {
-    PyObject* obj = NULL;
-    PyObject* iterator = NULL;
-    PyObject* item = NULL;
-    PyObject* exc = NULL;
+    PyObject* obj = nullptr;
+    PyObject* iterator = nullptr;
+    PyObject* item = nullptr;
+    PyObject* exc = nullptr;
     std::vector<std::string> strings;
-    char* string = NULL;
+    char* string = nullptr;
     Py_ssize_t length = 0;
 
     if (!PyArg_ParseTuple(args, "O", &obj))
-        return NULL;
+        return nullptr;
 
     iterator = PyObject_GetIter(obj);
-    if (iterator == NULL) {
+    if (iterator == nullptr) {
         PyErr_SetString(
             PyExc_TypeError,
             "argument must be iterable"
             );
-        return NULL;
+        return nullptr;
         }
 
     while ((item = PyIter_Next(iterator))) {
@@ -219,7 +219,7 @@ PyStringBuilder_addStrings(PyStringBuilder* self, PyObject* args)
                 PyExc_TypeError,
                 "all elements in the iterable must be strings"
                 );
-            return NULL;
+            return nullptr;
             }
 
         strings.push_back(
@@ -235,7 +235,7 @@ PyStringBuilder_addStrings(PyStringBuilder* self, PyObject* args)
 
     if ((exc = PyErr_Occurred())) {
         PyErr_SetString(exc, "an error occurred");
-        return NULL;
+        return nullptr;
         }
 
     Py_RETURN_NONE;
@@ -279,12 +279,12 @@ static PyMethodDef PyStringBuilder_methods[] = {
      "add an iterable of Int64s to to buffer"},
     {"addStringTuple", (PyCFunction)PyStringBuilder_addStrings, METH_VARARGS,
      "add an iterable of Strings to to buffer"},
-    {NULL} /* Sentinel */
+    {nullptr} /* Sentinel */
     };
 
 
 static PyMemberDef PyStringBuilder_members[] = {
-    {NULL} /* Sentinel */
+    {nullptr} /* Sentinel */
     };
 
 
@@ -293,12 +293,12 @@ static PyGetSetDef PyStringBuilder_getsetters[] = {
     (getter)PyStringBuilder_getbytecount,
     0,
      const_cast<char*>("return the accumulated byte count of the buffer"),
-     NULL},
-    {NULL} /* Sentinel */
+     nullptr},
+    {nullptr} /* Sentinel */
     };
 
 static PyTypeObject PyStringBuilderType = {
-    PyObject_HEAD_INIT(NULL)
+    PyObject_HEAD_INIT(nullptr)
     0,                                         /* ob_size */
     "stringbuilder.StringBuilder",             /* tp_name */
     sizeof(PyStringBuilder),                   /* tp_basicsize */
@@ -341,7 +341,7 @@ static PyTypeObject PyStringBuilderType = {
 
 
 static PyMethodDef module_methods[] = {
-    {NULL}
+    {nullptr}
     };
 
 
@@ -363,7 +363,7 @@ initStringBuilder(void)
                       module_methods,
                       "expose StringBuilder C++ class");
 
-    if (m == NULL)
+    if (m == nullptr)
         return;
 
     Py_INCREF(&PyStringBuilderType);

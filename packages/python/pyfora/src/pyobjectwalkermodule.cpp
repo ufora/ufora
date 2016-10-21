@@ -16,11 +16,11 @@
 #include <Python.h>
 #include <structmember.h>
 
-#include <iostream>
 #include <stdexcept>
 
 #include "BadWithBlockError.hpp"
 #include "PyBinaryObjectRegistry.hpp"
+#include "PyObjectUtils.hpp"
 #include "PyObjectWalker.hpp"
 #include "PythonToForaConversionError.hpp"
 #include "UnresolvedFreeVariableExceptions.hpp"
@@ -59,6 +59,7 @@ static void
 PyObjectWalkerStruct_dealloc(PyObjectWalkerStruct* self)
     {
     delete self->nativePyObjectWalker;
+    self->nativePyObjectWalker = 0;
     self->ob_type->tp_free((PyObject*)self);
     }
 
@@ -68,16 +69,16 @@ namespace {
 PyObject* getPythonToForaConversionErrorClass()
     {
     PyObject* pyforaModule = PyImport_ImportModule("pyfora");
-    if (pyforaModule == NULL) {
-        return NULL;
+    if (pyforaModule == nullptr) {
+        return nullptr;
         }
 
     PyObject* exceptionsModule = PyObject_GetAttrString(pyforaModule, "Exceptions");
 
     Py_DECREF(pyforaModule);
 
-    if (exceptionsModule == NULL) {
-        return NULL;
+    if (exceptionsModule == nullptr) {
+        return nullptr;
         }
 
     PyObject* pythonToForaConversionErrorClass = 
@@ -92,16 +93,16 @@ PyObject* getPythonToForaConversionErrorClass()
 PyObject* getBadWithBlockErrorClass()
     {
     PyObject* pyforaModule = PyImport_ImportModule("pyfora");
-    if (pyforaModule == NULL) {
-        return NULL;
+    if (pyforaModule == nullptr) {
+        return nullptr;
         }
 
     PyObject* exceptionsModule = PyObject_GetAttrString(pyforaModule, "Exceptions");
 
     Py_DECREF(pyforaModule);
 
-    if (exceptionsModule == NULL) {
-        return NULL;
+    if (exceptionsModule == nullptr) {
+        return nullptr;
         }
 
     PyObject* badWithBlockErrorClass = 
@@ -116,7 +117,7 @@ PyObject* getBadWithBlockErrorClass()
 void translatePythonToForaConversionError(const PythonToForaConversionError& e)
     {
     PyObject* pythonToForaConversionErrorClass = getPythonToForaConversionErrorClass();
-    if (pythonToForaConversionErrorClass == NULL) {
+    if (pythonToForaConversionErrorClass == nullptr) {
         return;
         }
 
@@ -132,7 +133,7 @@ void translatePythonToForaConversionError(const PythonToForaConversionError& e)
 void translateBadWithBlockError(const BadWithBlockError& e) 
     {
     PyObject* badWithBlockErrorClass = getBadWithBlockErrorClass();
-    if (badWithBlockErrorClass == NULL) {
+    if (badWithBlockErrorClass == nullptr) {
         return;
         }
 
@@ -150,19 +151,18 @@ void translateUnresolvedFreeVariableExceptionWithTrace(
     {
     PyObject* unresolvedFreeVariableExceptionWithTraceClass =
         UnresolvedFreeVariableExceptions::getUnresolvedFreeVariableExceptionWithTraceClass();
-    if (unresolvedFreeVariableExceptionWithTraceClass == NULL) {
+    if (unresolvedFreeVariableExceptionWithTraceClass == nullptr) {
         return;
         }
 
-    PyObject* value = e.value();
-    // value gets XINCREF'd in PyErr_SetObject
+    PyObject* value = e.value(); // borrowed reference
     PyErr_SetObject(
         unresolvedFreeVariableExceptionWithTraceClass,
         value
         );
     }
 
-}
+} // anonymous namespace
 
 
 static int
@@ -170,7 +170,7 @@ PyObjectWalkerStruct_init(PyObjectWalkerStruct* self, PyObject* args, PyObject* 
     {
     PyObject* binaryObjectRegistryModule = 
         PyImport_ImportModule("pyfora.BinaryObjectRegistry");
-    if (binaryObjectRegistryModule == NULL) {
+    if (binaryObjectRegistryModule == nullptr) {
         return -1;
         }
 
@@ -180,11 +180,11 @@ PyObjectWalkerStruct_init(PyObjectWalkerStruct* self, PyObject* args, PyObject* 
 
     Py_DECREF(binaryObjectRegistryModule);
 
-    if (binaryObjectRegistryClass == NULL) {
+    if (binaryObjectRegistryClass == nullptr) {
         return -1;
         }
 
-    if (binaryObjectRegistryClass == NULL) {
+    if (binaryObjectRegistryClass == nullptr) {
         throw std::runtime_error(
             "couldn't find pyfora.binaryobjectregistry.BinaryObjectRegistry"
             );
@@ -204,14 +204,14 @@ PyObjectWalkerStruct_init(PyObjectWalkerStruct* self, PyObject* args, PyObject* 
     
     PyObject* pyObjectWalkerDefaultsModule =
         PyImport_ImportModule("pyfora.PyObjectWalkerDefaults");
-    if (pyObjectWalkerDefaultsModule == NULL) {
+    if (pyObjectWalkerDefaultsModule == nullptr) {
         return -1;
         }
 
     PyObject* excludePredicateFun = PyObject_GetAttrString(
         pyObjectWalkerDefaultsModule,
         "exclude_predicate_fun");
-    if (excludePredicateFun == NULL) {
+    if (excludePredicateFun == nullptr) {
         Py_DECREF(pyObjectWalkerDefaultsModule);
         return -1;
         }
@@ -219,7 +219,7 @@ PyObjectWalkerStruct_init(PyObjectWalkerStruct* self, PyObject* args, PyObject* 
     PyObject* excludeList = PyObject_GetAttrString(
         pyObjectWalkerDefaultsModule,
         "exclude_list");
-    if (excludeList == NULL) {
+    if (excludeList == nullptr) {
         Py_DECREF(excludePredicateFun);
         Py_DECREF(pyObjectWalkerDefaultsModule);
         return -1;
@@ -228,7 +228,7 @@ PyObjectWalkerStruct_init(PyObjectWalkerStruct* self, PyObject* args, PyObject* 
     PyObject* terminalValueFilter = PyObject_GetAttrString(
         pyObjectWalkerDefaultsModule,
         "terminal_value_filter");
-    if (terminalValueFilter == NULL) {
+    if (terminalValueFilter == nullptr) {
         Py_DECREF(excludeList);
         Py_DECREF(excludePredicateFun);
         Py_DECREF(pyObjectWalkerDefaultsModule);
@@ -238,7 +238,7 @@ PyObjectWalkerStruct_init(PyObjectWalkerStruct* self, PyObject* args, PyObject* 
     PyObject* traceback_type = PyObject_GetAttrString(
         pyObjectWalkerDefaultsModule,
         "traceback_type");
-    if (traceback_type == NULL) {
+    if (traceback_type == nullptr) {
         Py_DECREF(terminalValueFilter);
         Py_DECREF(excludeList);
         Py_DECREF(excludePredicateFun);
@@ -249,7 +249,7 @@ PyObjectWalkerStruct_init(PyObjectWalkerStruct* self, PyObject* args, PyObject* 
     PyObject* pythonTracebackToJsonFun = PyObject_GetAttrString(
         pyObjectWalkerDefaultsModule,
         "pythonTracebackToJson");
-    if (pythonTracebackToJsonFun == NULL) {
+    if (pythonTracebackToJsonFun == nullptr) {
         Py_DECREF(traceback_type);
         Py_DECREF(terminalValueFilter);
         Py_DECREF(excludeList);
@@ -269,8 +269,20 @@ PyObjectWalkerStruct_init(PyObjectWalkerStruct* self, PyObject* args, PyObject* 
             pythonTracebackToJsonFun
             );
         }
+    catch (const std::runtime_error& e) {
+        std::string err = std::string("error creating a PyObjectWalker: ") + e.what();
+        PyErr_SetString(
+            PyExc_RuntimeError,
+            err.c_str()
+            );
+        return -1;
+        }
     catch (const std::exception& e) {
-        std::cout << "error creating a PyObjectWalker: " << e.what() << "\n";
+        std::string err = std::string("error creating a PyObjectWalker: ") + e.what();
+        PyErr_SetString(
+            PyExc_Exception,
+            err.c_str()
+            );
         return -1;
         }
 
@@ -283,7 +295,7 @@ PyObjectWalkerStruct_walkPyObject(PyObjectWalkerStruct* self, PyObject* args)
     {
     PyObject* objToWalk;
     if (!PyArg_ParseTuple(args, "O", &objToWalk)) {
-        return NULL;
+        return nullptr;
         }
 
     long res;
@@ -292,22 +304,29 @@ PyObjectWalkerStruct_walkPyObject(PyObjectWalkerStruct* self, PyObject* args)
         }
     catch (const PythonToForaConversionError& e) {
         translatePythonToForaConversionError(e);
-        return NULL;
+        return nullptr;
         }
     catch (const BadWithBlockError& e) {
         translateBadWithBlockError(e);
-        return NULL;
+        return nullptr;
         }
     catch (const UnresolvedFreeVariableExceptionWithTrace& e) {
         translateUnresolvedFreeVariableExceptionWithTrace(e);
-        return NULL;
+        return nullptr;
+        }
+    catch (const std::runtime_error& e) {
+        PyErr_SetString(
+            PyExc_RuntimeError,
+            e.what()
+            );
+        return nullptr;
         }
     catch (const std::exception& e) {
         PyErr_SetString(
             PyExc_Exception,
             e.what()
             );
-        return NULL;
+        return nullptr;
         }
 
     return PyInt_FromLong(res);
@@ -319,7 +338,7 @@ PyObjectWalkerStruct_walkPyObject(PyObjectWalkerStruct* self, PyObject* args)
 static PyMethodDef PyObjectWalkerStruct_methods[] = {
     {"walkPyObject", (PyCFunction)PyObjectWalkerStruct_walkPyObject, METH_VARARGS,
      "walk a python object"},
-    {NULL}
+    {nullptr}
     };
 
 
@@ -329,12 +348,12 @@ static PyMemberDef PyObjectWalkerStruct_members[] = {
     {const_cast<char*>("objectRegistry"), T_OBJECT_EX,
      offsetof(PyObjectWalkerStruct, binaryObjectRegistry), 0,
     const_cast<char*>("object registry attribute")},
-    {NULL}
+    {nullptr}
     };
 
 
 static PyTypeObject PyObjectWalkerStructType = {
-    PyObject_HEAD_INIT(NULL)
+    PyObject_HEAD_INIT(nullptr)
     0,                                          /* ob_size */
     "PyObjectWalker.PyObjectWalker",            /* tp_name */
     sizeof(PyObjectWalkerStruct),               /* tp_basicsize */
@@ -377,7 +396,7 @@ static PyTypeObject PyObjectWalkerStructType = {
 
 
 static PyMethodDef module_methods[] = {
-    {NULL}
+    {nullptr}
     };
 
 
@@ -400,7 +419,7 @@ initPyObjectWalker(void)
                        module_methods,
                        "expose PyObjectWalker C++ class");
 
-    if (m == NULL) {
+    if (m == nullptr) {
         return;
         }
 
