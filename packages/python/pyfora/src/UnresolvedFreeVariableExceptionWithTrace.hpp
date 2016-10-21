@@ -22,26 +22,31 @@
 
 class UnresolvedFreeVariableExceptionWithTrace : public std::runtime_error {
 public:
-    UnresolvedFreeVariableExceptionWithTrace(PyObject* value)
+    explicit UnresolvedFreeVariableExceptionWithTrace(PyObject* value)
         : std::runtime_error(""),
           mPtr(value)
         {
         }
 
-    /* 
-     *sigh*  ... C++0x noexcept would really help here.
-     without the throw this won't compile, unless an additional
-    expression is added (e.g., _GLIBCXX_USE_NOEXCEPT on linux, 
-    _NOEXCEPT on MacOS)
-    */
-    ~UnresolvedFreeVariableExceptionWithTrace() throw() {
+    ~UnresolvedFreeVariableExceptionWithTrace() noexcept {
         Py_DECREF(mPtr);
         }
 
+    UnresolvedFreeVariableExceptionWithTrace(
+            const UnresolvedFreeVariableExceptionWithTrace& e
+        ) : std::runtime_error(""),
+            mPtr(e.mPtr)
+        {
+        Py_INCREF(mPtr);
+        }
+
+    // returns a borrowed reference
     PyObject* value() const {
         return mPtr;
         }
 
 private:
     PyObject* mPtr;
+
+    void operator=(const UnresolvedFreeVariableExceptionWithTrace&) = delete;
 };

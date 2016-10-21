@@ -15,27 +15,34 @@
 ****************************************************************************/
 #pragma once
 
-#include <stdint.h>
+#include "DeserializerBase.hpp"
+
 #include <string>
 #include <vector>
 
 
-class StringDeserializer {
+class FileDescriptorDeserializer : public Deserializer {
 public:
-    StringDeserializer(const std::vector<char>& data);
+    typedef std::vector<char>::size_type size_type;
 
-    bool finished() {
-        return mIndex >= mData.size();
-        }
+    explicit FileDescriptorDeserializer(int filedescriptor,
+                                        size_t bufferSize = 16 * 4096);
 
-    char readByte();
-    int32_t readInt32();
-    int64_t readInt64();
-    double readFloat64();
-    void readInt64s(std::vector<int64_t>& ioInts);
-    std::string readString();
+    std::string toString() const;
 
 private:
-    std::vector<char> mData;
-    uint64_t mIndex;
-    };
+    virtual const char* _grabBytes(size_t nBytes);
+
+    void reserveAndShiftLeft(size_t nBytes);
+    void refillBuffer(size_t nBytes);
+    void adjustIfNecessary(size_t nBytes);
+    void shiftLeft();
+    std::string notEnoughValuesErr(
+        size_t nBytes,
+        const std::string& extraMsg = "") const;
+
+    std::vector<char> mBuffer;
+    size_t mReadHead;
+    size_t mWriteHead;
+    int mFileDescriptor;
+};

@@ -1,4 +1,4 @@
-#   Copyright 2015 Ufora Inc.
+#   Copyright 2016 Ufora Inc.
 #
 #   Licensed under the Apache License, Version 2.0 (the "License");
 #   you may not use this file except in compliance with the License.
@@ -17,22 +17,17 @@ import copy
 import logging
 import os
 import sys
-import struct
 import traceback
-
-import numpy
 
 import pyfora.pyAst.PyAstUtil as PyAstUtil
 import pyfora.PyforaInspect as PyforaInspect
 import pyfora.Exceptions as Exceptions
-import pyfora.NamedSingletons as NamedSingletons
-import pyfora.PyAbortSingletons as PyAbortSingletons
-import pyfora.ModuleLevelObjectIndex as ModuleLevelObjectIndex
 import pyfora.pyAst.PyAstFreeVariableAnalyses as PyAstFreeVariableAnalyses
-import pyfora.TypeDescription as TypeDescription
-import pyfora.ObjectRegistry as ObjectRegistry
-import pyfora.BinaryObjectRegistryDeserializer as BinaryObjectRegistryDeserializer
 import pyfora
+
+
+def noConversion(*args):
+    assert False, "Not implemented yet"
 
 
 def sanitizeModulePath(pathToModule):
@@ -54,17 +49,23 @@ def updatePyAstMemberChains(pyAst, variablesInScope, isClassContext):
         if '.' in possible_replacement:
             replacements[tuple(possible_replacement.split('.'))] = possible_replacement
 
-    #we need to deepcopy the AST since the collapser modifies the AST, and this is just a
+    #we need to deepcopy the AST since the collapser modifies the AST, and this is just a 
     #slice of a cached tree.
     pyAst = ast.fix_missing_locations(copy.deepcopy(pyAst))
 
-    pyAst = PyAstFreeVariableAnalyses.collapseFreeVariableMemberAccessChains(pyAst, replacements, isClassContext=isClassContext)
+    pyAst = PyAstFreeVariableAnalyses.collapseFreeVariableMemberAccessChains(
+        pyAst,
+        replacements,
+        isClassContext=isClassContext)
 
     return ast.fix_missing_locations(pyAst)
 
-class PythonObjectRehydrator(object):
-    """PythonObjectRehydrator - responsible for building local copies of objects
-                                produced by the server."""
+
+class PythonObjectRehydratorHelpers(object):
+    """
+    PythonObjectRehydratorHelpers - py methods implementing part of 
+    the CPP PythonObjectRehydrator
+    """
     def __init__(self, purePythonClassMapping, allowUserCodeModuleLevelLookups=True):
         self.allowUserCodeModuleLevelLookups = allowUserCodeModuleLevelLookups
         self.moduleClassesAndFunctionsByPath = {}
@@ -85,7 +86,7 @@ class PythonObjectRehydrator(object):
 
         if lineNumber in self.moduleClassesAndFunctionsByPath[path]:
             return self.moduleClassesAndFunctionsByPath[path][lineNumber]
-
+ 
         return None
 
     def canPopulateForPath(self, path):
@@ -121,7 +122,7 @@ class PythonObjectRehydrator(object):
 
                                 if lineNumberToUse in res and res[lineNumberToUse] is not leafItemValue:
                                     raise Exceptions.ForaToPythonConversionError(
-                                        ("PythonObjectRehydrator got a line number collision at lineNumber %s"
+                                        ("PythonObjectRehydratorHelpers got a line number collision at lineNumber %s"
                                          ", between %s and %s"),
                                         lineNumberToUse,
                                         leafItemValue,
@@ -131,7 +132,7 @@ class PythonObjectRehydrator(object):
                                 res[lineNumberToUse] = leafItemValue
                             else:
                                 self.populateModuleMembers(sourcePath)
-
+                        
                     except Exceptions.ForaToPythonConversionError:
                         raise
                     except PyforaInspect.PyforaInspectError:
@@ -146,7 +147,7 @@ class PythonObjectRehydrator(object):
 
     def moduleForFile(self, path):
         path = sanitizeModulePath(path)
-
+        
         if path not in self.pathsToModules:
             self.loadPathsToModules()
 
@@ -162,202 +163,22 @@ class PythonObjectRehydrator(object):
                     targetDict[magicVar] = getattr(actualModule, magicVar)
 
 
-    def readFileDescriptorToPythonObject(self, fd):
-        registry = ObjectRegistry.ObjectRegistry()
-
-        def noConversion(*args):
-            assert False, "Not implemented yet"
-
-        BinaryObjectRegistryDeserializer.deserializeFromFileDescriptor(fd, registry, noConversion)
-
-        root_id = struct.unpack("<q", os.read(fd, 8))[0]
-
-        return self.convertObjectDefinitionsToPythonObject(registry.objectIdToObjectDefinition, root_id)
-
-    def convertEncodedStringToPythonObject(self, binarydata, root_id):
-        registry = ObjectRegistry.ObjectRegistry()
-
-        def noConversion(*args):
-            assert False, "Not implemented yet"
-
-        BinaryObjectRegistryDeserializer.deserializeFromString(binarydata, registry, noConversion)
-
-        return self.convertObjectDefinitionsToPythonObject(registry.objectIdToObjectDefinition, root_id)
-
-    def convertObjectDefinitionsToPythonObject(self, definitions, root_id):
-        converted = {}
-
-        def convert(objectId, retainHomogenousListsAsNumpy=False):
-            if objectId in converted:
-                return converted[objectId]
-            converted[objectId] = convertInner(definitions[objectId], retainHomogenousListsAsNumpy)
-            return converted[objectId]
-
-        def convertInner(objectDef, retainHomogenousListsAsNumpy=False):
-            if isinstance(objectDef, (list,float,int,bool,long,str)):
-                return objectDef
-
-            if objectDef is None:
-                return None
-
-            if isinstance(objectDef, TypeDescription.Tuple):
-                return tuple([convert(x) for x in objectDef.memberIds])
-            if isinstance(objectDef, TypeDescription.List):
-                return [convert(x) for x in objectDef.memberIds]
-            if isinstance(objectDef, TypeDescription.Dict):
-                return {
-                    convert(key): convert(val)
-                    for key, val in zip(objectDef.keyIds, objectDef.valueIds)
-                    }
-            if isinstance(objectDef, TypeDescription.NamedSingleton):
-                return NamedSingletons.singletonNameToObject[objectDef.singletonName]
-            if isinstance(objectDef, TypeDescription.PackedHomogenousData):
-                array = numpy.fromstring(objectDef.dataAsBytes, dtype=TypeDescription.primitiveToDtype(objectDef.dtype))
-
-                if retainHomogenousListsAsNumpy:
-                    return TypeDescription.HomogenousListAsNumpyArray(array)
-                else:
-                    return array.tolist()
-
-            if isinstance(objectDef, TypeDescription.BuiltinExceptionInstance):
-                builtinExceptionTypeName = objectDef.builtinExceptionTypeName
-                builtinExceptionType = NamedSingletons.singletonNameToObject[builtinExceptionTypeName]
-                args = convert(objectDef.argsId)
-                return builtinExceptionType(*args)
-            if isinstance(objectDef, TypeDescription.ClassInstanceDescription):
-                classObject = convert(objectDef.classId)
-
-                if self.purePythonClassMapping.canInvertInstancesOf(classObject):
-                    members = {
-                        k: convert(v,retainHomogenousListsAsNumpy=True)
-                        for k, v in objectDef.classMemberNameToClassMemberId.iteritems()
-                        }
-                    return self.purePythonClassMapping.pureInstanceToMappable(
-                        self._instantiateClass(classObject, members)
-                        )
-                else:
-                    members = {
-                        k: convert(v)
-                        for k, v in objectDef.classMemberNameToClassMemberId.iteritems()
-                        }
-                    return self._invertPureClassInstanceIfNecessary(
-                        self._instantiateClass(classObject, members)
-                        )
-            if isinstance(objectDef, TypeDescription.PyAbortException):
-                pyAbortExceptionTypeName = objectDef.typename
-                pyAbortExceptionType = PyAbortSingletons.singletonNameToObject[
-                    pyAbortExceptionTypeName
-                    ]
-
-                args = convert(objectDef.argsId)
-                return pyAbortExceptionType(*args)
-
-            if isinstance(objectDef, TypeDescription.InstanceMethod):
-                instance = convert(objectDef.instanceId)
-                try:
-                    return getattr(instance, objectDef.methodName)
-                except AttributeError:
-                    raise Exceptions.ForaToPythonConversionError(
-                        "Expected %s to have a method of name %s which it didn't" % (
-                            instance,
-                            objectDef['methodName'])
-                        )
-            if isinstance(objectDef, TypeDescription.Unconvertible):
-                return ModuleLevelObjectIndex.ModuleLevelObjectIndex.singleton().getObjectFromPath(objectDef.module_path)
-
-            if isinstance(objectDef, TypeDescription.FunctionDefinition):
-                members = {
-                    k: convert(v)
-                    for k, v in objectDef.freeVariableMemberAccessChainsToId.iteritems()
-                    }
-                fileDesc = convert(objectDef.sourceFileId)
-                return self._instantiateFunction(fileDesc.path,
-                                                 objectDef.lineNumber,
-                                                 members,
-                                                 fileDesc.text
-                                                 )
-            if isinstance(objectDef, TypeDescription.WithBlockDescription):
-                members = {
-                    k: convert(v)
-                    for k, v in objectDef.freeVariableMemberAccessChainsToId.iteritems()
-                    }
-
-                fileDesc = convert(objectDef.sourceFileId)
-
-                return self._withBlockAsClassObjectFromFilenameAndLine(
-                                                            fileDesc.path,
-                                                            objectDef.lineNumber,
-                                                            members,
-                                                            fileDesc.text
-                                                            )
-
-            if isinstance(objectDef, TypeDescription.ClassDefinition):
-                members = {
-                    k: convert(v)
-                    for k, v in objectDef.freeVariableMemberAccessChainsToId.iteritems()
-                    }
-                fileDesc = convert(objectDef.sourceFileId)
-                return self._classObjectFromFilenameAndLine(fileDesc.path,
-                                                            objectDef.lineNumber,
-                                                            members,
-                                                            fileDesc.text
-                                                            )
-            if isinstance(objectDef, TypeDescription.StackTraceAsJson):
-                return objectDef.trace
-
-            if isinstance(objectDef, TypeDescription.File):
-                return objectDef
-
-            if isinstance(objectDef, TypeDescription.RemotePythonObject):
-                return objectDef
-
-            raise Exceptions.ForaToPythonConversionError(
-                "not implemented: cant convert %s" % objectDef
-                )
-
-        return convert(root_id)
-
     def _invertPureClassInstanceIfNecessary(self, instance):
         if self.purePythonClassMapping.canInvert(instance):
             return self.purePythonClassMapping.pureInstanceToMappable(instance)
         return instance
 
-    def _withBlockAsClassObjectFromFilenameAndLine(self, filename, lineNumber, members, fileText):
-        """Construct a class object given its textual definition."""
-        assert fileText is not None
 
-        sourceAst = PyAstUtil.pyAstFromText(fileText)
-        withBlockAst = PyAstUtil.withBlockAtLineNumber(sourceAst, lineNumber)
-
-        outputLocals = {}
-        globalScope = {}
-        globalScope.update(members)
-
-        self.importModuleMagicVariables(globalScope, filename)
-
-        try:
-            moduleAst = updatePyAstMemberChains(ast.Module([withBlockAst]),
-                                                tuple(globalScope.keys()),
-                                                isClassContext=False)
-
-            code = compile(moduleAst, filename, 'exec')
-
-            exec code in globalScope, outputLocals
-        except:
-            logging.error("Failed to instantiate class at %s:%s\n%s",
-                          filename,
-                          lineNumber,
-                          traceback.format_exc())
-            raise Exceptions.PyforaError(
-                "Failed to instantiate class at %s:%s" % (filename, lineNumber)
-                )
-
-        assert len(outputLocals) == 1
-
-        return list(outputLocals.values())[0]
+    def classObjectFromFile(self, filedescription, lineNumber, members):
+        return self.classObjectFromFilenameAndLine(
+            filedescription.path,
+            lineNumber,
+            members,
+            filedescription.text
+            )
 
 
-    def _classObjectFromFilenameAndLine(self, filename, lineNumber, members, fileText):
+    def classObjectFromFilenameAndLine(self, filename, lineNumber, members, fileText):
         """Construct a class object given its textual definition."""
         assert fileText is not None
 
@@ -376,9 +197,7 @@ class PythonObjectRehydrator(object):
         self.importModuleMagicVariables(globalScope, filename)
 
         try:
-            moduleAst = updatePyAstMemberChains(ast.Module([classAst]),
-                                                tuple(globalScope.keys()),
-                                                isClassContext=False)
+            moduleAst = updatePyAstMemberChains(ast.Module([classAst]), tuple(globalScope.keys()), isClassContext=False)
 
             code = compile(moduleAst, filename, 'exec')
 
@@ -397,7 +216,7 @@ class PythonObjectRehydrator(object):
         return list(outputLocals.values())[0]
 
 
-    def _instantiateClass(self, classObject, memberDictionary):
+    def instantiateClass(self, classObject, memberDictionary):
         """Instantiate a class given its defined methods."""
         if '__init__' in dir(classObject):
             origInit = classObject.__init__
@@ -414,8 +233,17 @@ class PythonObjectRehydrator(object):
 
         return res
 
+        
+    def instantiateFunctionFromFile(self, filedescription, lineNumber, members):
+        return self.instantiateFunction(
+            filedescription.path,
+            lineNumber,
+            members,
+            filedescription.text
+            )
 
-    def _instantiateFunction(self, filename, lineNumber, memberDictionary, file_text):
+
+    def instantiateFunction(self, filename, lineNumber, memberDictionary, file_text):
         """Instantiate a function instance."""
         objectOrNone = self.moduleLevelObject(filename, lineNumber)
         if objectOrNone is not None:
@@ -463,14 +291,13 @@ class PythonObjectRehydrator(object):
             expr.args.kwarg = None
 
             expr.decorator_list = []
-
+            
             #make sure we copy the list - if we use the existing one, we will mess up the
             #cached copy!
             expr.body = list(functionAst.body)
             expr.lineno = functionAst.lineno-1
             expr.col_offset = functionAst.col_offset
 
-            free_variables = PyAstFreeVariableAnalyses.getFreeVariables(expr, isClassContext=True)
             bound_variables = PyAstFreeVariableAnalyses.collectBoundValuesInScope(expr)
 
             return_statement = ast.Return(
@@ -523,7 +350,12 @@ class PythonObjectRehydrator(object):
 
                     expr.body = [var_copy_expr] + expr.body
 
-            expr = updatePyAstMemberChains(expr, tuple(globalScope.keys()), isClassContext=True)
+            expr = updatePyAstMemberChains(
+                expr,
+                tuple(globalScope.keys()),
+                isClassContext=True)
+
+            ast.fix_missing_locations(expr)
 
             def extractTrace():
                 return sys.exc_info()[2]
@@ -536,10 +368,16 @@ class PythonObjectRehydrator(object):
             assert len(outputLocals) == 1
             return list(outputLocals.values())[0]
         else:
-            functionAst = updatePyAstMemberChains(ast.Module([functionAst], lineno=1,col_offset=0), tuple(globalScope.keys()), isClassContext=False)
+            functionAst = updatePyAstMemberChains(
+                ast.Module(
+                    [functionAst],
+                    lineno=1,col_offset=0),
+                tuple(globalScope.keys()),
+                isClassContext=False)
 
             code = compile(functionAst, filename, 'exec')
 
             exec code in globalScope, outputLocals
             assert len(outputLocals) == 1
             return list(outputLocals.values())[0]
+

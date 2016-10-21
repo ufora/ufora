@@ -20,7 +20,7 @@
 
 class BadWithBlockError : public std::runtime_error {
 public:
-    BadWithBlockError(const std::string& s) : std::runtime_error(s)
+    explicit BadWithBlockError(const std::string& s) : std::runtime_error(s)
         {
         }
 };

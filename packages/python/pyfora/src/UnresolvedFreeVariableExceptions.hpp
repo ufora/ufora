@@ -41,8 +41,10 @@ private:
 
     UnresolvedFreeVariableExceptions();
 
-    UnresolvedFreeVariableExceptions(const UnresolvedFreeVariableExceptions&);
-    void operator=(const UnresolvedFreeVariableExceptions&);
+    UnresolvedFreeVariableExceptions(
+        const UnresolvedFreeVariableExceptions&
+        ) = delete;
+    void operator=(const UnresolvedFreeVariableExceptions&) = delete;
 
     PyObject* mUnresolvedFreeVariableExceptionWithTraceClass;
     PyObject* mUnresolvedFreeVariableExceptionClass;

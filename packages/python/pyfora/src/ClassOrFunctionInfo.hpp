@@ -48,6 +48,6 @@ public:
 private:
     int64_t mSourceFileId;
     int64_t mLineNumber;
-    std::map<FreeVariableMemberAccessChain, int64_t>
+    std::map<FreeVariableMemberAccessChain, int64_t> 
         mFreeVariableMemberAccessChainsToId;
     };

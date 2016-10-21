@@ -21,7 +21,7 @@ import struct
 import pyfora.worker.Common as Common
 import pyfora.worker.Messages as Messages
 import pyfora.PureImplementationMappings as PureImplementationMappings
-import pyfora.PythonObjectRehydrator as PythonObjectRehydrator
+from pyfora.PythonObjectRehydrator import PythonObjectRehydrator
 import pyfora.PyObjectWalker as PyObjectWalker
 import pyfora.BinaryObjectRegistry as BinaryObjectRegistry
 
@@ -69,12 +69,12 @@ class Worker:
 
         logging.info("Worker %s terminated", self.namedSocketPath)
 
-    def executeOutOfProcessPythonCall(self, socket):
+    def executeOutOfProcessPythonCall(self, sock):
         mappings = PureImplementationMappings.PureImplementationMappings()
         mappings.load_pure_modules()
 
-        rehydrator = PythonObjectRehydrator.PythonObjectRehydrator(mappings, allowUserCodeModuleLevelLookups=False)
-        convertedInstance = rehydrator.readFileDescriptorToPythonObject(socket.fileno())
+        rehydrator = PythonObjectRehydrator(mappings, allowUserCodeModuleLevelLookups=False)
+        convertedInstance = rehydrator.readFileDescriptorToPythonObject(sock.fileno())
 
         result = convertedInstance()
 
@@ -90,5 +90,5 @@ class Worker:
         registry.defineEndOfStream()
 
         msg = registry.str() + struct.pack("<q", objId)
-        Common.writeAllToFd(socket.fileno(), msg)
+        Common.writeAllToFd(sock.fileno(), msg)
 

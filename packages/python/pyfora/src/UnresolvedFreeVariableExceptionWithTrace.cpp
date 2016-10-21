@@ -17,24 +17,17 @@
 
 
 UnresolvedFreeVariableExceptions::UnresolvedFreeVariableExceptions() :
-    mUnresolvedFreeVariableExceptionWithTraceClass(NULL),
-    mGetUnresolvedFreeVariableExceptionWithTraceFun(NULL)
+    mUnresolvedFreeVariableExceptionWithTraceClass(nullptr),
+    mGetUnresolvedFreeVariableExceptionWithTraceFun(nullptr)
     {
-    PyObject* pyforaModule = PyImport_ImportModule("pyfora");
-    if (pyforaModule == NULL) {
-        throw std::runtime_error(PyObjectUtils::exc_string());
-        }
-
     PyObject* unresolvedFreeVariableExceptionsModule = 
-        PyObject_GetAttrString(
-            pyforaModule,
-            "UnresolvedFreeVariableExceptions"
+        PyImport_ImportModule("pyfora.UnresolvedFreeVariableExceptions");
+
+    if (unresolvedFreeVariableExceptionsModule == nullptr) {
+        throw std::runtime_error(
+            "py err in UnresolvedFreeVariableExceptions::UnresolvedFreeVariableExceptions: " +
+            PyObjectUtils::exc_string()
             );
-
-    Py_DECREF(pyforaModule);
-
-    if (unresolvedFreeVariableExceptionsModule == NULL) {
-        throw std::runtime_error(PyObjectUtils::exc_string());
         }
 
     mUnresolvedFreeVariableExceptionWithTraceClass =
@@ -43,8 +36,11 @@ UnresolvedFreeVariableExceptions::UnresolvedFreeVariableExceptions() :
             "UnresolvedFreeVariableExceptionWithTrace"
             );
 
-    if (unresolvedFreeVariableExceptionWithTraceClass == NULL) {
-        throw std::runtime_error(PyObjectUtils::exc_string());
+    if (unresolvedFreeVariableExceptionWithTraceClass == nullptr) {
+        throw std::runtime_error(
+            "py err in UnresolvedFreeVariableExceptions::UnresolvedFreeVariableExceptions: " +
+            PyObjectUtils::exc_string()
+            );
         }
 
     mGetUnresolvedFreeVariableExceptionWithTraceFun =
@@ -52,8 +48,11 @@ UnresolvedFreeVariableExceptions::UnresolvedFreeVariableExceptions() :
             unresolvedFreeVariableExceptionsModule,
             "getUnresolvedFreeVariableExceptionWithTrace"
             );
-    if (mGetUnresolvedFreeVariableExceptionWithTraceFun == NULL) {
-        throw std::runtime_error(PyObjectUtils::exc_string());
+    if (mGetUnresolvedFreeVariableExceptionWithTraceFun == nullptr) {
+        throw std::runtime_error(
+            "py err in UnresolvedFreeVariableExceptions::UnresolvedFreeVariableExceptions: " +
+            PyObjectUtils::exc_string()
+            );
         }
     }
 
@@ -76,8 +75,8 @@ UnresolvedFreeVariableExceptions::getUnresolvedFreeVariableExceptionWithTrace(
         filename.data(),
         filename.size()
         );
-    if (pyFilename == NULL) {
-        return NULL;
+    if (pyFilename == nullptr) {
+        return nullptr;
         }
     
     PyObject* res = PyObject_CallFunctionObjArgs(

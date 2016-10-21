@@ -23,8 +23,7 @@ const FileDescription& FileDescription::cachedFromArgs(const std::string& filena
     {
     static std::map<std::string, FileDescription> fileTextCache;
 
-    std::map<std::string, FileDescription>::const_iterator it =
-        fileTextCache.find(filename);
+    auto it = fileTextCache.find(filename);
         
     if (it != fileTextCache.end()) {
         return it->second;

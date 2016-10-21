@@ -253,13 +253,10 @@ void BinaryObjectRegistry::defineClassInstance(
     mStringBuilder.addByte(CODE_CLASS_INSTANCE);
     mStringBuilder.addInt64(classId);
     mStringBuilder.addInt32(classMemberNameToClassMemberId.size());
-    for (std::map<std::string, int64_t>::const_iterator it = 
-             classMemberNameToClassMemberId.begin();
-         it != classMemberNameToClassMemberId.end();
-         ++it)
+    for (const auto& p: classMemberNameToClassMemberId)
         {
-        mStringBuilder.addString(it->first);
-        mStringBuilder.addInt64(it->second);
+        mStringBuilder.addString(p.first);
+        mStringBuilder.addInt64(p.second);
         }
     }
 
@@ -275,21 +272,6 @@ void BinaryObjectRegistry::defineInstanceMethod(int64_t objectId,
     }
 
 
-void BinaryObjectRegistry::defineWithBlock(
-        int64_t objectId,
-        const std::map<FreeVariableMemberAccessChain, int64_t>& chainToId,
-        int64_t sourceFileId,
-        int64_t lineNumber
-        )
-    {
-    mStringBuilder.addInt64(objectId);
-    mStringBuilder.addByte(CODE_WITH_BLOCK);
-    _writeFreeVariableResolutions(chainToId);
-    mStringBuilder.addInt64(sourceFileId);
-    mStringBuilder.addInt32(lineNumber);
-    }
-
-
 void BinaryObjectRegistry::definePyAbortException(int64_t objectId,
                                                   const std::string& typeName,
                                                   int64_t argsId)
@@ -301,50 +283,53 @@ void BinaryObjectRegistry::definePyAbortException(int64_t objectId,
     }
 
 
-void BinaryObjectRegistry::defineFunction(
-        int64_t objectId,
-        int64_t sourceFileId,
-        int64_t lineNumber,
-        const std::map<FreeVariableMemberAccessChain, int64_t>& chainToId
-        )
-    {
-    mStringBuilder.addInt64(objectId);
-    mStringBuilder.addByte(CODE_FUNCTION);
-    mStringBuilder.addInt64(sourceFileId);
-    mStringBuilder.addInt32(lineNumber);
-    _writeFreeVariableResolutions(chainToId);
-    }
-
-
-void BinaryObjectRegistry::defineClass(
-        int64_t objectId,
-        int64_t sourceFileId,
-        int64_t lineNumber,
-        const std::map<FreeVariableMemberAccessChain, int64_t>& chainToId,
-        const std::vector<int64_t> baseClassIds)
-    {
-    mStringBuilder.addInt64(objectId);
-    mStringBuilder.addByte(CODE_CLASS);
-    mStringBuilder.addInt64(sourceFileId);
-    mStringBuilder.addInt32(lineNumber);
-    _writeFreeVariableResolutions(chainToId);
-    mStringBuilder.addInt64s(baseClassIds);
-    }
-
-
 void BinaryObjectRegistry::_writeFreeVariableResolutions(
         const std::map<FreeVariableMemberAccessChain, int64_t>& chainToId
         )
     {
     mStringBuilder.addInt32(chainToId.size());
 
-    for (std::map<FreeVariableMemberAccessChain, int64_t>::const_iterator it =
-             chainToId.begin();
-         it != chainToId.end();
-         ++it)
-        {
-        mStringBuilder.addString(it->first.str());
-        mStringBuilder.addInt64(it->second);
+    for (const auto& p: chainToId) {
+        mStringBuilder.addString(p.first.str());
+        mStringBuilder.addInt64(p.second);
+        }
+    }
+
+
+void BinaryObjectRegistry::_writeFreeVariableResolutions(
+        PyObject* chainToId
+        )
+    {
+    if (not PyDict_Check(chainToId)) {
+        throw std::runtime_error(
+            "expected a dict in _writeFreeVariableResolutions"
+            );
+        }
+
+    Py_ssize_t sz = PyDict_Size(chainToId);
+
+    mStringBuilder.addInt32(sz);
+
+    PyObject * key, * value;
+    Py_ssize_t pos = 0;
+
+    while (PyDict_Next(chainToId, &pos, &key, &value)) {
+        if (not PyString_Check(key)) {
+            throw std::runtime_error(
+                "expected string keys in _writeFreeVariableResolutions"
+                );
+            }
+        if (not PyInt_Check(value)) {
+            throw std::runtime_error(
+                "expected it values in _writeFreeVariableResolutions"
+                );
+            }
+
+        mStringBuilder.addString(
+            PyString_AS_STRING(key),
+            PyString_GET_SIZE(key)
+            );
+        mStringBuilder.addInt64(PyInt_AS_LONG(value));
         }
     }
 
@@ -356,9 +341,11 @@ void BinaryObjectRegistry::definePackedHomogenousData(int64_t objectId,
     mStringBuilder.addByte(CODE_PACKED_HOMOGENOUS_DATA);
     
     PyObject* dtype = PyObject_GetAttrString(pyObject, "dtype");
-    if (dtype == NULL) {
-        PyErr_Print();
-        throw std::runtime_error("couldn't get dtype attr");
+    if (dtype == nullptr) {
+        throw std::runtime_error(
+            "py err in BinaryObjectRegistry::definePackedHomogenousData: " +
+            PyObjectUtils::format_exc()
+            );
         }
 
     _writeDTypeElement(dtype);
@@ -366,9 +353,11 @@ void BinaryObjectRegistry::definePackedHomogenousData(int64_t objectId,
     Py_DECREF(dtype);
 
     PyObject* dataAsBytes = PyObject_GetAttrString(pyObject, "dataAsBytes");
-    if (dataAsBytes == NULL) {
-        PyErr_Print();
-        throw std::runtime_error("couldn't get dataAsBytes attr");
+    if (dataAsBytes == nullptr) {
+        throw std::runtime_error(
+            "py err in BinaryObjectRegistry::definePackedHomogenousData: " +
+            PyObjectUtils::format_exc()
+            );
         }
     if (not PyString_Check(dataAsBytes)) {
         Py_DECREF(dataAsBytes);
@@ -421,7 +410,7 @@ std::string BinaryObjectRegistry::_computedValueDataString(
     {
     PyObject* res = BinaryObjectRegistryHelpers::computedValueDataString(
         computedValueArg);
-    if (res == NULL) {
+    if (res == nullptr) {
         throw std::runtime_error(
             "py error getting computedValueDataString in "
             "BinaryObjectRegistry::_computedValueDataString: " +

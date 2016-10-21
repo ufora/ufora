@@ -20,7 +20,7 @@
 
 class PyforaInspectError : public std::runtime_error {
 public:
-    PyforaInspectError(const std::string& s) :
+    explicit PyforaInspectError(const std::string& s) :
         std::runtime_error(s)
         {
         }

@@ -28,7 +28,7 @@ import logging
 import pyfora.PureImplementationMappings as PureImplementationMappings
 import pyfora.PyObjectWalker as PyObjectWalker
 import pyfora.BinaryObjectRegistry as BinaryObjectRegistry
-import pyfora.PythonObjectRehydrator as PythonObjectRehydrator
+from pyfora.PythonObjectRehydrator import PythonObjectRehydrator
 
 
 class WorkerPool:
@@ -131,7 +131,7 @@ class WorkerPool:
             Common.writeAllToFd(aSocket.fileno(), binaryObjectRegistry.str())
             Common.writeAllToFd(aSocket.fileno(), struct.pack("<q", objId))
 
-            rehydrator = PythonObjectRehydrator.PythonObjectRehydrator(mappings, allowUserCodeModuleLevelLookups=False)
+            rehydrator = PythonObjectRehydrator(mappings, allowUserCodeModuleLevelLookups=False)
             result.append(rehydrator.readFileDescriptorToPythonObject(aSocket.fileno()))
 
         self._communicate_with_worker(callback)

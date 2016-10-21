@@ -20,7 +20,7 @@
 
 class CantGetSourceTextError : public std::runtime_error {
 public:
-    CantGetSourceTextError(const std::string& s) : std::runtime_error(s)
+    explicit CantGetSourceTextError(const std::string& s) : std::runtime_error(s)
         {
         }
 };

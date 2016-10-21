@@ -44,7 +44,7 @@ FreeVariableResolver::~FreeVariableResolver()
 void FreeVariableResolver::_initPureFreeVariableResolver()
     {
     PyObject* freeVariableResolverModule = PyImport_ImportModule("pyfora.FreeVariableResolver");
-    if (freeVariableResolverModule == NULL) {
+    if (freeVariableResolverModule == nullptr) {
         throw std::runtime_error(PyObjectUtils::exc_string());
         }
     
@@ -52,7 +52,7 @@ void FreeVariableResolver::_initPureFreeVariableResolver()
         freeVariableResolverModule,
         "FreeVariableResolver"
         );
-    if (freeVariableResolverClass == NULL) {
+    if (freeVariableResolverClass == nullptr) {
         Py_DECREF(freeVariableResolverModule);
         throw std::runtime_error(PyObjectUtils::exc_string());
         }
@@ -61,8 +61,8 @@ void FreeVariableResolver::_initPureFreeVariableResolver()
         freeVariableResolverClass,
         exclude_list,
         terminal_value_filter,
-        NULL);
-    if (mPureFreeVariableResolver == NULL) {
+        nullptr);
+    if (mPureFreeVariableResolver == nullptr) {
         Py_DECREF(freeVariableResolverClass);
         Py_DECREF(freeVariableResolverModule);
         throw std::runtime_error(PyObjectUtils::exc_string());
@@ -79,8 +79,8 @@ PyObject* FreeVariableResolver::resolveFreeVariableMemberAccessChainsInAst(
     PyObject* resolveFreeVariableMemberAccessChainsInAstFun =
         PyObject_GetAttrString(mPureFreeVariableResolver,
                                "resolveFreeVariableMemberAccessChainsInAst");
-    if (resolveFreeVariableMemberAccessChainsInAstFun == NULL) {
-        return NULL;
+    if (resolveFreeVariableMemberAccessChainsInAstFun == nullptr) {
+        return nullptr;
         }
     
     PyObject* res = PyObject_CallFunctionObjArgs(
@@ -89,7 +89,7 @@ PyObject* FreeVariableResolver::resolveFreeVariableMemberAccessChainsInAst(
         pyAst,
         freeMemberAccessChainsWithPositions,
         convertedObjectCache,
-        NULL);
+        nullptr);
     
     Py_DECREF(resolveFreeVariableMemberAccessChainsInAstFun);
 
@@ -107,8 +107,8 @@ PyObject* FreeVariableResolver::resolveFreeVariableMemberAccessChains(
             mPureFreeVariableResolver,
             "resolveFreeVariableMemberAccessChains"
             );
-    if (resolveFreeVariableMemberAccessChainsFun == NULL) {
-        return NULL;
+    if (resolveFreeVariableMemberAccessChainsFun == nullptr) {
+        return nullptr;
         }
 
     PyObject* res = PyObject_CallFunctionObjArgs(
@@ -116,7 +116,7 @@ PyObject* FreeVariableResolver::resolveFreeVariableMemberAccessChains(
         freeMemberAccessChainsWithPositions,
         boundVariables,
         convertedObjectCache,
-        NULL);
+        nullptr);
 
     Py_DECREF(resolveFreeVariableMemberAccessChainsFun);
 

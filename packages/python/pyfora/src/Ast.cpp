@@ -14,18 +14,19 @@
    limitations under the License.
 ****************************************************************************/
 #include "Ast.hpp"
+#include "PyObjectUtils.hpp"
 
 #include <stdexcept>
 
 
-Ast::Ast() :
-    mAstModule(0)
+Ast::Ast() : mAstModule(nullptr)
     {
     mAstModule = PyImport_ImportModule("ast");
 
-    if (mAstModule == NULL) {
-        PyErr_Print();
-        throw std::runtime_error("couldn't import ast module");
+    if (mAstModule == nullptr) {
+        throw std::runtime_error(
+            "py error in Ast::Ast(): " + PyObjectUtils::format_exc()
+            );
         }
     }
 
@@ -36,9 +37,8 @@ PyObject* Ast::FunctionDef(PyObject* args, PyObject* kw)
         _getInstance().mAstModule,
         "FunctionDef"
         );
-    if (FunctionDefFun == NULL) {
-        PyErr_Print();
-        throw std::runtime_error("couldn't get `FunctionDef` attr from ast module");
+    if (FunctionDefFun == nullptr) {
+        return nullptr;
         }
 
     PyObject* res = PyObject_Call(FunctionDefFun, args, kw);
@@ -55,9 +55,8 @@ PyObject* Ast::arguments(PyObject* args, PyObject* kw)
         _getInstance().mAstModule,
         "arguments"
         );
-    if (argumentsFun == NULL) {
-        PyErr_Print();
-        throw std::runtime_error("couldn't get `arguments` attr from ast module");
+    if (argumentsFun == nullptr) {
+        return nullptr;
         }
 
     PyObject* res = PyObject_Call(argumentsFun, args, kw);

@@ -40,8 +40,8 @@ private:
     PyforaInspect();
 
     // declare private and don't implement these to prevent copying
-    PyforaInspect(const PyforaInspect&);
-    void operator=(const PyforaInspect&);
+    PyforaInspect(const PyforaInspect&) = delete;
+    void operator=(const PyforaInspect&) = delete;
 
     void _initMembers();
 
@@ -49,8 +49,6 @@ private:
     PyObject* mTypeType;
     PyObject* mFunctionType;
     PyObject* mModuleType;
-    PyObject* mPyforaModule;
-    PyObject* mPyforaInspectModule;
     PyObject* mGetLinesFunc;
     PyObject* mPyforaInspectErrorClass;
 };

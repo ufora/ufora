@@ -22,12 +22,16 @@
 std::string PyObjectUtils::repr_string(PyObject* obj)
     {
     PyObject* obj_repr = PyObject_Repr(obj);
-    if (obj_repr == NULL) {
-        PyErr_Print();
-        throw std::runtime_error("couldn't compute repr of an object");
+    if (obj_repr == nullptr) {
+        throw std::runtime_error(
+            "py err in PyObjectUtils::repr_string: " +
+            PyObjectUtils::format_exc()
+            );
         }
     if (not PyString_Check(obj_repr)) {
-        throw std::runtime_error("repr returned a non string");
+        throw std::runtime_error(
+            "error in PyObjectUtils::repr_string: repr returned a non string"
+            );
         }
 
     std::string tr = std::string(
@@ -44,12 +48,16 @@ std::string PyObjectUtils::repr_string(PyObject* obj)
 std::string PyObjectUtils::str_string(PyObject* obj)
     {
     PyObject* obj_str = PyObject_Str(obj);
-    if (obj_str == NULL) {
-        PyErr_Print();
-        throw std::runtime_error("couldn't compute repr of an object");
+    if (obj_str == nullptr) {
+        throw std::runtime_error(
+            "py err in PyObjectUtils::str_string: " +
+            PyObjectUtils::format_exc()
+            );
         }
     if (not PyString_Check(obj_str)) {
-        throw std::runtime_error("repr returned a non string");
+        throw std::runtime_error(
+            "error in PyObjectUtils::str_string: repr returned a non string"
+            );
         }
 
     std::string tr = std::string(
@@ -74,7 +82,7 @@ std::string PyObjectUtils::std_string(PyObject* string)
         }
     else if (PyUnicode_Check(string)) {
         PyObject* s = PyUnicode_AsASCIIString(string);
-        if (s == NULL) {
+        if (s == nullptr) {
             throw std::runtime_error(
                 "couldn't get an ascii string from a unicode string: " +
                 PyObjectUtils::exc_string()
@@ -98,16 +106,16 @@ std::string PyObjectUtils::std_string(PyObject* string)
 
 std::string PyObjectUtils::format_exc()
     {
-    PyObject * exception = NULL, * v = NULL, * tb = NULL;
+    PyObject * exception = nullptr, * v = nullptr, * tb = nullptr;
     PyErr_Fetch(&exception, &v, &tb);
-    if (exception == NULL) {
+    if (exception == nullptr) {
         return "<no exception>";
         }
     PyErr_NormalizeException(&exception, &v, &tb);
 
     PyObject* typeString = PyObject_Str(exception);
     Py_DECREF(exception);
-    if (typeString == NULL) {
+    if (typeString == nullptr) {
         Py_XDECREF(tb);
         Py_XDECREF(v);
         return "<INTERNAL ERROR: couldn't get typeString in PyObjectUtils::format_exc>";
@@ -120,14 +128,14 @@ std::string PyObjectUtils::format_exc()
             " PyObjectUtils::format_exc";
         }
 
-    if (v == NULL) {
+    if (v == nullptr) {
         Py_DECREF(typeString);
         Py_XDECREF(tb);
         return "<v unexpectedly none in PyObjectUtils::format_exc>";
         }
     PyObject* valueString = PyObject_Str(v);
     Py_DECREF(v);
-    if (valueString == NULL) {
+    if (valueString == nullptr) {
         Py_DECREF(typeString);
         Py_XDECREF(tb);
         return "<INTERNAL ERROR: couldn't get value string>";
@@ -140,7 +148,7 @@ std::string PyObjectUtils::format_exc()
         }
 
     PyObject* cStringIOModule = PyImport_ImportModule("cStringIO");
-    if (cStringIOModule == NULL) {
+    if (cStringIOModule == nullptr) {
         Py_DECREF(valueString);
         Py_DECREF(typeString);
         Py_XDECREF(tb);
@@ -154,7 +162,7 @@ std::string PyObjectUtils::format_exc()
         cStringIOModule,
         "StringIO");
     Py_DECREF(cStringIOModule);
-    if (StringIOClass == NULL) {
+    if (StringIOClass == nullptr) {
         Py_DECREF(valueString);
         Py_DECREF(typeString);
         Py_XDECREF(tb);
@@ -164,9 +172,9 @@ std::string PyObjectUtils::format_exc()
             );
         }
 
-    PyObject* stringIO = PyObject_CallFunctionObjArgs(StringIOClass, NULL);
+    PyObject* stringIO = PyObject_CallFunctionObjArgs(StringIOClass, nullptr);
     Py_DECREF(StringIOClass);
-    if (stringIO == NULL) {
+    if (stringIO == nullptr) {
         Py_DECREF(valueString);
         Py_DECREF(typeString);
         Py_XDECREF(tb);
@@ -176,12 +184,12 @@ std::string PyObjectUtils::format_exc()
             );
         }
 
-    if (tb == NULL) {
+    if (tb == nullptr) {
         Py_DECREF(stringIO);
         Py_DECREF(valueString);
         Py_DECREF(typeString);        
         throw std::runtime_error(
-            "<tb unexpectedly NULL in PyObjectUtils::format_exc>"
+            "<tb unexpectedly nullptr in PyObjectUtils::format_exc>"
             );
         }
     int retcode = PyTraceBack_Print(tb, stringIO);
@@ -201,7 +209,7 @@ std::string PyObjectUtils::format_exc()
         const_cast<char*>("()")
         );
     Py_DECREF(stringIO);
-    if (tb_string == NULL) {
+    if (tb_string == nullptr) {
         Py_DECREF(valueString);
         Py_DECREF(typeString);        
         throw std::runtime_error(
@@ -237,7 +245,7 @@ std::string PyObjectUtils::format_exc()
 
 std::string PyObjectUtils::exc_string()
     {
-    PyObject * exception = NULL, * v = NULL, * tb = NULL;
+    PyObject * exception = nullptr, * v = nullptr, * tb = nullptr;
 
     /*
       From the Python C-API documentation: 
@@ -245,13 +253,13 @@ std::string PyObjectUtils::exc_string()
       PyErr_Fetch(PyObject** ptype, PyObject** value, PyObject** traceback)
 
       Retrieve the error indicator into three variables whose addresses are passed. 
-      If the error indicator is not set, set all three variables to NULL.
+      If the error indicator is not set, set all three variables to nullptr.
       If it is set, it will be cleared and you own a reference to each object retrieved.
-      The value and traceback object may be NULL even when the type object is not.
+      The value and traceback object may be nullptr even when the type object is not.
      */
 
     PyErr_Fetch(&exception, &v, &tb);
-    if (exception == NULL) {
+    if (exception == nullptr) {
         return "<no exception>";
         }
     PyErr_NormalizeException(&exception, &v, &tb);
@@ -259,7 +267,7 @@ std::string PyObjectUtils::exc_string()
 
     PyObject* typeString = PyObject_Str(exception);
     Py_DECREF(exception);
-    if (typeString == NULL) {
+    if (typeString == nullptr) {
         Py_XDECREF(v);
         return "<INTERNAL ERROR: couldn't get typeString>";
         }
@@ -271,7 +279,7 @@ std::string PyObjectUtils::exc_string()
 
     PyObject* valueString = PyObject_Str(v);
     Py_XDECREF(v);
-    if (valueString == NULL) {
+    if (valueString == nullptr) {
         Py_DECREF(typeString);
         return "<INTERNAL ERROR: couldn't get value string>";
         }
@@ -294,12 +302,14 @@ std::string PyObjectUtils::exc_string()
     }
 
 
-long PyObjectUtils::builtin_id(PyObject* pyObject)
+long PyObjectUtils::builtin_id(const PyObject* pyObject)
     {
-    PyObject* pyObject_builtin_id = PyLong_FromVoidPtr(pyObject);
-    if (pyObject_builtin_id == NULL) {
-        PyErr_Print();
-        throw std::runtime_error("couldn't get a builtin id");
+    PyObject* pyObject_builtin_id = 
+        PyLong_FromVoidPtr(const_cast<PyObject*>(pyObject));
+    if (pyObject_builtin_id == nullptr) {
+        throw std::runtime_error(
+            "py err in PyObjectUtils::builtin_id: " + PyObjectUtils::format_exc()
+            );
         }
 
     int overflow;

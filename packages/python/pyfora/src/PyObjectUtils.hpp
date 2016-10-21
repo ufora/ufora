@@ -32,7 +32,7 @@ public:
 
     static std::string exc_string();
 
-    static long builtin_id(PyObject*);
+    static long builtin_id(const PyObject*);
 
     static bool in(PyObject* container, PyObject* value);
 

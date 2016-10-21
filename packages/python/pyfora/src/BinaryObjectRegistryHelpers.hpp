@@ -20,7 +20,7 @@
 
 class BinaryObjectRegistryHelpers {
 public:
-    // returns NULL or a reference to a new PyString
+    // returns nullptr or a reference to a new PyString
     static PyObject* computedValueDataString(const PyObject* computedValueArg);
 
 private:
@@ -31,8 +31,8 @@ private:
 
     BinaryObjectRegistryHelpers();
 
-    BinaryObjectRegistryHelpers(const BinaryObjectRegistryHelpers&);
-    void operator=(const BinaryObjectRegistryHelpers&);
+    BinaryObjectRegistryHelpers(const BinaryObjectRegistryHelpers&) = delete;
+    void operator=(const BinaryObjectRegistryHelpers&) = delete;
 
     PyObject* mComputedValueDataStringFun;
 };

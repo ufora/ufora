@@ -120,19 +120,20 @@ class ExecutorTestCases(object):
             class MyException(Exception):
                 pass
 
-            def alwaysThrows(*args):
-                raise MyException(errorMsg)
+            class AlwaysThrowsPythonObjectRehydrator(object):
+                def convertEncodedStringToPythonObject(self, binarydata, root_id):
+                    raise MyException(errorMsg)
 
             # to make our a toLocal call throw an expected exception
-            executor.objectRehydrator.convertEncodedStringToPythonObject = alwaysThrows
+            executor.objectRehydrator = AlwaysThrowsPythonObjectRehydrator()
 
             func_proxy = executor.define(f).result()
             res_proxy = func_proxy().result()
 
             try:
                 res_proxy.toLocal().result()
-            except Exception as e:
-                self.assertIsInstance(e, pyfora.PyforaError)
+                self.assertTrue(False)
+            except pyfora.PyforaError as e:
                 self.assertIsInstance(e.message, MyException)
                 self.assertEqual(e.message.message, errorMsg)
 

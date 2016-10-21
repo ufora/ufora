@@ -41,7 +41,7 @@ PyBinaryObjectRegistry_new(PyTypeObject* type, PyObject* args, PyObject* kwds)
     PyBinaryObjectRegistry* self;
 
     self = (PyBinaryObjectRegistry*)type->tp_alloc(type, 0);
-    if (self != NULL) {
+    if (self != nullptr) {
         self->nativeBinaryObjectRegistry = new BinaryObjectRegistry();
         }
 
@@ -111,7 +111,7 @@ PyBinaryObjectRegistry_definePrimitive(PyBinaryObjectRegistry* self,
     PyObject* primitive;
 
     if (!PyArg_ParseTuple(args, "iO", &objectId, &primitive)) {
-        return NULL;
+        return nullptr;
         }
 
     self->nativeBinaryObjectRegistry->definePrimitive(objectId, primitive);
@@ -128,7 +128,7 @@ PyBinaryObjectRegistry_defineTuple(PyBinaryObjectRegistry* self,
     PyObject* tuple;
 
     if (!PyArg_ParseTuple(args, "iO!", &objectId, &PyTuple_Type, &tuple)) {
-        return NULL;
+        return nullptr;
         }
 
     std::vector<int64_t> memberIds;
@@ -139,7 +139,7 @@ PyBinaryObjectRegistry_defineTuple(PyBinaryObjectRegistry* self,
                 PyExc_TypeError,
                 "expected ints in the tuple"
                 );
-            return NULL;
+            return nullptr;
             }
         memberIds.push_back(PyInt_AS_LONG(item));        
         }
@@ -160,7 +160,7 @@ PyBinaryObjectRegistry_defineList(PyBinaryObjectRegistry* self,
     PyObject* list;
 
     if (!PyArg_ParseTuple(args, "iO!", &objectId, &PyList_Type, &list)) {
-        return NULL;
+        return nullptr;
         }
 
     std::vector<int64_t> memberIds;
@@ -171,7 +171,7 @@ PyBinaryObjectRegistry_defineList(PyBinaryObjectRegistry* self,
                 PyExc_TypeError,
                 "expected ints in the list"
                 );
-            return NULL;
+            return nullptr;
             }
         memberIds.push_back(PyInt_AS_LONG(item));        
         }
@@ -199,7 +199,7 @@ PyBinaryObjectRegistry_defineDict(PyBinaryObjectRegistry* self,
                           &pyKeyIds,
                           &PyList_Type,
                           &pyValueIds)) {
-        return NULL;
+        return nullptr;
         }
 
     Py_ssize_t list_len = PyList_GET_SIZE(pyKeyIds);
@@ -209,7 +209,7 @@ PyBinaryObjectRegistry_defineDict(PyBinaryObjectRegistry* self,
             PyExc_AssertionError,
             "keyIds list must have the same size as valueIds"
             );
-        return NULL;
+        return nullptr;
         }
 
     std::vector<int64_t> keyIds;
@@ -225,14 +225,14 @@ PyBinaryObjectRegistry_defineDict(PyBinaryObjectRegistry* self,
                 PyExc_TypeError,
                 "expected int keys"
                 );
-            return NULL;
+            return nullptr;
             }
         if (not PyInt_Check(value)) {
             PyErr_SetString(
                 PyExc_TypeError,
                 "expected int values"
                 );
-            return NULL;
+            return nullptr;
             }
 
         keyIds.push_back(PyInt_AS_LONG(key));
@@ -257,7 +257,7 @@ PyBinaryObjectRegistry_defineRemotePythonObject(PyBinaryObjectRegistry* self,
 
     if (!PyArg_ParseTuple(args, "iO", &objectId, &computedValueArg)) {
 
-        return NULL;
+        return nullptr;
         }
 
     self->nativeBinaryObjectRegistry->defineRemotePythonObject(
@@ -274,7 +274,7 @@ PyBinaryObjectRegistry_defineBuiltinExceptionInstance(
         PyObject* args)
     {
     int objectId;
-    char* typeName;
+    const char* typeName;
     int typeNameSize;
     int argsId;
 
@@ -283,7 +283,7 @@ PyBinaryObjectRegistry_defineBuiltinExceptionInstance(
             &typeName,
             &typeNameSize,
             &argsId)) {
-        return NULL;
+        return nullptr;
         }
     
     self->nativeBinaryObjectRegistry->defineBuiltinExceptionInstance(
@@ -302,7 +302,7 @@ PyBinaryObjectRegistry_defineNamedSingleton(
         PyObject* args)
     {
     int objectId;
-    char* singletonName;
+    const char* singletonName;
     int singletonNameSize;
 
         if (!PyArg_ParseTuple(args,
@@ -310,7 +310,7 @@ PyBinaryObjectRegistry_defineNamedSingleton(
                               &objectId,
                               &singletonName,
                               &singletonNameSize)) {
-        return NULL;
+        return nullptr;
         }
     
     self->nativeBinaryObjectRegistry->defineNamedSingleton(
@@ -341,7 +341,7 @@ PyBinaryObjectRegistry_defineFunction(
                           &linenumber,
                           &PyDict_Type,
                           &pyChainToId)) {
-        return NULL;
+        return nullptr;
         }
 
     std::map<FreeVariableMemberAccessChain, int64_t> chainToId;
@@ -359,7 +359,7 @@ PyBinaryObjectRegistry_defineFunction(
                 PyExc_TypeError,
                 e.what()
                 );
-            return NULL;
+            return nullptr;
             }
 
         if (not PyInt_Check(value)) {
@@ -367,7 +367,7 @@ PyBinaryObjectRegistry_defineFunction(
                 PyExc_TypeError,
                 "expected int values"
                 );
-            return NULL;
+            return nullptr;
             }
 
         chainToId[chain] = PyInt_AS_LONG(value);
@@ -404,7 +404,7 @@ PyBinaryObjectRegistry_defineClass(
                           &pyChainToId,
                           &PyTuple_Type,
                           &pyBaseClassIds)) {
-        return NULL;
+        return nullptr;
         }
 
     std::map<FreeVariableMemberAccessChain, int64_t> chainToId;
@@ -422,7 +422,7 @@ PyBinaryObjectRegistry_defineClass(
                 PyExc_TypeError,
                 e.what()
                 );
-            return NULL;
+            return nullptr;
             }
 
         if (not PyInt_Check(value)) {
@@ -430,7 +430,7 @@ PyBinaryObjectRegistry_defineClass(
                 PyExc_TypeError,
                 "expected int values"
                 );
-            return NULL;
+            return nullptr;
             }
 
         chainToId[chain] = PyInt_AS_LONG(value);
@@ -444,7 +444,7 @@ PyBinaryObjectRegistry_defineClass(
                 PyExc_TypeError,
                 "expected int base class ids"
                 );
-            return NULL;
+            return nullptr;
             }
         baseClassIds.push_back(PyInt_AS_LONG(item));
         }
@@ -469,7 +469,7 @@ PyBinaryObjectRegistry_defineUnconvertible(PyBinaryObjectRegistry* self,
 
     if (!PyArg_ParseTuple(args, "iO", &objectId, &modulePathOrNone)) {
 
-        return NULL;
+        return nullptr;
         }
 
     self->nativeBinaryObjectRegistry->defineUnconvertible(
@@ -494,7 +494,7 @@ PyBinaryObjectRegistry_defineClassInstance(PyBinaryObjectRegistry* self,
             &classId,
             &PyDict_Type,
             &pyClassMemberNameToClassMemberId)) {
-        return NULL;
+        return nullptr;
         }
         
     PyObject * key, * value;
@@ -508,7 +508,7 @@ PyBinaryObjectRegistry_defineClassInstance(PyBinaryObjectRegistry* self,
                 PyExc_TypeError,
                 "expected string keys"
                 );
-            return NULL;
+            return nullptr;
             }
         if (not PyInt_Check(value)) {
             PyErr_SetString(
@@ -539,7 +539,7 @@ PyBinaryObjectRegistry_defineInstanceMethod(PyBinaryObjectRegistry* self,
     {
     int objectId;
     int instanceId;
-    char* methodName;
+    const char* methodName;
     int methodNameSize;
 
     if (!PyArg_ParseTuple(args, "iis#",
@@ -547,7 +547,7 @@ PyBinaryObjectRegistry_defineInstanceMethod(PyBinaryObjectRegistry* self,
             &instanceId,
             &methodName,
             &methodNameSize)) {
-        return NULL;
+        return nullptr;
         }
 
     self->nativeBinaryObjectRegistry->defineInstanceMethod(
@@ -578,7 +578,7 @@ PyBinaryObjectRegistry_defineWithBlock(
                           &pyChainToId,
                           &sourceFileId,
                           &linenumber)) {
-        return NULL;
+        return nullptr;
         }
 
     std::map<FreeVariableMemberAccessChain, int64_t> chainToId;
@@ -596,7 +596,7 @@ PyBinaryObjectRegistry_defineWithBlock(
                 PyExc_TypeError,
                 e.what()
                 );
-            return NULL;
+            return nullptr;
             }
 
         if (not PyInt_Check(value)) {
@@ -604,7 +604,7 @@ PyBinaryObjectRegistry_defineWithBlock(
                 PyExc_TypeError,
                 "expected int values"
                 );
-            return NULL;
+            return nullptr;
             }
 
         chainToId[chain] = PyInt_AS_LONG(value);
@@ -625,7 +625,7 @@ PyBinaryObjectRegistry_definePyAbortException(PyBinaryObjectRegistry* self,
                                               PyObject* args)
     {
     int objectId;
-    char* typeName;
+    const char* typeName;
     int typeNameSize;
     int argsId;
 
@@ -635,7 +635,7 @@ PyBinaryObjectRegistry_definePyAbortException(PyBinaryObjectRegistry* self,
                              &typeName,
                              &typeNameSize,
                              &argsId)) {
-        return NULL;
+        return nullptr;
         }
 
     self->nativeBinaryObjectRegistry->definePyAbortException(
@@ -655,7 +655,7 @@ PyBinaryObjectRegistry_definePackedHomogeneousData(PyBinaryObjectRegistry* self,
     PyObject* val;
 
     if (!PyArg_ParseTuple(args, "iO", &objectId, &val)) {
-        return NULL;
+        return nullptr;
         }
 
     try {
@@ -679,9 +679,9 @@ PyBinaryObjectRegistry_defineFile(PyBinaryObjectRegistry* self,
                                   PyObject* args)
     {
     int objectId;
-    char* textStr;
+    const char* textStr;
     int textStrSize;
-    char* pathStr;
+    const char* pathStr;
     int pathStrSize;
 
     if (!PyArg_ParseTuple(args,
@@ -691,7 +691,7 @@ PyBinaryObjectRegistry_defineFile(PyBinaryObjectRegistry* self,
                           &textStrSize,
                           &pathStr,
                           &pathStrSize)) {
-        return NULL;
+        return nullptr;
         }
 
     self->nativeBinaryObjectRegistry->defineFile(
@@ -712,7 +712,7 @@ PyBinaryObjectRegistry_defineStacktrace(PyBinaryObjectRegistry* self,
     PyObject* stackTraceAsJsonOrNone;
 
     if (!PyArg_ParseTuple(args, "iO", &objectId, &stackTraceAsJsonOrNone)) {
-        return NULL;
+        return nullptr;
         }
 
     self->nativeBinaryObjectRegistry->defineStacktrace(
@@ -804,12 +804,12 @@ static PyMethodDef PyBinaryObjectRegistry_methods[] = {
     {"defineStacktrace",
      (PyCFunction)PyBinaryObjectRegistry_defineStacktrace,
      METH_VARARGS},
-    {NULL} /* Sentinel */
+    {nullptr} /* Sentinel */
     };
 
 
 static PyTypeObject PyBinaryObjectRegistryType = {
-    PyObject_HEAD_INIT(NULL)
+    PyObject_HEAD_INIT(nullptr)
     0,                                          /* ob_size */
     "BinaryObjectRegistry.BinaryObjectRegistry",/* tp_name */
     sizeof(PyBinaryObjectRegistry),             /* tp_basicsize */
@@ -852,7 +852,7 @@ static PyTypeObject PyBinaryObjectRegistryType = {
 
 
 static PyMethodDef module_methods[] = {
-    {NULL}
+    {nullptr}
     };
 
 
@@ -893,7 +893,7 @@ int _initBinaryObjectRegistryCodes(PyObject* binaryObjectRegistryModule)
 extern "C" {
 
 PyMODINIT_FUNC
-initBinaryObjectRegistry(void)
+initBinaryObjectRegistry()
     {
     PyObject* binaryObjectRegistryModule;
 
@@ -905,7 +905,7 @@ initBinaryObjectRegistry(void)
         "BinaryObjectRegistry",
         module_methods,
         "expose BinaryObjectRegistry C++ class");
-    if (binaryObjectRegistryModule == NULL) {        
+    if (binaryObjectRegistryModule == nullptr) {        
         return;
         }
 

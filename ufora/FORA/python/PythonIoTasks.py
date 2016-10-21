@@ -19,7 +19,7 @@ import ufora.native.Cumulus as CumulusNative
 import ufora.config.Setup as Setup
 import ufora.util.ExponentialMovingAverage as ExponentialMovingAverage
 import pyfora.PureImplementationMappings as PureImplementationMappings
-import pyfora.PythonObjectRehydrator as PythonObjectRehydrator
+from pyfora.PythonObjectRehydrator import PythonObjectRehydrator
 import pyfora.PyObjectWalker as PyObjectWalker
 import pyfora.BinaryObjectRegistry as BinaryObjectRegistry
 import ufora.FORA.python.PurePython.Converter as Converter

@@ -22,6 +22,8 @@
 
 #include "BinaryObjectRegistry.hpp"
 #include "FreeVariableResolver.hpp"
+#include "ModuleLevelObjectIndex.hpp"
+#include "PureImplementationMappings.hpp"
 
 
 class ClassOrFunctionInfo;
@@ -31,21 +33,22 @@ class FileDescription;
 class PyObjectWalker {
 public:
     /* 
-       Steals references to the PyObject* args, except purePythonClassMapping, which is the only one passed in from python. 
+       Steals references to most PyObject* args, except purePythonClassMapping,
+       which is the only one passed-in from python
 
        The stolen references are not increfed on
        construction, but are decrefed on destruction. They come
        from pyobjectwalkermodule, and have refct 1.
 
-       Arguments should be non-NULL -- no error checking is done
+       Arguments should be non-nullptr -- no error checking is done
     */
     PyObjectWalker(
         PyObject* purePythonClassMapping,
         BinaryObjectRegistry& objectRegistry, // should we really be doing this?
-        PyObject* excludePredicateFun,
-        PyObject* excludeList,
-        PyObject* terminalValueFilter,
-        PyObject* traceback_type,
+        PyObject* excludePredicateFun, // stolen reference
+        PyObject* excludeList, // stolen reference
+        PyObject* terminalValueFilter, // stolen reference
+        PyObject* traceback_type, // stolen reference
         PyObject* pythonTracebackToJsonFun
         );
 
@@ -57,6 +60,9 @@ public:
     static FreeVariableMemberAccessChain toChain(const PyObject*);
 
 private:
+    PyObjectWalker(const PyObjectWalker&) = delete;
+    void operator=(const PyObjectWalker&) = delete;
+
     int64_t _allocateId(PyObject* pyObject);
     void _walkPyObject(PyObject* pyObject, int64_t objectId);
     
@@ -84,8 +90,7 @@ private:
         mObjectRegistry.definePrimitive(objectId, t);
         }
 
-    bool _canMap(PyObject* pyObject) const;
-    PyObject* _pureInstanceReplacement(PyObject* pyObject);
+    PyObject* _pureInstanceReplacement(const PyObject* pyObject);
 
     /*
       Basically just calls FreeVariableResolver::resolveFreeVariableMemberAccessChainsInAst, which means this:
@@ -125,30 +130,22 @@ private:
     std::string _fileText(const std::string& filename) const;
     std::string _fileText(const PyObject* filename) const;
 
-    /*
-      Returns a valid PyObject, either None or a String,
-      or throws a std::runtime_error
-     */
-    PyObject* _getModulePathForObject(const PyObject* pyObject) const;
-
     PyObject* _pythonTracebackToJson(const PyObject* pyObject) const;
 
     // init functions called from ctor
-    void _initPyforaModule();
     void _initPythonSingletonToName();
     void _initRemotePythonObjectClass();
     void _initPackedHomogenousDataClass();
     void _initFutureClass();
     void _initWithBlockClass();
-    void _initGetPathToObjectFun();
     void _initUnconvertibleClass();
     void _initPyforaConnectHack();
 
     static bool _isPrimitive(const PyObject* pyObject);
     static bool _allPrimitives(const PyObject* pyList);
 
-    PyObject* mPurePythonClassMapping;
-    PyObject* mPyforaModule;
+    PureImplementationMappings mPureImplementationMappings;
+
     PyObject* mRemotePythonObjectClass;
     PyObject* mPackedHomogenousDataClass;
     PyObject* mFutureClass;
@@ -156,11 +153,12 @@ private:
     PyObject* mExcludeList;
     PyObject* mTerminalValueFilter;
     PyObject* mWithBlockClass;
-    PyObject* mGetPathToObjectFun;
     PyObject* mUnconvertibleClass;
     PyObject* mPyforaConnectHack;
     PyObject* mTracebackType;
     PyObject* mPythonTracebackToJsonFun;
+
+    ModuleLevelObjectIndex mModuleLevelObjectIndex;
 
     std::map<long, PyObject*> mConvertedObjectCache;
     std::map<PyObject*, int64_t> mPyObjectToObjectId;

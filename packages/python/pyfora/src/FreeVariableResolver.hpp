@@ -47,6 +47,9 @@ private:
     const PyObject* exclude_list;
     const PyObject* terminal_value_filter;
 
+    FreeVariableResolver(const FreeVariableResolver&) = delete;
+    void operator=(const FreeVariableResolver&) = delete;
+
     void _initPureFreeVariableResolver();
 
 };

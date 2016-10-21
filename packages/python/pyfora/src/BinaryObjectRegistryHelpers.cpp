@@ -23,7 +23,7 @@ BinaryObjectRegistryHelpers::BinaryObjectRegistryHelpers() :
         mComputedValueDataStringFun(0)
     {
     PyObject* binaryObjectRegistryHelpersModule = PyImport_ImportModule("pyfora.BinaryObjectRegistryHelpers");
-    if (binaryObjectRegistryHelpersModule == NULL) {
+    if (binaryObjectRegistryHelpersModule == nullptr) {
         throw std::runtime_error(
             "py error getting pyfora.BinaryObjectRegistryHelpers "
             "in BinaryObjectRegistryHelpers::BinaryObjectRegistryHelpers: " +
@@ -37,7 +37,7 @@ BinaryObjectRegistryHelpers::BinaryObjectRegistryHelpers() :
     
     Py_DECREF(binaryObjectRegistryHelpersModule);
 
-    if (mComputedValueDataStringFun == NULL) {
+    if (mComputedValueDataStringFun == nullptr) {
         throw std::runtime_error(
             "py error getting computedValueDataString in "
             "BinaryObjectRegistryHelpers::BinaryObjectRegistryHelpers: " +
@@ -53,11 +53,11 @@ PyObject* BinaryObjectRegistryHelpers::computedValueDataString(
     PyObject* tr = PyObject_CallFunctionObjArgs(
         _getInstance().mComputedValueDataStringFun,
         computedValueArg,
-        NULL
+        nullptr
         );
 
-    if (tr == NULL) {
-        return NULL;
+    if (tr == nullptr) {
+        return nullptr;
         }
 
     if (not PyString_Check(tr)) {
@@ -66,7 +66,7 @@ PyObject* BinaryObjectRegistryHelpers::computedValueDataString(
             "expected BinaryObjectRegistryHelpers.computedValueDataString "
             "to return a string"
             );
-        return NULL;
+        return nullptr;
         }
 
     return tr;
