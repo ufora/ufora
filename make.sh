@@ -136,7 +136,7 @@ container_env="--env UFORA_PERFORMANCE_TEST_RESULTS_FILE=$container_output_path$
 
 container_name=`uuidgen`
 
-container_options='--ulimit="core=-1"'
+container_options='--ulimit=core=-1'
 
 if [ ! -z "$TEST_LOOPER_MULTIBOX_IP_LIST" ]; then
     network_settings="--net=host"

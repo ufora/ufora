@@ -86,7 +86,7 @@ def cxx_include_options(cxx_opts):
     cxx_opts.add_option(
         '--add-system-include',
         action="append",
-        default=['/usr/lib/llvm-3.5/include','/usr/local/cuda-7.5/include'],
+        default=['/usr/lib/llvm-3.5/include','/usr/local/cuda-8.0/include'],
         dest='cxx_system_includes',
         help='add a directory to the system include path')
 
