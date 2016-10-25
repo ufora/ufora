@@ -15,8 +15,8 @@
 ****************************************************************************/
 #pragma once
 
-#include <boost/regex.hpp>
+#include <regex>
 #include "../Primitives/String.hppml"
 
-boost::regex getRegexFromCache(const String& inString);
+std::regex getRegexFromCache(const String& inString);
 

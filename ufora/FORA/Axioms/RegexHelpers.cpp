@@ -17,14 +17,14 @@
 
 #include "../../core/threading/ThreadSafeMap.hpp"
 
-boost::regex getRegexFromCache(const String& inString)
+std::regex getRegexFromCache(const String& inString)
 	{
 	//TODO BUG anybody: ensure that we don't get too many regexes and run out of RAM
-	static ThreadSafeMap<hash_type, boost::regex> parsedRegexes;
+	static ThreadSafeMap<hash_type, std::regex> parsedRegexes;
 
 	static ThreadSafeMap<hash_type, std::string> badRegexes;
 
-	Nullable<boost::regex> nRegex = parsedRegexes.get(inString.hash());
+	Nullable<std::regex> nRegex = parsedRegexes.get(inString.hash());
 	if (nRegex)
 		return *nRegex;
 
@@ -34,7 +34,7 @@ boost::regex getRegexFromCache(const String& inString)
 		throw std::logic_error(*nError);
 
 	try {
-		boost::regex regex(inString.c_str());
+		std::regex regex(inString.c_str());
 
 		parsedRegexes.set(
 			inString.hash(),
@@ -43,7 +43,7 @@ boost::regex getRegexFromCache(const String& inString)
 
 		return regex;
 		}
-	catch(boost::regex_error& err)
+	catch(std::regex_error& err)
 		{
 		badRegexes.set(inString.hash(), err.what());
 		throw std::logic_error(err.what());
