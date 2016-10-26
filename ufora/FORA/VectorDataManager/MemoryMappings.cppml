@@ -1,0 +1,211 @@
+/***************************************************************************
+    Copyright 2016 Ufora Inc.
+ 
+    Licensed under the Apache License, Version 2.0 (the "License");
+    you may not use this file except in compliance with the License.
+    You may obtain a copy of the License at
+ 
+        http://www.apache.org/licenses/LICENSE-2.0
+ 
+    Unless required by applicable law or agreed to in writing, software
+    distributed under the License is distributed on an "AS IS" BASIS,
+    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    See the License for the specific language governing permissions and
+    limitations under the License.
+****************************************************************************/
+
+#include "MemoryMappings.hppml"
+
+MemoryMappings::MemoryMappings(
+            AllocationZoneMapping& inZoneMappings,
+            PhysicalAllocations& inPhysicalAllocations,
+            boost::function<bool (uint8_t* sharedBase, uint64_t sharedOffset, uint8_t* mapBase, uint64_t mapOffset, uint64_t bytecount)> inMapper,
+            boost::function<bool (uint8_t* mapBase, uint64_t mapOffset, uint64_t bytecount)> inUnmapper
+            ) :
+        mMapper(inMapper),
+        mUnmapper(inUnmapper),
+        mZoneMappings(inZoneMappings),
+        mPhysicalAllocations(inPhysicalAllocations)
+    {
+    }
+
+void MemoryMappings::removeAllMappingsFor(PhysicalMemoryAllocation alloc)
+    {
+    for (auto objectAndRange: mMappings[alloc])
+        {
+        mUnmapper(
+            mPhysicalAllocations.getMappableAddress(objectAndRange.first),
+            objectAndRange.second.low(),
+            objectAndRange.second.size()
+            );
+        mBytesMapped[objectAndRange.first].removeRange(objectAndRange.second);
+        }
+
+    mMappings.erase(alloc);
+    }
+
+void MemoryMappings::blockedThreadExists(
+            BigvecOrPageId object, 
+            RangeToZoneMapping zoneMapping
+            )
+    {
+    lassert(zoneMapping.byteRangeInObject().size() == mZoneMappings.pageSize());
+
+    //see if this page is new or not
+    if (mZoneMappableRegions[zoneMapping.zoneContainingData()].rangeContaining(zoneMapping.byteRangeInZone().low()))
+        {
+        LOG_DEBUG << zoneMapping << " looks immediately mappable.";
+
+        //we can map it
+        ensureRangeMapped(object, zoneMapping);
+        }
+    else
+        {
+        LOG_DEBUG << zoneMapping << " not mappable: " << 
+            mZoneMappableRegions[zoneMapping.zoneContainingData()].getRangeStartsAndEnds();
+
+        mPendingMappings[zoneMapping.zoneContainingData()].push_back(make_pair(object, zoneMapping));
+        }
+    }
+
+void MemoryMappings::zoneNeeds(AllocationZone zone, IntegerRange byteRangeInZone, const std::vector<pair<Fora::PageId, IntegerRange> >& inNeededPageData)
+    {  
+    lassert(inNeededPageData.size());
+    lassert(mZonesAwaitingPageData.find(make_pair(zone,byteRangeInZone)) == mZonesAwaitingPageData.end());
+
+    for (auto pageAndRange: inNeededPageData)
+        {
+        mZonesAwaitingPageData[make_pair(zone,byteRangeInZone)][pageAndRange.first].addRange(pageAndRange.second);
+        mZonesAwaitingPageDataPages.insert(make_pair(zone,byteRangeInZone), pageAndRange.first);
+        }
+    }
+
+void MemoryMappings::pageDataProvided(Fora::PageId page, IntegerRange range)
+    {
+    std::set<pair<AllocationZone, IntegerRange> > toCheck = mZonesAwaitingPageDataPages.getKeys(page);
+
+    for (auto& zoneAndRange: toCheck)
+        {
+        mZonesAwaitingPageData[zoneAndRange][page].removeRange(range);
+        
+        if (mZonesAwaitingPageData[zoneAndRange][page].isEmpty())
+            {
+            mZonesAwaitingPageData[zoneAndRange].erase(page);
+            mZonesAwaitingPageDataPages.drop(zoneAndRange, page);
+            }
+
+        if (mZonesAwaitingPageData[zoneAndRange].size() == 0)
+            {
+            mZonesToTryToMap.push_back(zoneAndRange);
+            mZonesAwaitingPageData.erase(zoneAndRange);   
+            }
+        }
+    }
+
+void MemoryMappings::deallocatePhysicalMemory(PhysicalMemoryAllocation alloc)
+    {
+    lassert(mMappings.find(alloc) == mMappings.end());
+    lassert(mPendingMappings.find(alloc.zone()) == mPendingMappings.end());
+    
+    mZoneMappableRegions[alloc.zone()].removeRange(alloc.byteRange());
+    }
+
+void MemoryMappings::zoneIsNowMappable(AllocationZone zone, IntegerRange range)
+    {
+    mZoneMappableRegions[zone].addRange(range);
+
+    LOG_DEBUG << zone << " added " 
+        << range << ": " << mZoneMappableRegions[zone].getRangeStartsAndEnds();
+
+    std::vector<pair<BigvecOrPageId, RangeToZoneMapping> >& mappings = mPendingMappings[zone];
+
+    for (long k = 0; k < mappings.size(); k++)
+        if (mZoneMappableRegions[zone].completelyContainsRange(mappings[k].second.byteRangeInZone()))
+            {
+            ensureRangeMapped(mappings[k].first, mappings[k].second);
+            mappings.erase(mappings.begin() + k);
+            k--;
+            }
+
+    if (mappings.size() == 0)
+        mPendingMappings.erase(zone);
+    }
+
+void MemoryMappings::extractZonesToTryToMap(std::vector<pair<AllocationZone, IntegerRange> >& outZones)
+    {
+    outZones.clear();
+    std::swap(outZones, mZonesToTryToMap);
+    }
+
+bool MemoryMappings::hasZonesToTryToMap() const
+    {
+    return mZonesToTryToMap.size();
+    }
+
+bool MemoryMappings::byteIsMapped(BigvecOrPageId object, int64_t byteOffset)
+    {
+    return mBytesMapped[object].contains(byteOffset);
+    }
+
+void MemoryMappings::ensureRangeMapped(BigvecOrPageId object, RangeToZoneMapping mapping)
+    {
+    IntegerRange zoneInObject = mapping.byteRangeInObject();
+
+    std::vector<IntegerRange> bytesInObjectToMap;
+
+    mBytesMapped[object].rangesNotCovered(zoneInObject, bytesInObjectToMap);
+
+    for (auto range: bytesInObjectToMap)
+        {
+        mBytesMapped[object].addRange(range);
+
+        mapByteRange(object, mapping.restrictedToObjectRange(range));
+        }
+    }
+
+void MemoryMappings::mapByteRange(BigvecOrPageId object, RangeToZoneMapping mapping)
+    {
+    std::vector<IntegerRange> physicalRanges;
+
+    mPhysicalAllocations.allocationsForZone(mapping.zoneContainingData())
+        .rangesIntersecting(mapping.byteRangeInZone(), physicalRanges);
+
+    for (auto range: physicalRanges)
+        {
+        auto restricted = mapping.restrictedToZoneRange(range.intersect(mapping.byteRangeInZone()));
+
+        mapByteRange(
+            object, 
+            restricted.byteRangeInObject(),
+            PhysicalMemoryAllocation(mapping.zoneContainingData(), range),
+            restricted.byteRangeInZone() - range.low()
+            );
+        }
+    }
+
+void MemoryMappings::mapByteRange(BigvecOrPageId object, IntegerRange rangeInObject, PhysicalMemoryAllocation alloc, IntegerRange rangeInAlloc)
+    {
+    lassert(rangeInObject.size() == rangeInAlloc.size());
+
+    mMapper(
+        mPhysicalAllocations.addressForAllocation(alloc),
+        rangeInAlloc.low(),
+        mPhysicalAllocations.getMappableAddress(object),
+        rangeInObject.low(),
+        rangeInObject.size()
+        );
+
+    mMappings[alloc].push_back(make_pair(object, rangeInObject));
+    }
+
+bool MemoryMappings::zoneHasPendingMappings(AllocationZone zone) const
+    {
+    if (mPendingMappings.find(zone) != mPendingMappings.end())
+        return true;
+
+    for (auto& zoneAndRangePair: mZonesAwaitingPageData)
+        if (zoneAndRangePair.first.first == zone)
+            return true;
+
+    return false;
+    }

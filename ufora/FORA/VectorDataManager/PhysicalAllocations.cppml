@@ -1,0 +1,212 @@
+/***************************************************************************
+    Copyright 2016 Ufora Inc.
+ 
+    Licensed under the Apache License, Version 2.0 (the "License");
+    you may not use this file except in compliance with the License.
+    You may obtain a copy of the License at
+ 
+        http://www.apache.org/licenses/LICENSE-2.0
+ 
+    Unless required by applicable law or agreed to in writing, software
+    distributed under the License is distributed on an "AS IS" BASIS,
+    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    See the License for the specific language governing permissions and
+    limitations under the License.
+****************************************************************************/
+
+#include "PhysicalAllocations.hppml"
+
+PhysicalAllocations::PhysicalAllocations(
+            boost::function<uint8_t* (PhysicalMemoryAllocation alloc)> inAllocator,
+            boost::function<void (PhysicalMemoryAllocation alloc, uint8_t*)> inDeallocator
+            ) : 
+        mAllocateFunc(inAllocator),
+        mDeallocateFunc(inDeallocator),
+        mTotalBytesMapped(0),
+        mIncreasingIndex(0)
+    {
+    }
+
+Nullable<PhysicalMemoryAllocation> PhysicalAllocations::allocForAddress(uint8_t* addr) const
+    {
+    auto nRng = mPhysicalMemoryAddressesAsRanges.rangeContaining((int64_t)addr);
+    if (!nRng)
+        return null();
+
+    const auto& keys = mPhysicalMemoryAddresses.getKeys((uint8_t*)nRng->low());
+    lassert(keys.size() == 1);
+
+    return null() << *keys.begin();
+    }
+
+IntegerRanges<false>& PhysicalAllocations::allocationsForZone(AllocationZone zone)
+    {
+    return mZoneBytecountRangesPhysicallyAllocated[zone];
+    }
+
+uint8_t* PhysicalAllocations::addressForAllocation(PhysicalMemoryAllocation alloc)
+    {
+    return mPhysicalMemoryAddresses.getValue(alloc);
+    }
+
+int64_t PhysicalAllocations::countOfBigvecAllocs() const
+    {
+    return mBigvecAllocationOrder.size();
+    }
+
+Nullable<PhysicalMemoryAllocation> PhysicalAllocations::oldestBigvecAlloc()
+    {
+    if (!mBigvecAllocationOrder.size())
+        return null();
+
+    const auto& keys = mBigvecAllocationOrder.getKeys(mBigvecAllocationOrder.lowestValue());
+    lassert(keys.size() == 1);
+
+    return null() << *keys.begin();
+    }
+
+Nullable<Fora::PageId> PhysicalAllocations::getOldestPage()
+    {
+    if (!mPageZoneAllocations.size())
+        return null();
+
+    const auto& keys = mPageZoneAllocations.getKeys(mPageZoneAllocations.lowestValue());
+    lassert(keys.size() == 1);
+
+    return null() << *keys.begin();
+    }
+
+void PhysicalAllocations::removePageFromReplacementQueue(Fora::PageId page)
+    {
+    mPageZoneAllocations.discard(page);
+    }
+
+pair<PhysicalMemoryAllocation, int64_t> PhysicalAllocations::allocContaining(uint8_t* addr)
+    {
+    IntegerRange addressRange = *mPhysicalMemoryAddressesAsRanges.rangeContaining((int64_t)addr);
+
+    PhysicalMemoryAllocation alloc = *mPhysicalMemoryAddresses.getKeys((uint8_t*)addressRange.low()).begin();
+
+    return pair<PhysicalMemoryAllocation, int64_t>(alloc, addr - (uint8_t*)addressRange.low());
+    }
+
+void PhysicalAllocations::allocatePhysicalMemory(PhysicalMemoryAllocation allocation)
+    {
+    if (allocation.zone().isBigvec())
+        mBigvecAllocationOrder.set(allocation, mIncreasingIndex++);
+    else
+        mPageZoneAllocations.set(allocation.zone().getPage().page(), mIncreasingIndex++);
+    
+    mTotalBytesMapped += allocation.byteRange().size();
+
+    uint8_t* actualAddress = mAllocateFunc(allocation);
+
+    lassert(actualAddress);
+
+    mPhysicalMemoryAddresses.set(allocation, actualAddress);
+
+    mPhysicalMemoryAddressesAsRanges.addRange(
+        IntegerRange((int64_t)actualAddress, (int64_t)actualAddress + allocation.byteRange().size())
+        );
+
+    mZoneBytecountRangesPhysicallyAllocated[allocation.zone()].addRange(allocation.byteRange());
+    }
+
+void PhysicalAllocations::deallocatePhysicalMemory(PhysicalMemoryAllocation allocation)
+    {
+    lassert(!allocHasCopyTasks(allocation));
+    
+    if (allocation.zone().isBigvec())
+        mBigvecAllocationOrder.discard(allocation);
+
+    mTotalBytesMapped -= allocation.byteRange().size();
+    
+    uint8_t* actualAddress = mPhysicalMemoryAddresses.getValue(allocation);
+
+    mDeallocateFunc(allocation, actualAddress);
+
+    mPhysicalMemoryAddresses.discard(allocation);
+
+    mPhysicalMemoryAddressesAsRanges.removeRange(
+        IntegerRange((int64_t)actualAddress, (int64_t)actualAddress + allocation.byteRange().size())
+        );
+
+    mZoneBytecountRangesPhysicallyAllocated[allocation.zone()].removeRange(allocation.byteRange());
+    }
+
+void PhysicalAllocations::setMappableAddress(
+            BigvecOrPageId target, 
+            uint8_t* address, 
+            uint64_t bytecount
+            )
+    {
+    mMappingAddresses.set(target, address);
+    }
+
+uint8_t* PhysicalAllocations::getMappableAddress(BigvecOrPageId target)
+    {
+    if (mMappingAddresses.hasKey(target))
+        return mMappingAddresses.getValue(target);
+
+    return nullptr;
+    }
+
+void PhysicalAllocations::dropMappingTarget(BigvecOrPageId target)
+    {
+    mMappingAddresses.discard(target);
+    }
+
+Nullable<pair<BigvecOrPageId, int64_t> > 
+        PhysicalAllocations::translateMappingAddress(uint8_t* mappingBase, uint64_t offsetInMapping)
+    {
+    if (mMappingAddresses.size() == 0)
+        return null();
+
+    if (mMappingAddresses.getKeys(mappingBase).size() == 0)
+        return null();
+
+    lassert(mMappingAddresses.getKeys(mappingBase).size() == 1);
+
+    return null() << make_pair(*mMappingAddresses.getKeys(mappingBase).begin(), (int64_t)offsetInMapping);
+    }
+
+int64_t PhysicalAllocations::totalBytesMapped() const
+    {
+    return mTotalBytesMapped;
+    }
+
+bool PhysicalAllocations::allocHasCopyTasks(PhysicalMemoryAllocation alloc) const
+    {
+    return mPhysicalAllocCopyTaskCount.find(alloc) != mPhysicalAllocCopyTaskCount.end();
+    }
+
+bool PhysicalAllocations::pageHasCopyTasks(Fora::PageId page) const
+    {
+    return mPageAllocZoneCopyTaskCount.find(page) != mPageAllocZoneCopyTaskCount.end();
+    }
+
+void PhysicalAllocations::copyAddressRefcountChange(uint8_t* addr, Nullable<PhysicalMemoryAllocation> givenAlloc, int64_t direction)
+    {
+    Nullable<PhysicalMemoryAllocation> alloc = allocForAddress(addr);
+
+    lassert(givenAlloc == alloc);
+    
+    if (alloc)
+        {
+        mPhysicalAllocCopyTaskCount[*alloc] += direction;
+        lassert(mPhysicalAllocCopyTaskCount[*alloc] >= 0);
+
+        if (mPhysicalAllocCopyTaskCount[*alloc] == 0)
+            mPhysicalAllocCopyTaskCount.erase(*alloc);
+
+        if (alloc->zone().isPage())
+            {
+            Fora::PageId page = alloc->zone().getPage().page();
+            mPageAllocZoneCopyTaskCount[page] += direction;
+            lassert(mPageAllocZoneCopyTaskCount[page] >= 0);
+
+            if (mPageAllocZoneCopyTaskCount[page] <= 0)
+                mPageAllocZoneCopyTaskCount.erase(page);
+            }
+        }
+    }
