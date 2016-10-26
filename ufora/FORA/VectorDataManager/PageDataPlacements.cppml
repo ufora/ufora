@@ -23,13 +23,18 @@ PageDataPlacements::PageDataPlacements(
                         boost::function<uint8_t* (PhysicalMemoryAllocation alloc)> inAllocator,
                         boost::function<void (PhysicalMemoryAllocation alloc, uint8_t*)> inDeallocator,
                         boost::function<bool (uint8_t* sharedBase, uint64_t sharedOffset, uint8_t* mapBase, uint64_t mapOffset, uint64_t bytecount)> inMapper,
-                        boost::function<void (Fora::PageId page, IntegerRange bytecountRange)> inBroadcaster
+                        boost::function<bool (uint8_t* mapBase, uint64_t mapOffset, uint64_t bytecount)> inUnmapper,
+                        boost::function<void (Fora::PageId page, IntegerRange bytecountRange)> inBroadcaster,
+                        int64_t maxExcessBytes,
+                        int64_t maxBigvecAllocations
                         ) : 
                     mBroadcastFunc(inBroadcaster),
                     mPageSize(pageSize),
                     mAllocationZoneMapping(pageSize),
                     mPhysicalAllocations(inAllocator, inDeallocator),
-                    mMemoryMappings(mAllocationZoneMapping, mPhysicalAllocations, inMapper)
+                    mMemoryMappings(mAllocationZoneMapping, mPhysicalAllocations, inMapper, inUnmapper),
+                    mMaxExcessBytes(maxExcessBytes),
+                    mMaxBigvecAllocations(maxBigvecAllocations)
     {
     }
 
@@ -91,6 +96,8 @@ void PageDataPlacements::markThreadBlockedOn(BigvecOrPageId object, int64_t byte
         -| _ ->> {}
 
     tryToConstructZone(zoneMapping.zoneContainingData(), zoneMapping.byteRangeInZone());
+
+    releaseMemoryIfNecessary();
     }
 
 void PageDataPlacements::tryToConstructZone(AllocationZone zone, IntegerRange byteRangeInZone)
@@ -273,6 +280,9 @@ void PageDataPlacements::scheduleCopyTask(PhysicalMemoryAllocation destAlloc, Al
 
 void PageDataPlacements::taskComplete(DataCopyTask task)
     {
+    mPhysicalAllocations.copyAddressRefcountChange(task.dest(), -1);
+    mPhysicalAllocations.copyAddressRefcountChange(task.source(), -1);
+
     uint8_t* destLow = task.dest();
     int64_t bytesPopulated = task.bytecount();
 
@@ -323,11 +333,51 @@ void PageDataPlacements::taskComplete(DataCopyTask task)
 
     for (auto z: zonesToTryToMap)
         tryToConstructZone(z.first, z.second);
+
+    releaseMemoryIfNecessary();
+    }
+
+void PageDataPlacements::releaseMemoryIfNecessary()
+    {
+    releaseBigvecsIfNecessary();
+    consolidatePagesIfNecessary();
+    }
+
+void PageDataPlacements::consolidatePagesIfNecessary()
+    {
+    }
+
+void PageDataPlacements::releaseBigvecsIfNecessary()
+    {
+    while (mPhysicalAllocations.countOfBigvecAllocs() > mMaxBigvecAllocations)
+        {
+        Nullable<PhysicalMemoryAllocation> alloc = mPhysicalAllocations.oldestBigvecAlloc();
+
+        if (alloc)
+            {
+            //we have to stop and wait for the copy task to finish
+            if (mPhysicalAllocations.allocHasCopyTasks(*alloc))
+                return;
+                
+            lassert(!mMemoryMappings.hasZonesToTryToMap());
+
+            //we can safely delete this bigvec
+            mMemoryMappings.removeAllMappingsFor(*alloc);
+
+            //now deallocate it
+            mPhysicalAllocations.deallocatePhysicalMemory(*alloc);
+            mPhysicalMemoryBytecountRangesPopulated.erase(*alloc);
+            mZoneBytecountRangesPopulated[alloc->zone()].removeRange(alloc->byteRange());
+            mMemoryMappings.zoneRangeNotMappable(alloc->zone(), alloc->byteRange());
+            }
+        }
     }
 
 void PageDataPlacements::scheduleTask(DataCopyTask task)
     {
     lassert(task.bytecount() > 0);
+    mPhysicalAllocations.copyAddressRefcountChange(task.dest(), 1);
+    mPhysicalAllocations.copyAddressRefcountChange(task.source(), 1);
     mTasks.push_back(task);
     }
 

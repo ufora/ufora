@@ -95,7 +95,8 @@ OnDemandMemoryRegions::OnDemandMemoryRegions(
 		mOnThreadBlocked(inOnThreadBlocked),
 		mOnExtractCurrentBlockedThreadInfo(inOnExtractCurrentBlockedThreadInfo),
 		mTotalBytesShared(0),
-		mTotalBytesMappable(0)
+		mTotalBytesMappable(0),
+		mIndex(0)
 	{
 		{
 		boost::mutex::scoped_lock lock(singletonMutex);
@@ -312,7 +313,7 @@ uint8_t* OnDemandMemoryRegions::allocateSharedRegion(uint64_t bytecount)
 	{
 	boost::mutex::scoped_lock lock(mMutex);
 
-	std::string segmentName = mSharedMemoryPrefix + "_" + boost::lexical_cast<std::string>(mSharedMemoryRecords.size());
+	std::string segmentName = mSharedMemoryPrefix + "_" + boost::lexical_cast<std::string>(mIndex++);
 
 	int shm_fd = shm_open(segmentName.c_str(), O_RDWR | O_CREAT, 0x777);
 
@@ -367,6 +368,10 @@ void OnDemandMemoryRegions::freeSharedRegion(uint8_t* addr)
 		LOG_CRITICAL << "munmap failed: " << strerror(errno);
 		lassert(false);
 		}
+
+	close(it->second.fileDescriptor());
+
+	shm_unlink(it->second.name().c_str());
 
 	mSharedMemoryRecords.erase(it);
 	}
@@ -484,7 +489,24 @@ bool OnDemandMemoryRegions::unmap(
 
 	mMappedMemoryRecords.erase(it);
 
-	return ::munmap(mappableRegion + mappableRegionOffset, bytesToMap) == 0;
+	//reset the mapping for this portion of the object to something reasonable
+	uint8_t* blockStart = 
+		(uint8_t*)::mmap(
+			mappableRegion + mappableRegionOffset, 
+			bytesToMap,
+			PROT_NONE, 
+			MAP_ANONYMOUS | MAP_PRIVATE | MAP_FIXED, 
+			-1, 
+			0
+			);
+
+	if (blockStart != mappableRegion + mappableRegionOffset)
+		{
+		LOG_CRITICAL << "resetting shared map region failed: " << strerror(errno);
+		lassert(false);
+		}
+
+	return true;
 	}
 
 uint64_t OnDemandMemoryRegions::bytesOfMappableRegions() const
