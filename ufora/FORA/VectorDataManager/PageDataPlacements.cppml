@@ -15,6 +15,7 @@
 ****************************************************************************/
 
 #include "PageDataPlacements.hppml"
+#include "../../core/math/Largest.hpp"
 
 using namespace TypedFora::Abi;
 
@@ -34,7 +35,8 @@ PageDataPlacements::PageDataPlacements(
                     mPhysicalAllocations(inAllocator, inDeallocator),
                     mMemoryMappings(mAllocationZoneMapping, mPhysicalAllocations, inMapper, inUnmapper),
                     mMaxExcessBytes(maxExcessBytes),
-                    mMaxBigvecAllocations(maxBigvecAllocations)
+                    mMaxBigvecAllocations(maxBigvecAllocations),
+                    mTotalBytesOfPageDataHeld(0)
     {
     }
 
@@ -153,13 +155,15 @@ void PageDataPlacements::scheduleNecessaryTasksForMapping(AllocationZone zone, I
         if (padding.size())
             {
             mZoneBytecountRangesPopulated[zone].addRange(padding + alloc.byteRange().low());
+            mZoneBytecountRangesPopulatedOrPending[zone].addRange(padding + alloc.byteRange().low());
+
             mPhysicalMemoryBytecountRangesPopulated[alloc].addRange(padding);
             }
         }
 
     std::vector<IntegerRange> neededBytecountRanges;
 
-    mZoneBytecountRangesPopulated[zone].rangesNotCovered(byteRangeInZone, neededBytecountRanges);
+    mZoneBytecountRangesPopulatedOrPending[zone].rangesNotCovered(byteRangeInZone, neededBytecountRanges);
 
     for (auto neededBytesInZone: neededBytecountRanges)
         {
@@ -197,21 +201,31 @@ void PageDataPlacements::scheduleCopyTask(AllocationZone zone, ZoneToPageMapping
     for (auto physicalRange: allocatedRanges)
         {
         IntegerRange bytesInZone = zonePageMapping.byteRangeInZone().intersect(physicalRange);
-        IntegerRange bytesInPhysicalRange = bytesInZone - physicalRange.low();
 
-        IntegerRange bytesInPage = zonePageMapping.mapZoneSubrangeToPage(bytesInZone);
+        //now restrict to bytes that are not already populated
+        std::vector<IntegerRange> bytesInZoneNotPopulated;
+        mZoneBytecountRangesPopulated[zone].rangesNotCovered(bytesInZone, bytesInZoneNotPopulated);
 
-        scheduleCopyTask(
-            PhysicalMemoryAllocation(
-                zone,
-                physicalRange
-                ),
-            AllocationToPageMapping(
-                bytesInPhysicalRange,
-                zonePageMapping.page(),
-                bytesInPage
-                )
-            );
+        for (auto notPopulated: bytesInZoneNotPopulated)
+            {
+            mZoneBytecountRangesPopulatedOrPending[zone].addRange(notPopulated);
+
+            IntegerRange bytesInPhysicalRange = notPopulated - physicalRange.low();
+
+            IntegerRange bytesInPage = zonePageMapping.mapZoneSubrangeToPage(notPopulated);
+
+            scheduleCopyTask(
+                PhysicalMemoryAllocation(
+                    zone,
+                    physicalRange
+                    ),
+                AllocationToPageMapping(
+                    bytesInPhysicalRange,
+                    zonePageMapping.page(),
+                    bytesInPage
+                    )
+                );
+            }
         }
     }
 
@@ -258,6 +272,8 @@ void PageDataPlacements::scheduleCopyTask(PhysicalMemoryAllocation destAlloc, Al
                         DataCopyTask(
                             mPhysicalAllocations.addressForAllocation(destAlloc) + bytesToCopyTo.low(),
                             mPhysicalAllocations.addressForAllocation(sourceAlloc) + bytesToCopyFromPhysicalZone.low(),
+                            null() << destAlloc,
+                            null() << sourceAlloc,
                             bytesToCopyTo.size()
                             )
                         );
@@ -280,8 +296,8 @@ void PageDataPlacements::scheduleCopyTask(PhysicalMemoryAllocation destAlloc, Al
 
 void PageDataPlacements::taskComplete(DataCopyTask task)
     {
-    mPhysicalAllocations.copyAddressRefcountChange(task.dest(), -1);
-    mPhysicalAllocations.copyAddressRefcountChange(task.source(), -1);
+    mPhysicalAllocations.copyAddressRefcountChange(task.dest(), task.destAlloc(), -1);
+    mPhysicalAllocations.copyAddressRefcountChange(task.source(), task.sourceAlloc(), -1);
 
     uint8_t* destLow = task.dest();
     int64_t bytesPopulated = task.bytecount();
@@ -305,11 +321,17 @@ void PageDataPlacements::taskComplete(DataCopyTask task)
 
     if (alloc.zone().isPage())
         {
+        Fora::PageId page = alloc.zone().getPage().page();
+
         IntegerRange pageBytesAllocated = zoneBytesPopulated - alloc.zone().getPage().byteOffset();
 
-        mPageDataBytecountRangesDefined[alloc.zone().getPage().page()].addRange(pageBytesAllocated);
-        mPageDataBytecountRangesDefinedOrRequested[alloc.zone().getPage().page()].addRange(pageBytesAllocated);
-        mMemoryMappings.pageDataProvided(alloc.zone().getPage().page(), pageBytesAllocated);
+        mPageDataBytecountRangesDefined[page].addRange(pageBytesAllocated);
+
+        mTotalBytesOfPageDataHeld += mPageDataBytecountRangesDefined[page].total() - mPerPageBytesHeld[page];
+        mPerPageBytesHeld[page] = mPageDataBytecountRangesDefined[page].total();
+
+        mPageDataBytecountRangesDefinedOrRequested[page].addRange(pageBytesAllocated);
+        mMemoryMappings.pageDataProvided(page, pageBytesAllocated);
         }
 
     mPhysicalMemoryBytecountRangesPopulated[alloc].addRange(allocBytesPopulated);
@@ -345,6 +367,123 @@ void PageDataPlacements::releaseMemoryIfNecessary()
 
 void PageDataPlacements::consolidatePagesIfNecessary()
     {
+    while (mPhysicalAllocations.totalBytesMapped() > mTotalBytesOfPageDataHeld + mMaxExcessBytes)
+        {
+        Nullable<Fora::PageId> page = mPhysicalAllocations.getOldestPage();
+        if (!page)
+            return;
+
+        if (mPhysicalAllocations.pageHasCopyTasks(*page))
+            return;
+
+        Largest<AllocationZone, int64_t> zones;
+
+        //pick the allocation zone with the most data populated in it - that'll be our target page
+        //if any of these zones have pending mappings, we can't consolidate
+        for (auto allocationZoneAndRefcount: mAllocationZoneMapping.zonesActiveForPage(*page))
+            {
+            if (mMemoryMappings.zoneHasPendingMappings(allocationZoneAndRefcount.first))
+                return;
+
+            zones.observe(
+                allocationZoneAndRefcount.first, 
+                mZoneBytecountRangesPopulated[allocationZoneAndRefcount.first].total()
+                );
+            }
+
+
+        //schedule copy tasks moving all populated data into the populated zone
+        if (!zones.largest())
+            {
+            //this page is dead
+            mPhysicalAllocations.removePageFromReplacementQueue(*page);
+            }
+        else
+            {
+            AllocationZone targetZone = *zones.largest();
+
+            bool scheduledAnything = false;
+
+            for (auto allocationZoneAndRefcount: mAllocationZoneMapping.zonesActiveForPage(*page))
+                if (allocationZoneAndRefcount.first != targetZone)
+                    if (scheduleCopyAllDataBetweenZones(allocationZoneAndRefcount.first, targetZone))
+                        scheduledAnything = true;
+
+            if (scheduledAnything)
+                return;
+            
+            //we can remove all data for all zones other than the one we want
+            for (auto allocationZoneAndRefcount: mAllocationZoneMapping.zonesActiveForPage(*page))
+                if (allocationZoneAndRefcount.first != targetZone)
+                    completelyRemoveZone(allocationZoneAndRefcount.first);
+
+            mPhysicalAllocations.removePageFromReplacementQueue(*page);
+            }
+        }
+    }
+
+bool PageDataPlacements::scheduleCopyAllDataBetweenZones(AllocationZone sourceZone, AllocationZone destZone)
+    {
+    lassert(sourceZone.isPage());
+    lassert(destZone.isPage());
+
+    int64_t sourceToDestOffset = destZone.getPage().byteOffset() - sourceZone.getPage().byteOffset();
+
+    IntegerRanges<true> rangesToPopulate;
+
+    for (auto startAndEnd: mZoneBytecountRangesPopulated[sourceZone].getRangeStartsAndEnds())
+        {
+        IntegerRange range(startAndEnd.first, startAndEnd.second);
+
+        std::vector<IntegerRange> notCoveredInDest;
+
+        mZoneBytecountRangesPopulatedOrPending[destZone].rangesNotCovered(range + sourceToDestOffset, notCoveredInDest);
+
+        for (auto rng: notCoveredInDest)
+            rangesToPopulate.addRange(expandRangeToPageSize(rng, 1));
+        }
+
+    if (rangesToPopulate.isEmpty())
+        return false;
+
+    for (auto startAndEnd: rangesToPopulate.getRangeStartsAndEnds())
+        {
+        IntegerRange range(startAndEnd.first, startAndEnd.second);
+
+        std::vector<IntegerRange> notCoveredInDestPhysically;
+
+        //restrict to a set of ranges that cover what we need.
+        mPhysicalAllocations.allocationsForZone(destZone)
+            .rangesNotCovered(range, notCoveredInDestPhysically);
+
+        //each one becomes a new physical allocation we need to make
+        for (auto rng: notCoveredInDestPhysically)
+            mPhysicalAllocations.allocatePhysicalMemory(
+                PhysicalMemoryAllocation(
+                    destZone, 
+                    rng
+                    )
+                );
+        }
+
+    for (auto startAndEnd: mZoneBytecountRangesPopulated[sourceZone].getRangeStartsAndEnds())
+        {
+        IntegerRange range(startAndEnd.first, startAndEnd.second);
+
+        std::vector<IntegerRange> notCoveredInDest;
+
+        mZoneBytecountRangesPopulatedOrPending[destZone].rangesNotCovered(range + sourceToDestOffset, notCoveredInDest);
+
+        for (auto rng: notCoveredInDest)
+            {
+            scheduleCopyTask(
+                destZone, 
+                ZoneToPageMapping(rng, sourceZone.getPage().page(), rng - destZone.getPage().byteOffset())
+                );
+            }
+        }
+
+    return true;
     }
 
 void PageDataPlacements::releaseBigvecsIfNecessary()
@@ -353,31 +492,52 @@ void PageDataPlacements::releaseBigvecsIfNecessary()
         {
         Nullable<PhysicalMemoryAllocation> alloc = mPhysicalAllocations.oldestBigvecAlloc();
 
-        if (alloc)
-            {
-            //we have to stop and wait for the copy task to finish
-            if (mPhysicalAllocations.allocHasCopyTasks(*alloc))
-                return;
-                
-            lassert(!mMemoryMappings.hasZonesToTryToMap());
+        lassert(alloc);
 
-            //we can safely delete this bigvec
-            mMemoryMappings.removeAllMappingsFor(*alloc);
+        //we have to stop and wait for the copy task to finish
+        if (mPhysicalAllocations.allocHasCopyTasks(*alloc) || mMemoryMappings.zoneHasPendingMappings(alloc->zone()))
+            return;
+            
+        lassert(!mMemoryMappings.hasZonesToTryToMap());
 
-            //now deallocate it
-            mPhysicalAllocations.deallocatePhysicalMemory(*alloc);
-            mPhysicalMemoryBytecountRangesPopulated.erase(*alloc);
-            mZoneBytecountRangesPopulated[alloc->zone()].removeRange(alloc->byteRange());
-            mMemoryMappings.zoneRangeNotMappable(alloc->zone(), alloc->byteRange());
-            }
+        //we can safely delete this bigvec
+        completelyRemovePhysicalAlloc(*alloc);
         }
+    }
+
+void PageDataPlacements::completelyRemoveZone(AllocationZone zone)
+    {
+    while (!mPhysicalAllocations.allocationsForZone(zone).isEmpty())
+        {
+        auto startAndEnd = *mPhysicalAllocations.allocationsForZone(zone).getRangeStartsAndEnds().begin();
+        IntegerRange physicalRange(startAndEnd.first, startAndEnd.second);
+
+        completelyRemovePhysicalAlloc(PhysicalMemoryAllocation(zone, physicalRange));
+        }
+    }
+
+void PageDataPlacements::completelyRemovePhysicalAlloc(PhysicalMemoryAllocation alloc)
+    {
+    lassert(!mPhysicalAllocations.allocHasCopyTasks(alloc));
+
+    mMemoryMappings.removeAllMappingsFor(alloc);
+
+    //now deallocate it
+    mPhysicalAllocations.deallocatePhysicalMemory(alloc);
+    mPhysicalMemoryBytecountRangesPopulated.erase(alloc);
+    mZoneBytecountRangesPopulated[alloc.zone()].removeRange(alloc.byteRange());
+    mZoneBytecountRangesPopulatedOrPending[alloc.zone()].removeRange(alloc.byteRange());
+    
+    mMemoryMappings.deallocatePhysicalMemory(alloc);
     }
 
 void PageDataPlacements::scheduleTask(DataCopyTask task)
     {
+    lassert(task.destAlloc() != task.sourceAlloc());
+
     lassert(task.bytecount() > 0);
-    mPhysicalAllocations.copyAddressRefcountChange(task.dest(), 1);
-    mPhysicalAllocations.copyAddressRefcountChange(task.source(), 1);
+    mPhysicalAllocations.copyAddressRefcountChange(task.dest(), task.destAlloc(), 1);
+    mPhysicalAllocations.copyAddressRefcountChange(task.source(), task.sourceAlloc(), 1);
     mTasks.push_back(task);
     }
 
@@ -497,6 +657,8 @@ bool PageDataPlacements::allocatePageData(
                 DataCopyTask(
                     allocAddr + intersection.low() - physicalBytecountRange.low(),
                     addr + intersection.low() - incomingByteRange.low(),
+                    null() << alloc,
+                    null(),
                     intersection.size()
                     )
                 );
@@ -517,6 +679,19 @@ Nullable<DataCopyTask> PageDataPlacements::extractTask()
         {
         DataCopyTask t = *mTasks.begin();
         mTasks.pop_front();
+
+        if (t.destAlloc())
+            {
+            lassert(mPhysicalAllocations.allocHasCopyTasks(*t.destAlloc()));
+            lassert(mPhysicalAllocations.addressForAllocation(*t.destAlloc()));
+            }
+
+        if (t.sourceAlloc())
+            {
+            lassert(mPhysicalAllocations.allocHasCopyTasks(*t.sourceAlloc()));
+            lassert(mPhysicalAllocations.addressForAllocation(*t.sourceAlloc()));
+            }
+
         return null() << t;
         }
 

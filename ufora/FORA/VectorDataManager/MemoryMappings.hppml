@@ -1,0 +1,85 @@
+/***************************************************************************
+    Copyright 2016 Ufora Inc.
+ 
+    Licensed under the Apache License, Version 2.0 (the "License");
+    you may not use this file except in compliance with the License.
+    You may obtain a copy of the License at
+ 
+        http://www.apache.org/licenses/LICENSE-2.0
+ 
+    Unless required by applicable law or agreed to in writing, software
+    distributed under the License is distributed on an "AS IS" BASIS,
+    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    See the License for the specific language governing permissions and
+    limitations under the License.
+****************************************************************************/
+
+#include "AllocationZoneMapping.hppml"
+#include "PhysicalAllocations.hppml"
+
+class MemoryMappings {
+public:
+    MemoryMappings(
+                AllocationZoneMapping& inZoneMappings,
+                PhysicalAllocations& inPhysicalAllocations,
+                boost::function<bool (uint8_t* sharedBase, uint64_t sharedOffset, uint8_t* mapBase, uint64_t mapOffset, uint64_t bytecount)> inMapper,
+                boost::function<bool (uint8_t* mapBase, uint64_t mapOffset, uint64_t bytecount)> inUnmapper
+                );
+
+    void removeAllMappingsFor(PhysicalMemoryAllocation alloc);
+
+    //indicate that a thread is blocking on a page. The given zone should always be exactly one
+    //physical page in an AllocationZone.
+    void blockedThreadExists(
+                BigvecOrPageId object, 
+                RangeToZoneMapping zoneMapping
+                );
+
+    //indicate that to be able to instantiate a byte range, we'll actually need some page data
+    void zoneNeeds(AllocationZone zone, IntegerRange byteRangeInZone, const std::vector<pair<Fora::PageId, IntegerRange> >& inNeededPageData);
+
+    void pageDataProvided(Fora::PageId page, IntegerRange range);
+
+    void deallocatePhysicalMemory(PhysicalMemoryAllocation zone);
+
+    void zoneIsNowMappable(AllocationZone zone, IntegerRange range);
+
+    void extractZonesToTryToMap(std::vector<pair<AllocationZone, IntegerRange> >& outZones);
+
+    bool hasZonesToTryToMap() const;
+
+    bool byteIsMapped(BigvecOrPageId object, int64_t byteOffset);
+
+    bool zoneHasPendingMappings(AllocationZone zone) const;
+
+private:
+    void ensureRangeMapped(BigvecOrPageId object, RangeToZoneMapping mapping);
+
+    void mapByteRange(BigvecOrPageId object, RangeToZoneMapping mapping);
+
+    void mapByteRange(BigvecOrPageId object, IntegerRange rangeInObject, PhysicalMemoryAllocation alloc, IntegerRange rangeInAlloc);
+
+    AllocationZoneMapping& mZoneMappings;
+
+    PhysicalAllocations& mPhysicalAllocations;
+
+    boost::function<bool (uint8_t* sharedBase, uint64_t sharedOffset, uint8_t* mapBase, uint64_t mapOffset, uint64_t bytecount)> mMapper;
+
+    boost::function<bool (uint8_t* mapBase, uint64_t mapOffset, uint64_t bytecount)> mUnmapper;
+
+    //state machine for zones that want to wake up when page data is provided from the outside
+    std::map<pair<AllocationZone, IntegerRange>, std::map<Fora::PageId, IntegerRanges<true> > >  mZonesAwaitingPageData;
+
+    TwoWaySetMap<pair<AllocationZone, IntegerRange>, Fora::PageId> mZonesAwaitingPageDataPages;
+
+    std::vector<pair<AllocationZone, IntegerRange> > mZonesToTryToMap;
+
+    std::map<BigvecOrPageId, IntegerRanges<true> > mBytesMapped;
+
+    std::map<AllocationZone, IntegerRanges<true> > mZoneMappableRegions;
+
+    //mappings we'd like to apply as soon as various copy operations complete
+    std::map<AllocationZone, std::vector<pair<BigvecOrPageId, RangeToZoneMapping> > > mPendingMappings;
+
+    std::map<PhysicalMemoryAllocation, std::vector<pair<BigvecOrPageId, IntegerRange> > > mMappings;
+};
