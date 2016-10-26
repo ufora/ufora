@@ -23,6 +23,25 @@
 #include "../../core/math/RangeToIntegerSequence.hppml"
 #include "../../core/math/IntegerRanges.hppml"
 
+/**************
+
+This class tracks the relationship between blocks of physical memory we've allocated
+in shared memory pools, the data we have placed in them, and the mappings we've applied.
+
+This class takes care of several things:
+    * we need to keep track of which physical memory holds what data currently
+    * we need to be able to tell in what locations the vector data we've already
+        placed lives so we can get it back if need be.
+    * when new vector data shows up, we need to figure out an ideal place to store it.
+        this means looping over the various bigvecs that could hold it and seeing if
+        we have storage allocated already for it.
+    * when we want to map data for an address, we want to see if we already have storage
+        for mappable for that page. if we can map it directly we do it immediately, but we may
+        need to make an extra copy of the data.
+
+***************/
+
+
 @type BigvecOrPageId = 
     -| Bigvec of Fora::BigVectorId bigvec
     -| Page of Fora::PageId page
@@ -405,8 +424,6 @@ private:
 
     map<Fora::BigVectorId, map<int64_t, TypedFora::Abi::VectorDataIDSlice> > mBigvecSliceMapping;
 
-    MapWithIndex<pair<BigvecOrPageId, int64_t>, pair<PhysicalMemoryAllocation, int64_t> > mMapsPendingDataAcquisition;
-
     map<Fora::BigVectorId, IntegerRanges<false> > mBigvecPageBoundaries;
 
     map<Fora::BigVectorId, IntegerRanges<false> > mBigvecZoneBoundaries;
@@ -423,8 +440,22 @@ public:
                 boost::function<void (PhysicalMemoryAllocation alloc, uint8_t*)> inDeallocator
                 ) : 
             mAllocateFunc(inAllocator),
-            mDeallocateFunc(inDeallocator)
+            mDeallocateFunc(inDeallocator),
+            mTotalBytesMapped(0),
+            mIncreasingIndex(0)
         {
+        }
+
+    Nullable<PhysicalMemoryAllocation> allocForAddress(uint8_t* addr) const
+        {
+        auto nRng = mPhysicalMemoryAddressesAsRanges.rangeContaining((int64_t)addr);
+        if (!nRng)
+            return null();
+
+        const auto& keys = mPhysicalMemoryAddresses.getKeys((uint8_t*)nRng->low());
+        lassert(keys.size() == 1);
+
+        return null() << *keys.begin();
         }
 
     IntegerRanges<false>& allocationsForZone(AllocationZone zone)
@@ -435,6 +466,38 @@ public:
     uint8_t* addressForAllocation(PhysicalMemoryAllocation alloc)
         {
         return mPhysicalMemoryAddresses.getValue(alloc);
+        }
+
+    int64_t countOfBigvecAllocs() const
+        {
+        return mBigvecAllocationOrder.size();
+        }
+
+    Nullable<PhysicalMemoryAllocation> oldestBigvecAlloc()
+        {
+        if (!mBigvecAllocationOrder.size())
+            return null();
+
+        const auto& keys = mBigvecAllocationOrder.getKeys(mBigvecAllocationOrder.lowestValue());
+        lassert(keys.size() == 1);
+
+        return null() << *keys.begin();
+        }
+
+    Nullable<Fora::PageId> getOldestPage()
+        {
+        if (!mPageZoneAllocations.size())
+            return null();
+
+        const auto& keys = mPageZoneAllocations.getKeys(mPageZoneAllocations.lowestValue());
+        lassert(keys.size() == 1);
+
+        return null() << *keys.begin();
+        }
+
+    void replacePageOnTopOfQueue(Fora::PageId page)
+        {
+        mPageZoneAllocations.set(page, mIncreasingIndex++);
         }
 
     pair<PhysicalMemoryAllocation, int64_t> allocContaining(uint8_t* addr)
@@ -448,10 +511,19 @@ public:
 
     void allocatePhysicalMemory(PhysicalMemoryAllocation allocation)
         {
+        if (allocation.zone().isBigvec())
+            mBigvecAllocationOrder.set(allocation, mIncreasingIndex++);
+        else
+            mPageZoneAllocations.set(allocation.zone().getPage().page(), mIncreasingIndex++);
+        
+        mTotalBytesMapped += allocation.byteRange().size();
+
         uint8_t* actualAddress = mAllocateFunc(allocation);
+
         lassert(actualAddress);
 
         mPhysicalMemoryAddresses.set(allocation, actualAddress);
+
         mPhysicalMemoryAddressesAsRanges.addRange(
             IntegerRange((int64_t)actualAddress, (int64_t)actualAddress + allocation.byteRange().size())
             );
@@ -461,11 +533,17 @@ public:
 
     void deallocatePhysicalMemory(PhysicalMemoryAllocation allocation)
         {
+        if (allocation.zone().isBigvec())
+            mBigvecAllocationOrder.discard(allocation);
+
+        mTotalBytesMapped -= allocation.byteRange().size();
+        
         uint8_t* actualAddress = mPhysicalMemoryAddresses.getValue(allocation);
 
         mDeallocateFunc(allocation, actualAddress);
 
         mPhysicalMemoryAddresses.discard(allocation);
+
         mPhysicalMemoryAddressesAsRanges.removeRange(
             IntegerRange((int64_t)actualAddress, (int64_t)actualAddress + allocation.byteRange().size())
             );
@@ -509,7 +587,39 @@ public:
         return null() << make_pair(*mMappingAddresses.getKeys(mappingBase).begin(), (int64_t)offsetInMapping);
         }
 
+    int64_t totalBytesMapped() const
+        {
+        return mTotalBytesMapped;
+        }
+
+    bool allocHasCopyTasks(PhysicalMemoryAllocation alloc) const
+        {
+        return mPhysicalAllocCopyTaskCount.find(alloc) != mPhysicalAllocCopyTaskCount.begin();
+        }
+
+    void copyAddressRefcountChange(uint8_t* addr, int64_t direction)
+        {
+        Nullable<PhysicalMemoryAllocation> alloc = allocForAddress(addr);
+        
+        if (alloc)
+            {
+            mPhysicalAllocCopyTaskCount[*alloc] += direction;
+            if (mPhysicalAllocCopyTaskCount[*alloc] == 0)
+                mPhysicalAllocCopyTaskCount.erase(*alloc);
+            }
+        }
+
 private:
+    int64_t mTotalBytesMapped;
+
+    int64_t mIncreasingIndex;
+
+    map<PhysicalMemoryAllocation, int64_t> mPhysicalAllocCopyTaskCount;
+
+    MapWithIndex<PhysicalMemoryAllocation, int64_t> mBigvecAllocationOrder;
+
+    MapWithIndex<Fora::PageId, int64_t> mPageZoneAllocations;
+
     map<AllocationZone, IntegerRanges<false> > mZoneBytecountRangesPhysicallyAllocated;
 
     MapWithIndex<PhysicalMemoryAllocation, uint8_t*> mPhysicalMemoryAddresses;
@@ -531,12 +641,29 @@ public:
     MemoryMappings(
                 AllocationZoneMapping& inZoneMappings,
                 PhysicalAllocations& inPhysicalAllocations,
-                boost::function<bool (uint8_t* sharedBase, uint64_t sharedOffset, uint8_t* mapBase, uint64_t mapOffset, uint64_t bytecount)> inMapper
+                boost::function<bool (uint8_t* sharedBase, uint64_t sharedOffset, uint8_t* mapBase, uint64_t mapOffset, uint64_t bytecount)> inMapper,
+                boost::function<bool (uint8_t* mapBase, uint64_t mapOffset, uint64_t bytecount)> inUnmapper
                 ) :
             mMapper(inMapper),
+            mUnmapper(inUnmapper),
             mZoneMappings(inZoneMappings),
             mPhysicalAllocations(inPhysicalAllocations)
         {
+        }
+
+    void removeAllMappingsFor(PhysicalMemoryAllocation alloc)
+        {
+        for (auto objectAndRange: mMappings[alloc])
+            {
+            mUnmapper(
+                mPhysicalAllocations.getMappableAddress(objectAndRange.first),
+                objectAndRange.second.low(),
+                objectAndRange.second.size()
+                );
+            mBytesMapped[objectAndRange.first].removeRange(objectAndRange.second);
+            }
+
+        mMappings.erase(alloc);
         }
 
     void blockedThreadExists(
@@ -597,6 +724,11 @@ public:
             }
         }
 
+    void zoneRangeNotMappable(AllocationZone zone, IntegerRange range)
+        {
+        mZoneMappableRegions[zone].removeRange(range);
+        }
+
     void zoneIsNowMappable(AllocationZone zone, IntegerRange range)
         {
         mZoneMappableRegions[zone].addRange(range);
@@ -607,7 +739,7 @@ public:
         std::vector<pair<BigvecOrPageId, RangeToZoneMapping> >& mappings = mPendingMappings[zone];
 
         for (long k = 0; k < mappings.size(); k++)
-            if (range.contains(mappings[k].second.byteRangeInZone()))
+            if (mZoneMappableRegions[zone].completelyContainsRange(mappings[k].second.byteRangeInZone()))
                 {
                 ensureRangeMapped(mappings[k].first, mappings[k].second);
                 mappings.erase(mappings.begin() + k);
@@ -622,6 +754,11 @@ public:
         {
         outZones.clear();
         std::swap(outZones, mZonesToTryToMap);
+        }
+
+    bool hasZonesToTryToMap() const
+        {
+        return mZonesToTryToMap.size();
         }
 
     bool byteIsMapped(BigvecOrPageId object, int64_t byteOffset)
@@ -677,6 +814,8 @@ private:
             rangeInObject.low(),
             rangeInObject.size()
             );
+
+        mMappings[alloc].push_back(make_pair(object, rangeInObject));
         }
 
     AllocationZoneMapping& mZoneMappings;
@@ -684,6 +823,8 @@ private:
     PhysicalAllocations& mPhysicalAllocations;
 
     boost::function<bool (uint8_t* sharedBase, uint64_t sharedOffset, uint8_t* mapBase, uint64_t mapOffset, uint64_t bytecount)> mMapper;
+
+    boost::function<bool (uint8_t* mapBase, uint64_t mapOffset, uint64_t bytecount)> mUnmapper;
 
     //state machine for zones that want to wake up when page data is provided from the outside
     std::map<pair<AllocationZone, IntegerRange>, std::map<Fora::PageId, IntegerRanges<true> > >  mZonesAwaitingPageData;
@@ -698,25 +839,8 @@ private:
 
     std::map<AllocationZone, std::vector<pair<BigvecOrPageId, RangeToZoneMapping> > > mPendingMappings;
 
+    std::map<PhysicalMemoryAllocation, std::vector<pair<BigvecOrPageId, IntegerRange> > > mMappings;
 };
-
-/**************
-
-This class tracks the relationship between blocks of physical memory we've allocated
-in shared memory pools, the data we have placed in them, and the mappings we've applied.
-
-This class takes care of several things:
-    * we need to keep track of which physical memory holds what data currently
-    * we need to be able to tell in what locations the vector data we've already
-        placed lives so we can get it back if need be.
-    * when new vector data shows up, we need to figure out an ideal place to store it.
-        this means looping over the various bigvecs that could hold it and seeing if
-        we have storage allocated already for it.
-    * when we want to map data for an address, we want to see if we already have storage
-        for mappable for that page. if we can map it directly we do it immediately, but we may
-        need to make an extra copy of the data.
-
-***************/
 
 class PageDataPlacements {
 public:
@@ -725,7 +849,10 @@ public:
                 boost::function<uint8_t* (PhysicalMemoryAllocation alloc)> inAllocator,
                 boost::function<void (PhysicalMemoryAllocation alloc, uint8_t*)> inDeallocator,
                 boost::function<bool (uint8_t* sharedBase, uint64_t sharedOffset, uint8_t* mapBase, uint64_t mapOffset, uint64_t bytecount)> inMapper,
-                boost::function<void (Fora::PageId page, IntegerRange bytecountRange)> inBroadcaster
+                boost::function<bool (uint8_t* mapBase, uint64_t mapOffset, uint64_t bytecount)> inUnmapper,
+                boost::function<void (Fora::PageId page, IntegerRange bytecountRange)> inBroadcaster,
+                int64_t maxExcessBytes,
+                int64_t maxBigvecAllocations
                 );
 
     //is this object/element offset validly mapped?
@@ -775,6 +902,13 @@ public:
                     );
 
 private:
+    //after all copy and block operations, we call this function, which synchronously schedules any data
+    void releaseMemoryIfNecessary();
+
+    void releaseBigvecsIfNecessary();
+
+    void consolidatePagesIfNecessary();
+
     //we wrote some page data into a block of physical memory and need to remember that that
     //data is populated
     void pageDataPlacedInPhysicalMemory(Fora::PageId page, IntegerSequence bytesWithinPage, PhysicalMemoryAllocation allocation, IntegerRange bytesWithinPhysical);
@@ -797,6 +931,10 @@ private:
 
     //populate the data for 'AllocationZone' from some data somewhere
     void scheduleCopyTask(AllocationZone zone, ZoneToPageMapping zonePageMapping);
+
+    int64_t mMaxExcessBytes;
+
+    int64_t mMaxBigvecAllocations;
 
     int64_t mPageSize;
 
