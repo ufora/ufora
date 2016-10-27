@@ -20,22 +20,24 @@
 
 /**************
 
-This class tracks the relationship between blocks of physical memory we've allocated
-in shared memory pools, the data we have placed in them, and the mappings we've applied.
+This class provides a single-threaded implementation of a memory storage
+and mapping services.
 
-This class takes care of several things:
-    * we need to keep track of which physical memory holds what data currently
-    * we need to be able to tell in what locations the vector data we've already
-        placed lives so we can get it back if need be.
-    * when new vector data shows up, we need to figure out an ideal place to store it.
-        this means looping over the various bigvecs that could hold it and seeing if
-        we have storage allocated already for it.
-    * when we want to map data for an address, we want to see if we already have storage
-        for mappable for that page. if we can map it directly we do it immediately, but we may
-        need to make an extra copy of the data.
+Clients are expected to provide data in the form of byte ranges associated with
+Fora::PageIds, and then to access that data via pointers. The PageDataPlacements
+infrastructure is responsible for populating that data while maintaining some invariants,
+which include 
+    a limit on the number of physical bytes above the actual bytes given to the object
+    a limit on the number of memory mappings. (not implemented yet)
+    a limit on the number of physical allocations. (not implemented yet)
+
+The PageDataPlacements class is single-threaded. Callbacks are executed on
+the same thread as the caller. Memory copy operations (which are expensive)
+get queued in a task list. Clients are expected to call 'extractTask', execute
+the task, and call 'taskCompleted' to flush the task queue after interacting
+with the object. Tasks (which are just memory copies) can be executed in parallel.
 
 ***************/
-
 
 @type AllocationToPageMapping = 
     IntegerRange byteRangeInAlloc,
@@ -60,13 +62,18 @@ public:
 class PageDataPlacements {
 public:
     PageDataPlacements(
-                int64_t inPageSize,
+                int64_t inOsPageSize,
+                //a set of callbacks that will be called synchronously during method invocation on
+                //this class.
                 boost::function<uint8_t* (PhysicalMemoryAllocation alloc)> inAllocator,
                 boost::function<void (PhysicalMemoryAllocation alloc, uint8_t*)> inDeallocator,
                 boost::function<bool (uint8_t* sharedBase, uint64_t sharedOffset, uint8_t* mapBase, uint64_t mapOffset, uint64_t bytecount)> inMapper,
                 boost::function<bool (uint8_t* mapBase, uint64_t mapOffset, uint64_t bytecount)> inUnmapper,
-                boost::function<void (Fora::PageId page, IntegerRange bytecountRange)> inBroadcaster,
+                boost::function<void (Fora::PageId page, IntegerRange bytecountRange)> inRequestPageDataFromExternal,
+                //maximum number of physical memory bytes to allocate above actual byte storage given to us
                 int64_t maxExcessBytes,
+                //this is a crappy proxy for limiting the number of allocations that really just
+                //ensures that we don't have too many one-os-page allocs used to back bigvecs.
                 int64_t maxBigvecAllocations
                 );
 
@@ -82,6 +89,8 @@ public:
     //given a mapping and a byte offset in the mapping, what is the object and relative byte-offset it corresponds to?
     Nullable<pair<BigvecOrPageId, int64_t> > translateMappingAddress(uint8_t* mappingBase, uint64_t offsetInMapping);
 
+    //describe a bigvec to us. This must be called before 'setMappableAddress' for the associated
+    //bigvec can be called.
     void addBigVecPageLayout(const TypedFora::Abi::BigVectorPageLayout& layout);
 
     //we've produced a memory-mapping to 'target'
@@ -91,25 +100,33 @@ public:
                 uint64_t bytecount
                 );
 
-    //get the base address for a given target, or nullptr if none exists
+    //get the base address for a given target, or nullptr if none exists. 
+    //this must have been provided by calling 'setMappableAddress'
     uint8_t* getMappableAddress(BigvecOrPageId target);
 
+    //get the base address for a physical allocation. This address can be directly
+    //written to.
     uint8_t* getWriteableAddress(PhysicalMemoryAllocation allocation);
 
-    //drop the mapping target and mark all physical memory that's mapped to it as unmapped.
+    //drop the mapping target and clear all mappings. If this is a bigvec mapping,
+    //then we drop the bigvec page layout as well.
     void dropMappingTarget(BigvecOrPageId target);
+
+    //mark all the data associated with this page for deletion.
+    //data will be released by the time the task queue is flushed.
+    void dropAllDataForPage(const Fora::PageId& inPage);
+
+    //get a memory copy task from the queue. Clients are expected
+    //to flush this queue after calling 'markThreadBlockedOn',
+    //allocatePageData, or dropAllDataForPage
+    Nullable<DataCopyTask> extractTask();
 
     //indicates that some requested data was copied
     void taskComplete(DataCopyTask task);
 
-    //get a list of all of the page placements
-    void dropAllDataForPage(const Fora::PageId& inPage);
-
-    Nullable<DataCopyTask> extractTask();
-
     //add some new data from the outside. Clients are expected to 
     //flush all outstanding memory copy tasks from the system before 
-    //addr may be released.
+    //'addr' may be released.
     bool allocatePageData(
                     const Fora::PageId& inPage, 
                     IntegerRange byteRange,
@@ -117,40 +134,53 @@ public:
                     );
 
 private:
+    //deallocate all memory associated with this allocation zone and clear
+    //all associated mappings. No copy or pending maps can be outstanding on this.
     void completelyRemoveZone(AllocationZone zone);
 
+    //deallocate this physical allocation.
     void completelyRemovePhysicalAlloc(PhysicalMemoryAllocation alloc);
 
     //after all copy and block operations, we call this function, which synchronously schedules any data
+    //rebalancing operations
     void releaseMemoryIfNecessary();
 
+    //release any bigvec mappings we have too many.
     void releaseBigvecsIfNecessary();
 
+    //if we have too much data allocated, loop over all pages and consolidate
+    //all of their data into a single AllocationZone.
     void consolidatePagesIfNecessary();
 
-    //we wrote some page data into a block of physical memory and need to remember that that
-    //data is populated
-    void pageDataPlacedInPhysicalMemory(Fora::PageId page, IntegerSequence bytesWithinPage, PhysicalMemoryAllocation allocation, IntegerRange bytesWithinPhysical);
-
+    //create PhysicalMemoryAllocations to back this data, making sure not to
+    //double allocate any ranges.
     void ensurePhysicalBackingFor(
                 const AllocationZone& inZone, 
                 IntegerRange bytes
                 );
     
+
+    //the data required to populate 'byteRangeInZone' is present in the class, so now
+    //schedule whatever is necessary to actually do the mapping.
     void scheduleNecessaryTasksForMapping(AllocationZone zone, IntegerRange byteRangeInZone);
     
+    //schedule this data copy task, and add refcounts to the relevant zones.
     void scheduleTask(DataCopyTask task);
 
     IntegerRange pageContainingByteOffset(int64_t byteOffset);
 
-    IntegerRange expandRangeToPageSize(IntegerRange byteRange, int64_t pagesPerBlock);
+    IntegerRange expandRangeToPageSize(IntegerRange byteRange);
 
-    //populate the data for 'AllocationZone' from some data somewhere
-    void scheduleCopyTask(PhysicalMemoryAllocation zone, AllocationToPageMapping zonePageMapping);
+    //populate the data for 'alloc' from some data somewhere. We assume that the data for the
+    //relevant page mapping exists in the system and that we just need to find it.
+    void scheduleCopyTask(PhysicalMemoryAllocation alloc, AllocationToPageMapping zonePageMapping);
 
-    //populate the data for 'AllocationZone' from some data somewhere
+    //populate the data for 'zone' from some data somewhere. We assume that the relevant page data
+    //exists somewhere in some zone and that we just need to find it.
     void scheduleCopyTask(AllocationZone zone, ZoneToPageMapping zonePageMapping);
 
+    //ensure that all data in 'sourceZone' that's not in 'destZone' gets there. When these
+    //copy operations are complete, we will be able to completely remove 'sourceZone'
     bool scheduleCopyAllDataBetweenZones(AllocationZone sourceZone, AllocationZone destZone);
 
     int64_t mMaxExcessBytes;
