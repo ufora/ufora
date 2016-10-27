@@ -363,6 +363,31 @@ void PageDataPlacements::releaseMemoryIfNecessary()
     {
     releaseBigvecsIfNecessary();
     consolidatePagesIfNecessary();
+    releasePagesIfNecessary();
+    }
+
+void PageDataPlacements::releasePagesIfNecessary()
+    {
+    std::set<Fora::PageId> newPagesToDeallocate;
+
+    auto canDeallocatePage = [&](Fora::PageId p) {
+        if (mPhysicalAllocations.pageHasCopyTasks(p))
+            return false;
+
+        for (auto allocationZoneAndRefcount: mAllocationZoneMapping.zonesActiveForPage(p))
+            if (mMemoryMappings.zoneHasPendingMappings(allocationZoneAndRefcount.first))
+                return false;
+
+        return true;
+        };
+
+    for (auto p: mPagesToDeallocate)
+        if (canDeallocatePage(p))
+            completelyRemovePage(p);
+        else
+            newPagesToDeallocate.insert(p);
+
+    std::swap(newPagesToDeallocate, mPagesToDeallocate);
     }
 
 void PageDataPlacements::consolidatePagesIfNecessary()
@@ -503,6 +528,18 @@ void PageDataPlacements::releaseBigvecsIfNecessary()
         //we can safely delete this bigvec
         completelyRemovePhysicalAlloc(*alloc);
         }
+    }
+
+void PageDataPlacements::completelyRemovePage(Fora::PageId page)
+    {
+    for (auto allocationZoneAndRefcount: mAllocationZoneMapping.zonesActiveForPage(page))
+        completelyRemoveZone(allocationZoneAndRefcount.first);
+
+    mTotalBytesOfPageDataHeld -= mPerPageBytesHeld[page];
+    mPerPageBytesHeld[page] = 0;
+
+    mPageDataBytecountRangesDefined.erase(page);
+    mPageDataBytecountRangesDefinedOrRequested.erase(page);
     }
 
 void PageDataPlacements::completelyRemoveZone(AllocationZone zone)
@@ -670,7 +707,8 @@ bool PageDataPlacements::allocatePageData(
 
 void PageDataPlacements::dropAllDataForPage(const Fora::PageId& inPage)
     {
-    lassert_dump(false, "not implemented");
+    mPagesToDeallocate.insert(inPage);
+    releaseMemoryIfNecessary();
     }
 
 Nullable<DataCopyTask> PageDataPlacements::extractTask()
@@ -696,4 +734,19 @@ Nullable<DataCopyTask> PageDataPlacements::extractTask()
         }
 
     return null();
+    }
+
+int64_t PageDataPlacements::bytesOfPageDataHeld() const
+    {
+    return mTotalBytesOfPageDataHeld;
+    }
+
+int64_t PageDataPlacements::bytesOfPageDataHeld(Fora::PageId page) const
+    {
+    auto it = mPerPageBytesHeld.find(page);
+
+    if (it == mPerPageBytesHeld.end())
+        return 0;
+
+    return it->second;
     }
