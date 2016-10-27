@@ -335,7 +335,9 @@ void PageDataPlacements::taskComplete(DataCopyTask task)
         }
 
     mPhysicalMemoryBytecountRangesPopulated[alloc].addRange(allocBytesPopulated);
+    
     mZoneBytecountRangesPopulated[alloc.zone()].addRange(allocBytesPopulated + alloc.byteRange().low());
+    mZoneBytecountRangesPopulatedOrPending[alloc.zone()].addRange(allocBytesPopulated + alloc.byteRange().low());
 
     //the range that bytesPopulated is contained in is now a candidate for mapping
     IntegerRange containingRange = *mPhysicalMemoryBytecountRangesPopulated[alloc].rangeContaining(allocBytesPopulated.low());
@@ -392,7 +394,11 @@ void PageDataPlacements::releasePagesIfNecessary()
 
 void PageDataPlacements::consolidatePagesIfNecessary()
     {
-    while (mPhysicalAllocations.totalBytesMapped() > mTotalBytesOfPageDataHeld + mMaxExcessBytes)
+    while (mPhysicalAllocations.totalBytesMapped() > 
+                mTotalBytesOfPageDataHeld + mMaxExcessBytes +
+                //don't count the bigvec pages in the memory count - we don't consider
+                //them in the compression count.
+                mPhysicalAllocations.countOfBigvecAllocs() * mPageSize)
         {
         Nullable<Fora::PageId> page = mPhysicalAllocations.getOldestPage();
         if (!page)
@@ -491,6 +497,8 @@ bool PageDataPlacements::scheduleCopyAllDataBetweenZones(AllocationZone sourceZo
                 );
         }
 
+    bool scheduledAnything = false;
+
     for (auto startAndEnd: mZoneBytecountRangesPopulated[sourceZone].getRangeStartsAndEnds())
         {
         IntegerRange range(startAndEnd.first, startAndEnd.second);
@@ -501,14 +509,22 @@ bool PageDataPlacements::scheduleCopyAllDataBetweenZones(AllocationZone sourceZo
 
         for (auto rng: notCoveredInDest)
             {
+            scheduledAnything = true;
             scheduleCopyTask(
                 destZone, 
                 ZoneToPageMapping(rng, sourceZone.getPage().page(), rng - destZone.getPage().byteOffset())
                 );
+
+            lassert_dump(
+                mZoneBytecountRangesPopulatedOrPending[destZone].completelyContainsRange(rng),
+                "Added " << prettyPrintString(rng) << " now having " 
+                    << prettyPrintString(mZoneBytecountRangesPopulatedOrPending[destZone].getRangeStartsAndEnds())
+                    << ". populated= " << prettyPrintString(mZoneBytecountRangesPopulated[destZone].getRangeStartsAndEnds())
+                );
             }
         }
 
-    return true;
+    return scheduledAnything;
     }
 
 void PageDataPlacements::releaseBigvecsIfNecessary()
@@ -749,4 +765,9 @@ int64_t PageDataPlacements::bytesOfPageDataHeld(Fora::PageId page) const
         return 0;
 
     return it->second;
+    }
+
+int64_t PageDataPlacements::totalBytesOfPhysicalMemoryAllocated() const
+    {
+    return mPhysicalAllocations.totalBytesMapped();
     }
