@@ -21,13 +21,16 @@
 #include "VectorDataManager.hppml"
 #include "../TypedFora/ABI/BigVectorLayouts.hppml"
 #include "../Core/ExecutionContextImpl.hppml"
+#include "../../core/Clock.hpp"
+#include "../../core/Logging.hpp"
 
 class VectorDataMappedMemoryImpl : public PolymorphicSharedPtrBase<VectorDataMappedMemoryImpl> {
 public:
     VectorDataMappedMemoryImpl(
                 PolymorphicSharedPtr<CallbackScheduler> inCallbackScheduler,
                 PolymorphicSharedPtr<VectorDataMemoryManager> inVDMM,
-                PolymorphicSharedPtr<TypedFora::Abi::BigVectorLayouts> inBigVectorLayouts
+                PolymorphicSharedPtr<TypedFora::Abi::BigVectorLayouts> inBigVectorLayouts,
+                int64_t maxBytesOfScratchMemory
                 ) :
             mDataLoadRequiredEvent(inCallbackScheduler),
             mVDMM(inVDMM),
@@ -36,7 +39,10 @@ public:
                 boost::bind(&VectorDataMappedMemoryImpl::onThreadBlocked, this, boost::arg<1>()),
                 boost::bind(&VectorDataMappedMemoryImpl::extractCurrentBlockedThreadInfo, this),
                 "/ufora"
-                )
+                ),
+            mTotalTasks(0),
+            mTotalTaskBytes(0),
+            mLastLogMessage(0)
         {
         mPageDataPlacement.reset(
             new PageDataPlacements(
@@ -63,14 +69,15 @@ public:
                             )
                         );                        
                     },
-                inVDMM->getMaxTotalBytes() / 1024 / 1024 / 1024 > 10 ?
-                    512 * 1024 * 1024 : 
-                inVDMM->getMaxTotalBytes() / 1024 / 1024 / 1024 > 1 ?
-                    32 * 1024 * 1024 : 
-                    1024 * 1024,
+                maxBytesOfScratchMemory,
                 512
                 )
             );
+        }
+
+    void setSignalMaskOnCurrentThread()
+        {
+        mMemoryRegions.setSignalMaskOnCurrentThread();
         }
 
     void onThreadBlocked(OnDemandMemoryRegions::BlockingThread thread)
@@ -192,14 +199,13 @@ public:
    
     bool allocatePageData(
                     const Fora::PageId& inPage, 
-                    IntegerRange valueRange,
-                    uint64_t homogenousStride,
+                    IntegerRange byteRange,
                     uint8_t* addr
                     )
         {
         boost::mutex::scoped_lock lock(mMutex);
 
-        mPageDataPlacement->allocatePageData(inPage, valueRange * homogenousStride, addr);
+        mPageDataPlacement->allocatePageData(inPage, byteRange, addr);
 
         performBackgroundCopyTasks_(lock);
 
@@ -227,17 +233,33 @@ private:
         {
         while (Nullable<DataCopyTask> p = mPageDataPlacement->extractTask())
             {
-            ioLock.unlock();
+            mTotalTasks++;
+            mTotalTaskBytes += p->bytecount();
+
+            //ioLock.unlock();
 
             p->copy();
 
-            ioLock.lock();
+            //ioLock.lock();
 
             mPageDataPlacement->taskComplete(*p);
+            }
+
+        if (curClock() - mLastLogMessage > 1.0)
+            {
+            LOG_DEBUG << "VectorDataMappedMemory did " << mTotalTaskBytes / 1024 / 1024.0 << " MB over " 
+                << mTotalTasks << " tasks.";
+            mLastLogMessage = curClock();
             }
         }
 
     boost::mutex mMutex;
+
+    int64_t mTotalTasks;
+
+    int64_t mTotalTaskBytes;
+
+    double mLastLogMessage;
 
     boost::shared_ptr<PageDataPlacements> mPageDataPlacement;
 
@@ -256,13 +278,15 @@ private:
 VectorDataMappedMemory::VectorDataMappedMemory(
             PolymorphicSharedPtr<CallbackScheduler> inCallbackScheduler,
             PolymorphicSharedPtr<VectorDataMemoryManager> inVDMM,
-            PolymorphicSharedPtr<TypedFora::Abi::BigVectorLayouts> inBigVectorLayouts
+            PolymorphicSharedPtr<TypedFora::Abi::BigVectorLayouts> inBigVectorLayouts,
+            int64_t maxBytesOfScratchMemory
             ) : 
         mImpl(
             new VectorDataMappedMemoryImpl(
                 inCallbackScheduler,
                 inVDMM,
-                inBigVectorLayouts
+                inBigVectorLayouts,
+                maxBytesOfScratchMemory
                 )
             )
     {
@@ -290,12 +314,11 @@ void VectorDataMappedMemory::bigvecDroppedAcrossEntireSystem(const Fora::BigVect
 
 bool VectorDataMappedMemory::allocatePageData(
                 const Fora::PageId& inPage, 
-                IntegerRange valueRange,
-                uint64_t homogenousStride,
+                IntegerRange byteRange,
                 uint8_t* addr
                 )
     {
-    return mImpl->allocatePageData(inPage, valueRange, homogenousStride, addr);
+    return mImpl->allocatePageData(inPage, byteRange, addr);
     }
 
 void VectorDataMappedMemory::visitPageData(
@@ -315,4 +338,9 @@ void VectorDataMappedMemory::deallocatePageData(const Fora::PageId& inPage)
 EventBroadcaster<VectorDataMappedMemory::DataLoadRequiredEvent>& VectorDataMappedMemory::getOnDataLoadRequiredEvent()
     {
     return mImpl->getOnDataLoadRequiredEvent();
+    }
+
+void VectorDataMappedMemory::setSignalMaskOnCurrentThread()
+    {
+    mImpl->setSignalMaskOnCurrentThread();
     }

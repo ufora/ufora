@@ -1,0 +1,244 @@
+/***************************************************************************
+    Copyright 2016 Ufora Inc.
+ 
+    Licensed under the Apache License, Version 2.0 (the "License");
+    you may not use this file except in compliance with the License.
+    You may obtain a copy of the License at
+ 
+        http://www.apache.org/licenses/LICENSE-2.0
+ 
+    Unless required by applicable law or agreed to in writing, software
+    distributed under the License is distributed on an "AS IS" BASIS,
+    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    See the License for the specific language governing permissions and
+    limitations under the License.
+****************************************************************************/
+
+#include "VectorDataManager.hppml"
+#include "VectorDataMappedMemory.hppml"
+#include "VectorDataMemoryManager.hppml"
+#include "../Core/ExecutionContext.hppml"
+#include "../TypedFora/ABI/BigVectorLayouts.hppml"
+#include "../../core/Clock.hpp"
+#include "../../core/UnitTest.hpp"
+#include "../../core/UnitTestCppml.hpp"
+#include "../../core/Logging.hpp"
+#include "../../core/threading/Queue.hpp"
+#include "../../core/math/Random.hpp"
+
+using namespace TypedFora::Abi;
+using namespace Fora::Interpreter;
+
+class VectorDataMappedMemoryTest : public PolymorphicSharedPtrBase<VectorDataMappedMemoryTest> {
+public:
+    VectorDataMappedMemoryTest() : 
+                mVDM(new VectorDataManager(CallbackScheduler::singletonForTesting(), 50 * 1024 * 1024)),
+                mLayouts(mVDM->getBigVectorLayouts()),
+                mMemoryManager(mVDM->getMemoryManager()),
+                mVDMM(
+                    new VectorDataMappedMemory(
+                        CallbackScheduler::singletonForTesting(),
+                        mMemoryManager,
+                        mLayouts,
+                        //excess mapping memory
+                        512 * 1024
+                        )
+                    ),
+                mRandom(1),
+                mBytesPerPage(1024 * 128),
+                mPageSize(mMemoryManager->getOsPageSize())
+        {
+        allocatePages(30);
+        allocateBigvecs(20);
+        }
+
+    void polymorphicSharedPtrBaseInitialized()
+        {
+        mVDMM->getOnDataLoadRequiredEvent().subscribe(
+            polymorphicSharedWeakPtrFromThis(),
+            &VectorDataMappedMemoryTest::dataLoadRequired
+            );
+        }
+
+    void dataLoadRequired(VectorDataMappedMemory::DataLoadRequiredEvent event)
+        {
+        auto it = mPageDatas.find(event.page());
+        lassert(it != mPageDatas.end());
+
+        lassert(event.neededBytes().low() >= 0);
+        lassert(event.neededBytes().low() < event.neededBytes().high());
+        lassert(event.neededBytes().high() < it->second.size() * sizeof(int64_t));
+
+        mVDMM->allocatePageData(
+            event.page(),
+            event.neededBytes(),
+            (uint8_t*)&it->second[0] + event.neededBytes().low()
+            );
+        }
+
+    Fora::PageId testPage(int i)
+        {
+        return Fora::PageId(hash_type(i), mBytesPerPage, mBytesPerPage);
+        }
+
+    void allocatePages(int64_t count)
+        {
+        int64_t value = 0;
+
+        for (int64_t k = 0; k < count;k++)
+            {
+            mPages.push_back(testPage(k));
+            for (int64_t k = 0; k < mBytesPerPage / sizeof(int64_t)+1;k++)
+                mPageDatas[mPages.back()].push_back(value++);
+            }
+        }
+
+    void allocateBigvecs(int64_t bigvecs)
+        {
+        for (long k = 0; k < bigvecs; k++)
+            {
+            ImmutableTreeVector<VectorDataIDSlice> slices;
+
+            long pages = 2 + mRandom() * 10;
+
+            ImmutableTreeVector<pair<int64_t, IntegerRange> > counts;
+
+            for (long p = 0; p < pages; p++)
+                {
+                int64_t width = mPageSize * (1 + int(mRandom() * 14));
+                int64_t offset = mPageSize * int(mRandom() * 14);
+
+                if (mRandom() < .25)
+                    {
+                    //let's make the page width weird
+                    if (mRandom() < .1)
+                        //really weird
+                        width -= mRandom() * 125;
+                    else
+                        //just a little weird
+                        width -= mPageSize / 2;
+                    }
+
+                if (mRandom() < .5)
+                    offset += mRandom() * 512;
+
+                lassert(offset+width < mBytesPerPage);
+
+                slices = slices + VectorDataIDSlice(
+                    VectorDataID::Internal(mPages[mRandom() * mPages.size()], 0), 
+                    IntegerRange(offset, offset+width)
+                    );
+                }
+
+            BigVectorPageLayout layout(
+                slices, 
+                JudgmentOnResult(JOV::OfType(Type::Integer(8, false))), 
+                hashValue(slices)
+                );
+                
+            mBigVectorLayouts[layout.identity()] = layout;
+            mBigVectorIds.push_back(layout.identity());
+
+            mLayouts->registerNewLayout(layout);
+
+            mBigVectorAddresses[layout.identity()] = mVDMM->addressForBigvec(layout.identity());
+            }
+        }
+
+    uint8_t computeByteForEntity(Fora::PageId p, int64_t byte)
+        {
+        lassert(byte < mPageDatas[p].size() * sizeof(int64_t));
+        return ((uint8_t*)&mPageDatas[p][0])[byte];
+        }
+
+    uint8_t computeByteForEntity(Fora::BigVectorId b, int64_t byte)
+        {
+        auto sliceAndOffset = mBigVectorLayouts[b].sliceAndOffsetContainingIndex(byte);
+
+        int64_t offsetInSlice = byte - sliceAndOffset.second;
+
+        return computeByteForEntity(
+            sliceAndOffset.first.vector().getPage(),
+            sliceAndOffset.first.slice().low() + offsetInSlice
+            );
+        }
+
+    void readerThread(double totalTime, int64_t index)
+        {
+        //we _have_ to call this if we want our signals to get handled.
+        mVDMM->setSignalMaskOnCurrentThread();
+
+        PolymorphicSharedPtr<ExecutionContext> context(new ExecutionContext(mVDM));
+
+        Ufora::threading::ScopedThreadLocalContext<ExecutionContext> setContext(&*context);
+
+        Ufora::math::Random::Uniform<double> rnd(index);
+
+        double stop = curClock() + totalTime;
+
+        int64_t count = 0;
+
+        while (curClock() < stop)
+            {
+            Fora::BigVectorId vec = mBigVectorIds[rnd() * mBigVectorIds.size()];
+            uint8_t* addr = mBigVectorAddresses.find(vec)->second;
+
+            int64_t offset = vec.size() * rnd();
+
+            lassert(addr[offset] == computeByteForEntity(vec, offset));
+
+            count++;
+            }
+        }
+
+private:
+    Ufora::math::Random::Uniform<double> mRandom;
+
+    std::vector<Fora::PageId> mPages;
+
+    std::map<Fora::PageId, std::vector<int64_t> > mPageDatas;
+
+    std::map<Fora::BigVectorId, BigVectorPageLayout> mBigVectorLayouts;
+
+    std::map<Fora::BigVectorId, uint8_t*> mBigVectorAddresses;
+
+    std::vector<Fora::BigVectorId> mBigVectorIds;
+
+    PolymorphicSharedPtr<VectorDataManager> mVDM;
+
+    PolymorphicSharedPtr<BigVectorLayouts> mLayouts;
+
+    PolymorphicSharedPtr<VectorDataMemoryManager> mMemoryManager;
+
+    PolymorphicSharedPtr<VectorDataMappedMemory> mVDMM;
+
+    int64_t mPageSize;
+
+    int64_t mBytesPerPage;
+};
+
+BOOST_AUTO_TEST_CASE( test_VectorDataMappedMemory )
+    {
+    PolymorphicSharedPtr<VectorDataMappedMemoryTest> test(new VectorDataMappedMemoryTest());
+
+    std::vector<boost::shared_ptr<boost::thread> > threads;
+
+    for (long k = 0; k < 8; k++)
+        {
+        threads.push_back(
+            boost::shared_ptr<boost::thread>(
+                new boost::thread(
+                    boost::bind(
+                        boost::function<void (int)>(
+                            [&](int index) { test->readerThread(10.0, index); }
+                            ), 
+                        k
+                        )
+                    )
+                )
+            );
+        }
+
+    for (auto t: threads)
+        t->join();
+    }

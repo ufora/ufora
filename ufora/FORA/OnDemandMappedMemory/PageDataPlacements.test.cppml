@@ -202,28 +202,36 @@ public:
             mPlacements.setMappableAddress(ent, mMemoryRegions.allocateMappableRegion(bytecount), bytecount);
             }
 
-        //we have to retry many times, because it's possible that
-        //we cure the mapping and then immediately unmap the data.
-        int count = 0;
-        while (!mPlacements.byteIsMapped(ent, aRandomByte))
-            {
+        bool everCured = false;
+        
+        //we are not guaranteed that the byte is still mapped after we run all the update tasks,
+        //since we could GC in the middle. Instead, we are only guaranteed that if the data
+        //is available, that at some point after calling 'markThreadBlockedOn' we will eventually
+        //see the byte available.
+        if (!mPlacements.byteIsMapped(ent, aRandomByte))
             mPlacements.markThreadBlockedOn(ent, aRandomByte);
+        else
+            everCured = true;
 
-            updateAll();
+        do {
+            if (mPlacements.byteIsMapped(ent, aRandomByte))
+                {
+                everCured = true;
 
-            lassert_dump(
-                count < 100 || mPlacements.byteIsMapped(ent, aRandomByte),
-                "Were not able to map byte " << aRandomByte << " of " << prettyPrintString(ent)
-                );
-            }
+                uint8_t byte = mPlacements.getMappableAddress(ent)[aRandomByte];
 
-        uint8_t byte = mPlacements.getMappableAddress(ent)[aRandomByte];
+                lassert_dump(byte == computeByteForEntity(ent, aRandomByte), 
+                    "expected " << prettyPrintString(ent) << " byte " << aRandomByte 
+                        << " to be " << (long)computeByteForEntity(ent, aRandomByte) << " but got " << (long)byte
+                        << "\n"
+                        );
+                }
+            } while (updateStep());
 
-        lassert_dump(byte == computeByteForEntity(ent, aRandomByte), 
-            "expected " << prettyPrintString(ent) << " byte " << aRandomByte 
-                << " to be " << (long)computeByteForEntity(ent, aRandomByte) << " but got " << (long)byte
-                << "\n"
-                );
+        lassert_dump(
+            everCured,
+            "We never actually cured the fault."
+            );
         }
 
     uint8_t computeByteForEntity(BigvecOrPageId ent, int64_t byte)
@@ -255,57 +263,62 @@ public:
         return BigvecOrPageId::Bigvec(mBigVectorIds[mRandom() * mBigVectorIds.size()]);
         }
 
-    void updateAll()
+    bool updateStep()
         {
-        bool didAnything = true;
-        while (didAnything)
+        lassert_dump(
+            mPlacements.totalBytesOfPhysicalMemoryAllocated() - mPlacements.bytesOfPageDataHeld() < 1024 * 1024 * 2,
+            mPlacements.totalBytesOfPhysicalMemoryAllocated() / 1024 / 1024.0 << " MB of physical data. "
+                << mPlacements.bytesOfPageDataHeld() / 1024 / 1024.0 << " MB of page data. excess = "
+                << (mPlacements.totalBytesOfPhysicalMemoryAllocated() - mPlacements.bytesOfPageDataHeld()) / 1024 / 1024.0
+                << " MB."
+            );
+
+        if (auto task = mPlacements.extractTask())
             {
-            didAnything = false;
+            mCopyOps++;
+            mCopyBytes += task->bytecount();
 
-            while (auto task = mPlacements.extractTask())
-                {
-                mCopyOps++;
-                mCopyBytes += task->bytecount();
-                didAnything = true;
+            task->copy();
+            mPlacements.taskComplete(*task);
 
-                task->copy();
-                mPlacements.taskComplete(*task);
-                }
-
-            while (auto needed = mNeededPageRegions.getNonblock())
-                {
-                didAnything = true;
-
-                int64_t index = 0;
-
-                int64_t pageBytes = mPageDatas[needed->first].size() * sizeof(int64_t);
-                
-                lassert_dump(
-                    needed->second.high() <= mPageDatas[needed->first].size() * sizeof(int64_t),
-                    "Asked for " << prettyPrintString(needed) << " but we only have " << pageBytes
-                    );
-
-                //sometimes, we give more than we need
-                if (mRandom() < .2)
-                    {
-                    if (mRandom() < .1)
-                        needed->second = IntegerRange(0, pageBytes);
-                    else
-                        {
-                        needed->second.low() = std::max<int64_t>(0, needed->second.low() - mRandom() * mPageSize);
-                        needed->second.high() = std::min<int64_t>(pageBytes, needed->second.high() + mRandom() * mPageSize);
-                        }
-                    }
-
-                LOG_DEBUG << "Handing in " << needed;
-
-                mPlacements.allocatePageData(
-                    needed->first, 
-                    needed->second, 
-                    (uint8_t*)&mPageDatas[needed->first][0] + needed->second.low()
-                    );
-                }
+            return true;
             }
+
+        if (auto needed = mNeededPageRegions.getNonblock())
+            {
+            int64_t index = 0;
+
+            int64_t pageBytes = mPageDatas[needed->first].size() * sizeof(int64_t);
+            
+            lassert_dump(
+                needed->second.high() <= mPageDatas[needed->first].size() * sizeof(int64_t),
+                "Asked for " << prettyPrintString(needed) << " but we only have " << pageBytes
+                );
+
+            //sometimes, we give more than we need
+            if (mRandom() < .2)
+                {
+                if (mRandom() < .1)
+                    needed->second = IntegerRange(0, pageBytes);
+                else
+                    {
+                    needed->second.low() = std::max<int64_t>(0, needed->second.low() - mRandom() * mPageSize);
+                    needed->second.high() = std::min<int64_t>(pageBytes, needed->second.high() + mRandom() * mPageSize);
+                    }
+                }
+
+            LOG_DEBUG << "Handing in " << needed;
+
+            mPlacements.allocatePageData(
+                needed->first, 
+                needed->second, 
+                (uint8_t*)&mPageDatas[needed->first][0] + needed->second.low()
+                );
+
+            return true;
+            }
+
+        return false;
         }
 
 private:
