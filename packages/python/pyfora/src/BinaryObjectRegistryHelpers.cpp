@@ -24,7 +24,10 @@ BinaryObjectRegistryHelpers::BinaryObjectRegistryHelpers() :
     {
     PyObject* binaryObjectRegistryHelpersModule = PyImport_ImportModule("pyfora.BinaryObjectRegistryHelpers");
     if (binaryObjectRegistryHelpersModule == NULL) {
-        throw std::runtime_error(PyObjectUtils::exc_string());
+        throw std::runtime_error(
+            "py error getting pyfora.BinaryObjectRegistryHelpers "
+            "in BinaryObjectRegistryHelpers::BinaryObjectRegistryHelpers: " +
+            PyObjectUtils::exc_string());
         }
 
     mComputedValueDataStringFun = PyObject_GetAttrString(
@@ -35,7 +38,11 @@ BinaryObjectRegistryHelpers::BinaryObjectRegistryHelpers() :
     Py_DECREF(binaryObjectRegistryHelpersModule);
 
     if (mComputedValueDataStringFun == NULL) {
-        throw std::runtime_error(PyObjectUtils::exc_string());
+        throw std::runtime_error(
+            "py error getting computedValueDataString in "
+            "BinaryObjectRegistryHelpers::BinaryObjectRegistryHelpers: " +
+            PyObjectUtils::exc_string()
+            );
         }
     }
 

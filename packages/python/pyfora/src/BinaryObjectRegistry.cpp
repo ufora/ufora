@@ -422,7 +422,10 @@ std::string BinaryObjectRegistry::_computedValueDataString(
     PyObject* res = BinaryObjectRegistryHelpers::computedValueDataString(
         computedValueArg);
     if (res == NULL) {
-        throw std::runtime_error(PyObjectUtils::exc_string());
+        throw std::runtime_error(
+            "py error getting computedValueDataString in "
+            "BinaryObjectRegistry::_computedValueDataString: " +
+            PyObjectUtils::exc_string());
         }
     
     std::string tr = std::string(

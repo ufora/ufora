@@ -210,7 +210,11 @@ void PyObjectWalker::_initGetPathToObjectFun()
         "ModuleLevelObjectIndex"
         );
     if (moduleLevelObjectIndexModule == NULL) {
-        throw std::runtime_error(PyObjectUtils::exc_string());
+        throw std::runtime_error(
+            "py error getting moduleLevelObjectIndexModule in "
+            "PyObjectWalker::_initGetPathToObjectFun: " +
+            PyObjectUtils::exc_string()
+            );
         }
 
     PyObject* moduleLevelObjectIndexClass = PyObject_GetAttrString(
@@ -219,7 +223,11 @@ void PyObjectWalker::_initGetPathToObjectFun()
         );
     if (moduleLevelObjectIndexClass == NULL) {
         Py_DECREF(moduleLevelObjectIndexModule);
-        throw std::runtime_error(PyObjectUtils::exc_string());
+        throw std::runtime_error(
+            "py error getting moduleLevelObjectIndexClass in "
+            "PyObjectWalker::_initGetPathToObjectFun: " +
+            PyObjectUtils::exc_string()
+            );
         }
 
     PyObject* singletonFunc = PyObject_GetAttrString(
@@ -229,7 +237,11 @@ void PyObjectWalker::_initGetPathToObjectFun()
     if (singletonFunc == NULL) {
         Py_DECREF(moduleLevelObjectIndexClass);
         Py_DECREF(moduleLevelObjectIndexModule);
-        throw std::runtime_error(PyObjectUtils::exc_string());
+        throw std::runtime_error(
+            "py error getting singletonFunc in "
+            "PyObjectWalker::_initGetPathToObjectFun: " +
+            PyObjectUtils::exc_string()
+            );
         }
 
     PyObject* singleton = PyObject_CallFunctionObjArgs(
@@ -240,7 +252,11 @@ void PyObjectWalker::_initGetPathToObjectFun()
         Py_DECREF(singletonFunc);
         Py_DECREF(moduleLevelObjectIndexClass);
         Py_DECREF(moduleLevelObjectIndexModule);
-        throw std::runtime_error(PyObjectUtils::exc_string());
+        throw std::runtime_error(
+            "py error getting singleton in "
+            "PyObjectWalker::_initGetPathToObjectFun: " +
+            PyObjectUtils::format_exc()
+            );
         }
 
     mGetPathToObjectFun = PyObject_GetAttrString(
@@ -254,7 +270,10 @@ void PyObjectWalker::_initGetPathToObjectFun()
     Py_DECREF(moduleLevelObjectIndexModule);
 
     if (mGetPathToObjectFun == NULL) {
-        throw std::runtime_error(PyObjectUtils::exc_string());
+        throw std::runtime_error(
+            "py error getting getPathToObject in "
+            "PyObjectWalker::_initGetPathToObjectFun: " +
+            PyObjectUtils::exc_string());
         }
     }
 
@@ -265,7 +284,11 @@ void PyObjectWalker::_initUnconvertibleClass() {
         "Unconvertible"
         );
     if (unconvertibleModule == NULL) {
-        throw std::runtime_error(PyObjectUtils::exc_string());
+        throw std::runtime_error(
+            "py error getting unconvertibleModule in "
+            "PyObjectWalker::_initUnconvertibleClass: " +
+            PyObjectUtils::exc_string()
+            );
         }
 
     mUnconvertibleClass = PyObject_GetAttrString(
@@ -276,7 +299,11 @@ void PyObjectWalker::_initUnconvertibleClass() {
     Py_DECREF(unconvertibleModule);
 
     if (mUnconvertibleClass == NULL) {
-        throw std::runtime_error(PyObjectUtils::exc_string());
+        throw std::runtime_error(
+            "py error getting unconvertibleModule in "
+            "PyObjectWalker::_initUnconvertibleClass " +
+            PyObjectUtils::exc_string()
+            );
         }
     }
 
@@ -287,7 +314,11 @@ void PyObjectWalker::_initPyforaConnectHack() {
         "connect"
         );
     if (mPyforaConnectHack == NULL) {
-        throw std::runtime_error(PyObjectUtils::exc_string());
+        throw std::runtime_error(
+            "py error getting pyfora.connect in "
+            "PyObjectWalker::_initPyforaConnectHack: " +
+            PyObjectUtils::exc_string()
+            );
         }
     }
 
@@ -635,7 +666,11 @@ void PyObjectWalker::_registerRemotePythonObject(int64_t objectId,
         "_pyforaComputedValueArg"
         );
     if (_pyforaComputedValueArg_attr == NULL) {
-        throw std::runtime_error(PyObjectUtils::exc_string());
+        throw std::runtime_error(
+            "py error getting _pyforaComputedValueArg "
+            "in PyObjectWalker::_registerRemotePythonObject: " +
+            PyObjectUtils::exc_string()
+            );
         }
 
     PyObject* res = PyObject_CallFunctionObjArgs(
@@ -646,7 +681,11 @@ void PyObjectWalker::_registerRemotePythonObject(int64_t objectId,
     Py_DECREF(_pyforaComputedValueArg_attr);
 
     if (res == NULL) {
-        throw std::runtime_error(PyObjectUtils::exc_string());
+        throw std::runtime_error(
+            "py error calling _pyforaComputedValueArg "
+            "in PyObjectWalker::_registerRemotePythonObject: " +
+            PyObjectUtils::exc_string()
+            );
         }
 
     mObjectRegistry.defineRemotePythonObject(
@@ -678,7 +717,11 @@ void PyObjectWalker::_registerFuture(int64_t objectId, PyObject* pyObject)
     Py_DECREF(result_attr);
 
     if (res == NULL) {
-        throw std::runtime_error(PyObjectUtils::exc_string());
+        throw std::runtime_error(
+            "py error calling future.result in "
+            "PyObjectWalker::_registerFuture: " +
+            PyObjectUtils::exc_string()
+            );
         }
 
     _walkPyObject(res, objectId);
@@ -871,7 +914,13 @@ void _handleUnresolvedFreeVariableException(const PyObject* filename)
             Py_DECREF(exception);
             Py_DECREF(v);
             Py_DECREF(tb);
-            throw std::runtime_error(PyObjectUtils::exc_string());
+            throw std::runtime_error(
+                "py error getting "
+                "unresolvedFreeVariableExceptionWithTrace in "
+                "PyObjectWalker::<anonymous namespace>::"
+                "_handleUnresolvedFreeVariableException: " +
+                PyObjectUtils::exc_string()
+                );
             }
         
         throw UnresolvedFreeVariableExceptionWithTrace(
@@ -910,7 +959,7 @@ PyObjectWalker::_registerStackTraceAsJson(int64_t objectId,
     PyObject* pythonTraceBackAsJson = _pythonTracebackToJson(pyObject);
     if (pythonTraceBackAsJson == NULL) {
         throw std::runtime_error(
-            "error in _registerStackTraceAsJson: " +
+            "py error in PyObjectWalker:_registerStackTraceAsJson: " +
             PyObjectUtils::exc_string()
             );
         }
@@ -927,7 +976,9 @@ void PyObjectWalker::_registerWithBlock(int64_t objectId, PyObject* pyObject)
 
     PyObject* withBlockFun = _withBlockFun(pyObject, lineno);
     if (withBlockFun == NULL) {
-        throw std::runtime_error("error getting with block ast functionDef" +
+        throw std::runtime_error(
+            "error getting with block ast functionDef"
+            " in PyObjectWalker::_registerWithBlock: " +
             PyObjectUtils::exc_string());
         }
     if (PyAstUtil::hasReturnInOuterScope(withBlockFun)) {
@@ -954,7 +1005,9 @@ void PyObjectWalker::_registerWithBlock(int64_t objectId, PyObject* pyObject)
     PyObject* chainsWithPositions = _freeMemberAccessChainsWithPositions(withBlockFun);
     if (chainsWithPositions == NULL) {
         Py_DECREF(withBlockFun);
-        throw std::runtime_error("error getting freeMemberAccessChainsWithPositions" +
+        throw std::runtime_error(
+            "py error getting freeMemberAccessChainsWithPositions "
+            "in PyObjectWalker::_registerWithBlock: "+
             PyObjectUtils::exc_string());
         }
 
@@ -996,7 +1049,9 @@ void PyObjectWalker::_registerWithBlock(int64_t objectId, PyObject* pyObject)
     if (filename == NULL) {
         Py_XDECREF(resolutions);
         throw std::runtime_error(
-            "error getting sourceFileName attr: " + PyObjectUtils::exc_string()
+            "py error getting sourceFileName attr "
+            "in PyObjectWalker::_registerWithBlock: "
+            + PyObjectUtils::exc_string()
             );
         }
 
@@ -1191,7 +1246,10 @@ void _checkForInlineForaName(PyObject* obj) {
     PyObject* __name__attr = PyObject_GetAttrString(obj, "__name__");
     if (__name__attr == NULL) {
         throw std::runtime_error(
-            "expected to find a __name__attr: " + PyObjectUtils::exc_string()
+            "expected to find a __name__attr "
+            "in PyObjectWalker::<anonymous namespace>::"
+            "_checkForInlineForaName: " +
+            PyObjectUtils::exc_string()
             );
         }
     if (not PyString_Check(__name__attr)) {
