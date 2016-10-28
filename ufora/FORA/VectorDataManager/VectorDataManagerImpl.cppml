@@ -41,6 +41,7 @@
 #include "PageRefcountTracker.hppml"
 #include "VectorDataManagerImpl.hppml"
 #include "VectorDataMemoryManager.hppml"
+#include "VectorDataMappedMemory.hppml"
 #include "VectorPage.hppml"
 #include <set>
 
@@ -120,7 +121,15 @@ VectorDataManagerImpl::VectorDataManagerImpl(
 				),
 			mStatsd
 			),
-		mOutOfProcessPythonTasks(new Cumulus::OutOfProcessPythonTasks())
+		mOutOfProcessPythonTasks(new Cumulus::OutOfProcessPythonTasks()),
+		mVectorDataMappedMemory(
+			new VectorDataMappedMemory(
+				inCallbackScheduler,
+				mMemoryManager,
+				mBigVectorLayouts,
+				inCumulusMaxVectorChunkSizeBytes * 30
+				)
+			)
 	{
 	resetSyntheticPageState();
 	}
@@ -162,8 +171,53 @@ void VectorDataManagerImpl::polymorphicSharedPtrBaseInitialized()
 		polymorphicSharedWeakPtrFromThis(),
 		&VectorDataManagerImpl::handleTotalBytesUsedByExecutionContextsChanged
 		);
+	mVectorDataMappedMemory->getOnDataLoadRequiredEvent().subscribe(
+		polymorphicSharedWeakPtrFromThis(),
+		&VectorDataManagerImpl::handleDataLoadFromMemoryMappings
+		);
 
 	broadcastMemoryUsage();
+	}
+
+void VectorDataManagerImpl::handleDataLoadFromMemoryMappings(VectorDataMappedMemory::DataLoadRequiredEvent data)
+	{
+	TimedLock lock(mMutex, "VDM");
+
+	LOG_TEST << data;
+
+	auto page = mVectorPages->getVectorPage(data.page());
+
+	lassert(page);
+
+	lassert(page->getPageletTree()->currentJor().size() == 1);
+	lassert(page->getPageletTree()->currentJor()[0].type());
+	
+	uint64_t eltSize = page->getPageletTree()->currentJor()[0].type()->size();
+
+	int64_t seenSoFar = 0;
+
+	auto trigger = page->attemptToMapTo();
+
+	while(!trigger)
+		{
+		sleepSeconds(0.001);
+		trigger = page->attemptToMapTo();
+		}
+
+	page->getPageletTree()->visitTree(
+		[&](boost::shared_ptr<Fora::Pagelet> toCopy, IntegerRange subrange, long offsetInOrig) {
+			mVectorDataMappedMemory->allocatePageData(
+				data.page(), 
+				IntegerRange(seenSoFar * eltSize, (seenSoFar + subrange.size()) * eltSize),
+				toCopy->getValues()->offsetFor(subrange.low())
+				);
+			seenSoFar += subrange.size();
+			},
+		IntegerRange(0, page->getPageletTree()->size())
+		);
+
+	//we're done - unmap the page
+	page->removeMapping(trigger);
 	}
 
 void VectorDataManagerImpl::broadcastMemoryUsage()
@@ -1388,4 +1442,7 @@ void VectorDataManagerImpl::resetSyntheticPageState()
 		mUnrealizedSyntheticPages->addPage(page);
 	}
 
-
+PolymorphicSharedPtr<VectorDataMappedMemory> VectorDataManagerImpl::getMappedMemory()
+	{
+	return mVectorDataMappedMemory;
+	}
