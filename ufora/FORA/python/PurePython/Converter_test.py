@@ -96,7 +96,11 @@ def roundtripConvert(toConvert, vdm, allowUserCodeModuleLevelLookups = False, ve
 
     t5 = time.time()
 
-    return finalResult, {'0: walking': t1-t0, '1: serialize/deserialize': t2 - t1, '2: toImplval': t3-t2, '3: toJson': t4-t3, '4: toPython': t5-t4}
+    return finalResult, {'0: walking': t1-t0,
+                         '1: serialize/deserialize': t2 - t1,
+                         '2: toImplval': t3-t2,
+                         '3: toJson': t4-t3,
+                         '4: toPython': t5-t4}
 
 
 class ConverterTest(unittest.TestCase):
@@ -119,7 +123,12 @@ class ConverterTest(unittest.TestCase):
         registry = ObjectRegistry.ObjectRegistry()
         BinaryObjectRegistryDeserializer.deserializeFromString(binaryObjectRegistry.str(), registry, lambda x:x)
 
-        self.assertEqual(sorted(registry.objectIdToObjectDefinition[objId].freeVariableMemberAccessChainsToId.keys()), ["multiprocessing"])
+        self.assertEqual(
+            sorted(
+                registry.objectIdToObjectDefinition[objId].freeVariableMemberAccessChainsToId.keys()
+                ),
+            ["multiprocessing"]
+            )
 
     def test_roundtrip_conversion_simple(self):
         vdm = FORANative.VectorDataManager(CallbackScheduler.singletonForTesting(), 10000000)

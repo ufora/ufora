@@ -12,7 +12,7 @@
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
 
-from pyfora.BinaryObjectRegistry import BinaryObjectRegistry as BinaryObjectRegistryPure
+from pyfora.BinaryObjectRegistry import BinaryObjectRegistry
 import pyfora.PureImplementationMappings as PureImplementationMappings
 import pyfora.PureImplementationMapping as PureImplementationMapping
 from pyfora.PyObjectWalker import PyObjectWalker
@@ -43,17 +43,11 @@ class PyObjectWalkerTest(unittest.TestCase):
 
         self.mappings = PureImplementationMappings.PureImplementationMappings()
 
-        def terminal_value_filter(terminalValue):
-            return not self.mappings.isOpaqueModule(terminalValue)
-
-        self.terminalValueFilter = terminal_value_filter
-
     def test_cant_provide_mapping_for_named_singleton(self):
-
         #empty mappings work
         PyObjectWalker(
-            purePythonClassMapping=self.mappings,
-            objectRegistry=None
+            self.mappings,
+            BinaryObjectRegistry()
             )
 
         self.mappings.addMapping(
@@ -64,33 +58,18 @@ class PyObjectWalkerTest(unittest.TestCase):
 
         #an instance mapping doesn't cause an exception
         PyObjectWalker(
-            purePythonClassMapping=self.mappings,
-            objectRegistry=None
+            self.mappings,
+            BinaryObjectRegistry()
             )
 
         self.assertTrue(UserWarning in NamedSingletons.pythonSingletonToName)
-
-        self.mappings.addMapping(
-            PureImplementationMapping.InstanceMapping(UserWarning, PureUserWarning)
-            )
-
-        #but this mapping doesnt
-        with self.assertRaises(Exception):
-            PyObjectWalker(
-                purePythonClassMapping=self.mappings,
-                objectRegistry=None
-                )
 
     def test_PyObjectWalker_TypeErrors(self):
         mappings = PureImplementationMappings.PureImplementationMappings()
 
         with self.assertRaises(TypeError):
             not_an_objectregistry = 2
-            PyObjectWalker(mappings, not_an_objectregistry, None, None, None)
-
-        with self.assertRaises(TypeError):
-            not_a_native_object_registry = BinaryObjectRegistryPure()
-            PyObjectWalker(mappings, not_a_native_object_registry, None, None, None)
+            PyObjectWalker(mappings, not_an_objectregistry)
 
 
 if __name__ == "__main__":

@@ -657,13 +657,13 @@ class ExceptionTestCases(object):
                 pass
 
     def test_reference_nonexistent_module_member(self):
-        import socket
-        def f():
-            return socket.this_doesnt_exist
+        with self.create_executor() as executor:
+            import socket
+            def f():
+                return socket.this_doesnt_exist
 
-        with self.assertRaises(pyfora.ComputationError):
-            self.evaluateWithExecutor(f)
-
+            with self.assertRaises(pyfora.ComputationError):
+                executor.submit(f).result().toLocal().result()
 
     def test_invalid_apply(self):
         with self.create_executor() as executor:

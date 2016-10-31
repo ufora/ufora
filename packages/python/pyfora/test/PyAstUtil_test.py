@@ -28,7 +28,7 @@ class PyAstUtilTest(unittest.TestCase):
         dataMembers = PyAstUtil.collectDataMembersSetInInit(C)
 
         self.assertEqual(
-            dataMembers,
+            set(dataMembers),
             set(['x', 'y'])
             )
 
@@ -43,7 +43,7 @@ class PyAstUtilTest(unittest.TestCase):
 
         # in our translation, we're _always_ producing an x member
         self.assertEqual(
-            dataMembers,
+            set(dataMembers),
             set(['x'])
             )
 
@@ -55,7 +55,7 @@ class PyAstUtilTest(unittest.TestCase):
         dataMembers = PyAstUtil.collectDataMembersSetInInit(C3)
 
         self.assertEqual(
-            dataMembers,
+            set(dataMembers),
             set(['x', 'y'])
             )
 
@@ -67,7 +67,7 @@ class PyAstUtilTest(unittest.TestCase):
         dataMembers = PyAstUtil.collectDataMembersSetInInit(C4)
 
         self.assertEqual(
-            dataMembers,
+            set(dataMembers),
             set(['x', 'y', 'z'])
             )
 
