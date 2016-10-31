@@ -30,8 +30,8 @@ class ModuleLevelObjectIndex(object):
             return
 
         if module is not None:
-            for leafItemName in module.__dict__:
-                leafItemValue = module.__dict__[leafItemName]
+            d = dict(module.__dict__)
+            for leafItemName, leafItemValue in d.iteritems():
 
                 self.module_objects_by_name["modules", modulename, leafItemName] = leafItemValue
                 self.modules_and_names_by_object[id(leafItemValue)] = ("modules", modulename, leafItemName)
