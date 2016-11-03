@@ -51,6 +51,8 @@ class Worker:
 
                 if first_byte == Messages.MSG_OOPP_CALL:
                     self.executeOutOfProcessPythonCall(connection)
+                elif first_byte == Messages.MSG_NO_OP:
+                    pass
                 elif first_byte == Messages.MSG_TEST:
                     aString = Common.readString(connection.fileno())
                     Common.writeString(connection.fileno(), aString)
@@ -75,7 +77,8 @@ class Worker:
 
         walker = PyObjectWalker.PyObjectWalker(
             mappings,
-            registry)
+            registry
+            )
 
         objId = walker.walkPyObject(result)
 

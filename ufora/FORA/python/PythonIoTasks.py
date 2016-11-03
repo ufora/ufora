@@ -298,67 +298,6 @@ def completeMultipartS3Upload(s3InterfaceFactory,
             .executeAndCallbackWithString(completer,
                                           outputCallback)
 
-class OutOfProcessPythonCallExecutor:
-    def __init__(self):
-        pass
-
-    wantsDirectAccessToInputFileDescriptor = True
-
-    def __call__(self, fd):
-        mappings = PureImplementationMappings.PureImplementationMappings()
-        mappings.load_pure_modules()
-
-        rehydrator = PythonObjectRehydrator.PythonObjectRehydrator(mappings, allowUserCodeModuleLevelLookups=False)
-        convertedInstance = rehydrator.readFileDescriptorToPythonObject(fd)
-
-        result = convertedInstance()
-
-        registry = BinaryObjectRegistry.BinaryObjectRegistry()
-
-        walker = PyObjectWalker.PyObjectWalker(
-            mappings,
-            registry
-            )
-
-        objId = walker.walkPyObject(result)
-
-        registry.defineEndOfStream()
-
-        return registry.str() + struct.pack("<q", objId)
-
-
-def outOfProcessPythonCall(downloaderPool, vdm, taskObject):
-    writer = OutOfProcessPythonCallExecutor()
-
-    pythonNameToPyforaName = {}
-
-    pythonNameToPyforaName.update(
-        NamedSingletons.pythonNameToPyforaName
-        )
-    pythonNameToPyforaName.update(
-        PyAbortSingletons.pythonNameToPyforaName
-        )
-
-    def outputCallback(fd, sz):
-        taskObject.readFromFileDescriptor(
-            fd,
-            Converter.canonicalPurePythonModule(),
-            ModuleImporter.builtinModuleImplVal(),
-            pythonNameToPyforaName,
-            PythonAstConverter.parseStringToPythonAst
-            )
-
-    def inputCallback(fd):
-        taskObject.sendToFileDescriptor(
-            fd, 
-            Converter.canonicalPurePythonModule(),
-            pythonNameToPyforaName
-            )
-
-    downloaderPool.getDownloader() \
-            .executeAndCallbackWithFileDescriptor(writer, outputCallback, inputCallback)
-
-
 def writeMultipartS3UploadPart(s3InterfaceFactory,
                                outOfProcessDownloaderPool,
                                bucketname,

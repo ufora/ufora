@@ -9,7 +9,7 @@ class RegularPythonContext:
         res =  __inline_fora(
             """fun(@unnamed_args:(body), ...) {
                     try {
-                        cached`(#ExternalIoTask(#OutOfProcessPythonCall(body)));
+                        cached`(#OutOfProcessPythonCall(body));
                         }
                     catch (e)
                         {

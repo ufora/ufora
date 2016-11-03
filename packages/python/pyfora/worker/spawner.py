@@ -63,12 +63,14 @@ def main(argv):
         logging.info("Maximum number of workers is %s", args.max_processes)
 
     try:
-        listener = Spawner.Spawner(args.socket_dir, args.socket_name, args.max_processes)
+        listener = Spawner.Spawner(args.socket_dir, args.socket_name, args.max_processes, True)
         listener.listen()
         listener.teardown()
     except:
         logging.error("unknown exception in pyfora worker process spawner:\n%s", traceback.format_exc())
-        
+        sys.stdout.flush()
+        sys.stderr.flush()
+
         try:
             listener.clearPath()
         except:

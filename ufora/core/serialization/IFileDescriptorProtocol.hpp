@@ -18,6 +18,9 @@
 #include <vector>
 #include <deque>
 #include "../Common.hppml"
+#include "../Clock.hpp"
+#include "../Logging.hpp"
+
 #include "IProtocol.hpp"
 #include <stdio.h>
 
@@ -88,7 +91,46 @@ public:
 			return 0;
 
 		if (mAlignment == 0)
-			return ::read(mFD, inData, inByteCount);
+			{
+			if (inBlock)
+				{
+				uword_t bytesRead = 0;
+
+				while (inByteCount > 0)
+					{
+					auto resultCode = ::read(mFD, inData, inByteCount);
+
+					if (resultCode == 0)
+						throw StreamException("Stream terminated unexpectedly on fd=" + boost::lexical_cast<string>(mFD) + ".\n"
+							+ Ufora::debug::StackTrace::getStringTrace());
+
+					if (resultCode < 0)
+						throw StreamException("Stream had an error on fd=" + boost::lexical_cast<string>(mFD) 
+							+ ": " + std::string(strerror(errno)) + "\n"
+							+ Ufora::debug::StackTrace::getStringTrace());
+					
+					lassert(resultCode <= inByteCount);
+
+					bytesRead += resultCode;
+					inByteCount -= resultCode;
+					inData = (void*)((char*)inData + resultCode);
+					}
+
+				return bytesRead;
+				}
+			else
+				{
+				while (true)
+					{
+					auto resultCode = ::read(mFD, inData, inByteCount);
+					
+					if (resultCode <= 0)
+						return 0;
+					else
+						return resultCode;
+					}
+				}
+			}
 
 		char* dataTarget = (char*)inData;
 

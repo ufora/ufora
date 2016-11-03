@@ -21,14 +21,14 @@ import sys
 import time
 import threading
 
-#we have to run these tests from a separate process. If we run them in the main harness,
-#then sometimes there is a lot of memory pressure and "fork" fails. This is really an artifact
-#of our test framework, so running these tests in a clean environment makes more sense.
-class OutOfProcessDownloaderTest(unittest.TestCase):
+class Cases:
+    def constructWorkerPool(self, socket_path, **kwds):
+        raise NotImplementedError("Subclasses implement")
+
     def test_workerPool(self):
         socket_path = tempfile.mkdtemp()
 
-        pool = WorkerPool.WorkerPool(socket_path)
+        pool = self.constructWorkerPool(socket_path)
 
         for ix in xrange(100):
             testMessage = "this is a string " + str(ix)
@@ -41,7 +41,7 @@ class OutOfProcessDownloaderTest(unittest.TestCase):
     def test_workerpoolExecutes(self):
         socket_path = tempfile.mkdtemp()
 
-        pool = WorkerPool.WorkerPool(socket_path)
+        pool = self.constructWorkerPool(socket_path)
 
         def generateLambda(arg):
             def f():
@@ -53,12 +53,12 @@ class OutOfProcessDownloaderTest(unittest.TestCase):
 
         pool.terminate()
 
-        self.assertTrue(not os.listdir(socket_path))
+        self.assertTrue(not os.listdir(socket_path), os.listdir(socket_path))
 
     def test_workerpoolParallel(self):
         socket_path = tempfile.mkdtemp()
 
-        pool = WorkerPool.WorkerPool(socket_path, max_processes=10)
+        pool = self.constructWorkerPool(socket_path, max_processes=10)
 
         def doThreads(count):
             def generateLambda(arg):
@@ -89,10 +89,18 @@ class OutOfProcessDownloaderTest(unittest.TestCase):
 
         self.assertTrue(elapsed < 15.0 and elapsed > 4.99, elapsed)
 
+
+#we have to run these tests from a separate process. If we run them in the main harness,
+#then sometimes there is a lot of memory pressure and "fork" fails. This is really an artifact
+#of our test framework, so running these tests in a clean environment makes more sense.
+class OutOfProcessPythonWorkerTest(unittest.TestCase, Cases):
+    def constructWorkerPool(self, socket_path, **kwds):
+        return WorkerPool.WorkerPool(socket_path, outOfProcess=True, **kwds)
+
     def test_workerpoolParallelWithFailures(self):
         socket_path = tempfile.mkdtemp()
 
-        pool = WorkerPool.WorkerPool(socket_path, max_processes=10)
+        pool = self.constructWorkerPool(socket_path, max_processes=10)
 
         valid = []
         invalid = []
@@ -134,6 +142,14 @@ class OutOfProcessDownloaderTest(unittest.TestCase):
                 assert i in invalid
             else:
                 assert i in valid
+
+
+#we have to run these tests from a separate process. If we run them in the main harness,
+#then sometimes there is a lot of memory pressure and "fork" fails. This is really an artifact
+#of our test framework, so running these tests in a clean environment makes more sense.
+class InProcessPythonWorkerTest(unittest.TestCase, Cases):
+    def constructWorkerPool(self, socket_path, **kwds):
+        return WorkerPool.WorkerPool(socket_path, outOfProcess=False, **kwds)
 
 if __name__ == '__main__':
     Mainline.UnitTestMainline([])

@@ -303,6 +303,10 @@ class WithBlockExecutor(object):
             #not optimal, but it's better than the alternative which is to have the line-number
             #at the end of the 'with' block, which is just confusing.
             frame.f_lineno = frame.f_lineno-1
+
+            if isinstance(exceptionValue, str):
+                exceptionValue = Exceptions.InternalError(exceptionValue)
+
             raise exceptionValue, None, tb
 
         self.executor.connection.pullAllMessagesAndProcess()

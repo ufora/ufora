@@ -17,10 +17,12 @@ import sys
 import socket
 import struct
 import pyfora.worker.spawner as spawner
+import pyfora.worker.Spawner as Spawner
 import pyfora.worker.Messages as Messages
 import pyfora.worker.Common as Common
 import pyfora.worker.SubprocessRunner as SubprocessRunner
 import time
+import threading
 import logging
 
 import pyfora.PureImplementationMappings as PureImplementationMappings
@@ -30,18 +32,27 @@ import pyfora.PythonObjectRehydrator as PythonObjectRehydrator
 
 
 class WorkerPool:
-    def __init__(self, pathToSocketDir, max_processes = None):
+    def __init__(self, pathToSocketDir, max_processes = None, outOfProcess=True):
         self.pathToSocketDir = pathToSocketDir
+        self.outOfProcess = outOfProcess
+        self.childSubprocess = None
+        self.childThread = None
 
         assert not os.path.exists(os.path.join(self.pathToSocketDir, "selector"))
 
-        self.childSubprocess = SubprocessRunner.SubprocessRunner(
-            [sys.executable, spawner.__file__, pathToSocketDir, "selector"] + (["--max_processes", str(max_processes)] if max_processes is not None else []),
-            lambda x: logging.info("spawner OUT> %s", x),
-            lambda x: logging.info("spawner ERR> %s", x),
-            )
+        if self.outOfProcess:
+            self.childSubprocess = SubprocessRunner.SubprocessRunner(
+                [sys.executable, spawner.__file__, pathToSocketDir, "selector"] + (["--max_processes", str(max_processes)] if max_processes is not None else []),
+                lambda x: logging.info("spawner OUT> %s", x),
+                lambda x: logging.info("spawner ERR> %s", x),
+                )
 
-        self.childSubprocess.start()
+            self.childSubprocess.start()
+        else:
+            spawnerObject = Spawner.Spawner(pathToSocketDir, "selector", max_processes, False)
+
+            self.childThread = threading.Thread(target=spawnerObject.listen, args=())
+            self.childThread.start()
 
         self.blockUntilConnected()
 
@@ -67,7 +78,10 @@ class WorkerPool:
         Common.writeAllToFd(aSocket.fileno(), Messages.MSG_SHUTDOWN)
         aSocket.close()
 
-        self.childSubprocess.wait()
+        if self.outOfProcess:
+            self.childSubprocess.wait()
+        else:
+            self.childThread.join()
 
     def _communicate_with_worker(self, callback):
         aSocket = self.connect()

@@ -116,8 +116,6 @@ class PythonIoTaskService(object):
                 self.handleExtractPersistedObject(request)
             elif request.isListPersistedObjects():
                 self.handleListPersistedObjects(request)
-            elif request.isOutOfProcessPythonCall():
-                self.handleOutOfProcessPythonCall(request)
             else:
                 raise UserWarning("Invalid request: %s" % request)
 
@@ -323,20 +321,6 @@ class PythonIoTaskService(object):
                     traceback.format_exc()
                     )
                 return message
-
-    def handleOutOfProcessPythonCall(self, request):
-        result = PythonIoTasks.outOfProcessPythonCall(
-            self.outOfProcessDownloaderPool,
-            self.vdm_,
-            self.vdm_.getOutOfProcessPythonTask(request.asOutOfProcessPythonCall.taskId)
-            )
-
-        self.datasetRequestChannel_.write(
-            CumulusNative.PythonIoTaskResponse.OutOfProcessPythonCallResponse(
-                request.guid,
-                request.asOutOfProcessPythonCall.taskId
-                )
-            )
 
     def handleListPersistedObjects(self, request):
         while True:

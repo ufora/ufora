@@ -37,6 +37,7 @@ import ufora.distributed.SharedState.SharedStateService as SharedStateService
 import ufora.distributed.SharedState.Connections.InMemoryChannelFactory as InMemorySharedStateChannelFactory
 import ufora.distributed.SharedState.Connections.ViewFactory as ViewFactory
 import ufora.cumulus.distributed.PythonIoTaskService as PythonIoTaskService
+import ufora.cumulus.OutOfProcessPythonTasks as OutOfProcessPythonTasks
 import ufora.distributed.Storage.S3ObjectStore as S3ObjectStore
 
 
@@ -267,6 +268,7 @@ class InMemoryCumulusSimulation(object):
         self.machineIdsEverAllocated = 0
         self.clientsAndVdms = []
         self.loadingServices = []
+        self.outOfProcessTaskServices = []
         self.clientTeardownGates = []
         self.workerTeardownGates = []
 
@@ -343,6 +345,14 @@ class InMemoryCumulusSimulation(object):
 
         self.loadingServices.append(loadingService)
 
+        outOfProcessPythonTasks = \
+            OutOfProcessPythonTasks.OutOfProcessPythonTasks(
+                outOfProcess=s3InterfaceFactory.isCompatibleWithOutOfProcessDownloadPool
+                )
+
+        workerVdm.initializeOutOfProcessPythonTasks(outOfProcessPythonTasks.nativeTasks)
+        self.outOfProcessTaskServices.append(outOfProcessPythonTasks)
+
         self.workerTeardownGates.append(workerVdm.getVdmmTeardownGate())
 
     def wireWorkersTogether_(self, ix1, ix2):
@@ -402,6 +412,9 @@ class InMemoryCumulusSimulation(object):
         for service in self.loadingServices:
             service.teardown()
 
+        for service in self.outOfProcessTaskServices:
+            service.teardown()
+
         for worker,vdm,eventHandler in self.workersVdmsAndEventHandlers:
             worker.teardown()
 
@@ -429,6 +442,7 @@ class InMemoryCumulusSimulation(object):
 
         teardownGate = self.workerTeardownGates[index]
         self.loadingServices[index].teardown()
+        self.outOfProcessTaskServices[index].teardown()
 
         if self.channelThroughputMBPerSecond:
             self.rateLimitedChannelGroupsForEachListener.pop(index)
@@ -438,6 +452,7 @@ class InMemoryCumulusSimulation(object):
         self.workerTeardownGates.pop(index)
 
         self.loadingServices.pop(index)
+        self.outOfProcessTaskServices.pop(index)
 
         self.workersVdmsAndEventHandlers.pop(index)
 
@@ -457,6 +472,7 @@ class InMemoryCumulusSimulation(object):
         self.workersVdmsAndEventHandlers = None
         self.clientsAndVdms = None
         self.loadingServices = None
+        self.outOfProcessTaskServices = None
         self.listener = None
 
         for gate in self.workerTeardownGates + self.clientTeardownGates:

@@ -225,19 +225,6 @@ public:
                         ImplValContainer()
                         );
                 }
-            -| OutOfProcessPythonTaskFinished(taskId) ->> {
-            	mExternalIoTaskResult = copyToKeepalive(
-            		Fora::Interpreter::ComputationResult::Result(
-            			*mRefcountKeepaliveExecutionContext.getVDM().getOutOfProcessPythonTasks()->getTask(taskId)
-            				->getTaskResult(),
-            			ImplValContainer()
-            			)
-            		);
-
-            	mRefcountKeepaliveExecutionContext.getVDM().getOutOfProcessPythonTasks()->getTask(taskId)->clear();
-
-            	mRefcountKeepaliveExecutionContext.getVDM().getOutOfProcessPythonTasks()->completeTask(taskId);
-	            }
 			-| _ ->> {
 				mExternalIoTaskResult = Fora::Interpreter::ComputationResult::Failure(
 					Fora::Interpreter::ErrorState::IllegalComputationState(
@@ -640,37 +627,110 @@ public:
 
 		CreatedComputations computations;
 
-		@match ComputationStatus(mComputationStatus)
-			-|	Computable() ->> {
-				while (true)
-					{
-					stepComputation_();
-
-					if (!postComputationStateUpdate_(
-							computations,
-							guid
-							))
+		if (mOutsideEcValues.getUnconsumedDefinition() && 
+				mOutsideEcValues.getUnconsumedDefinition()->isOutOfProcessCall())
+			{
+			computeOutOfProcessCall_();
+			return computations;
+			}
+		else
+			{
+			@match ComputationStatus(mComputationStatus)
+				-|	Computable() ->> {
+					while (true)
 						{
-						mInterruptTriggered = false;
-						return computations;
-						}
+						stepComputation_();
 
-					if (mInterruptTriggered)
-						{
-						mInterruptTriggered = false;
-						return computations;
-						}
+						if (!postComputationStateUpdate_(
+								computations,
+								guid
+								))
+							{
+							mInterruptTriggered = false;
+							return computations;
+							}
 
-					if (!computations.isEmpty())
-						return computations;
+						if (mInterruptTriggered)
+							{
+							mInterruptTriggered = false;
+							return computations;
+							}
+
+						if (!computations.isEmpty())
+							return computations;
+						}
 					}
+				-|	_ ->> {
+					lassert_dump(
+						false,
+						"doesn't make sense to 'compute' a thread in state " << mComputationStatus.tagName()
+						);
+					}
+			}
+		}
+
+	void computeOutOfProcessCall_()
+		{
+		PolymorphicSharedPtr<VectorDataManager> vdm = mExecutionContext->getVDM().polymorphicSharedPtrFromThis();
+
+		PolymorphicSharedPtr<OutOfProcessPythonTasks> tasks = vdm->getOutOfProcessPythonTasks();
+
+		if (!tasks)
+			{
+			placeInFailureState(
+				Fora::Interpreter::ErrorState::IllegalComputationState(
+					"No out-of-process-python tasks provided"
+					)
+				);
+			return;
+			}
+
+
+		ImplValContainer valueInWorkingContext;
+
+			{
+		    ValueDeepcopierState state;
+
+		    ValueDeepcopier deepcopier(
+		        state,
+		        false,
+		        mExecutionContext->getMemoryPool(),
+		        false,
+		        false
+		        );
+
+		    valueInWorkingContext = deepcopier.duplicate(
+		    	mOutsideEcValues.getUnconsumedDefinition()->getOutOfProcessCall().toCall()
+		    	);
+			}
+
+		Ufora::threading::Trigger trigger;
+
+		@match OutOfProcessPythonTaskResult(
+				tasks->execute(
+					valueInWorkingContext,
+					mExecutionContext,
+					trigger
+					)
+				)
+			-| ValidResult() ->> {
+				mComputationStatus = ComputationStatus::Finished();
 				}
-			-|	_ ->> {
-				lassert_dump(
-					false,
-					"doesn't make sense to 'compute' a thread in state " << mComputationStatus.tagName()
-					);
+			-| Blocked(pages) ->> {
+		    	mComputationStatus = ComputationStatus::BlockedOnVectorLoad(pages);
 				}
+		    -| TerminatedEarly() ->> {
+		    	placeInFinishedState(
+			    	Fora::Interpreter::ComputationResult::Exception(
+						ImplValContainer(
+							emptyTreeVec() + 
+								ImplValContainer(CSTValue("OutOfProcessSubtask failed")) + 
+								ImplValContainer(CSTValue(ForaStackTrace()))
+							),
+						ImplValContainer()
+						)
+			    	);
+			    }
 		}
 
 	bool canResubmitBlockingThreads()
@@ -793,6 +853,9 @@ public:
 	//place the computation in the ExecutionContext if possible, but don't execute any FORA code.
 	void resumeUnconsumedDefinition_(bool actuallyCalculate)
 		{
+		if (mOutsideEcValues.getUnconsumedDefinition()->isOutOfProcessCall()) 
+			return;
+
 		bool wantsCalculate = false;
 
 			{
@@ -1065,10 +1128,23 @@ public:
 				}
 
 			if (!resultToUse)
-				resultToUse = Fora::Interpreter::ComputationResult::Result(
-					ImplValContainer(cacheResults),
-					ImplValContainer()
-					);
+				{
+				ImplValContainer cacheLoadRequest = mExecutionContext->getCacheRequest();
+
+				if (isOutOfProcessSubtaskCacheLoad_(cacheLoadRequest))
+					{
+					lassert(cacheResults.size() == 1);
+					resultToUse = Fora::Interpreter::ComputationResult::Result(
+						cacheResults[0],
+						ImplValContainer()
+						);
+					}
+				else
+					resultToUse = Fora::Interpreter::ComputationResult::Result(
+						ImplValContainer(cacheResults),
+						ImplValContainer()
+						);
+				}
 
 			if (!mExecutionContext->isInterrupted())
 				mTimesComputedButMadeNoProgress = 0;
@@ -1178,6 +1254,9 @@ public:
 						))
 				return true;
 
+			if (stateChangeToOutOfProcessSubtaskCacheLoad_(cacheLoadRequest, ioComputations, ioGuid))
+				return true;
+
 			if (isValidCacheLoad_(cacheLoadRequest))
 				return stateChangeToRegularCacheLoad_(
 						cacheLoadRequest,
@@ -1191,6 +1270,7 @@ public:
 					ImplValContainer()
 					)
 				);
+
 			return true;
 			}
 		else
@@ -1268,6 +1348,58 @@ public:
 			else
 				return false;
 			
+			return true;
+			}
+
+		return false;
+		}
+
+	bool isOutOfProcessSubtaskCacheLoad_(
+				ImplValContainer cacheLoadRequest
+				)
+		{
+		Nullable<pair<Symbol, ImplValContainer> > alt =
+			ImplValContainerUtilities::extractAsAlternative(*cacheLoadRequest.tupleGetItem(0));
+
+		if (alt && alt->first == Symbol("OutOfProcessPythonCall") && *alt->second.tupleGetSize() == 1)
+			return true;
+
+		return false;
+		}
+
+	bool stateChangeToOutOfProcessSubtaskCacheLoad_(
+				ImplValContainer cacheLoadRequest,
+				CreatedComputations& result,
+				hash_type& ioGuid
+				)
+		{
+		Nullable<pair<Symbol, ImplValContainer> > alt =
+			ImplValContainerUtilities::extractAsAlternative(*cacheLoadRequest.tupleGetItem(0));
+
+		if (alt && alt->first == Symbol("OutOfProcessPythonCall") && *alt->second.tupleGetSize() == 1)
+			{
+			auto createThread = [&](ComputationDefinition def) {
+				ioGuid = ioGuid + computationStateHashIncrement;
+				ComputationId id = ComputationId::CreateIdForSplit(def, ioGuid, mTimesEverSplit++);
+				result.computations() = result.computations() + id + def;
+				return id;
+				};
+
+			mBlockingComputationsInOrder.push_back(
+				createThread(
+					ComputationDefinition::OutOfProcessCall(mOwnComputationId, *alt->second.tupleGetItem(0))
+					)
+				);
+
+			mComputationStatisticsOutsideOfEC.timesComputed()++;
+
+			mComputationStatus = ComputationStatus::BlockedOnComputations(
+				ImmutableTreeSet<ComputationId>(
+					mBlockingComputationsInOrder.begin(),
+					mBlockingComputationsInOrder.end()
+					)
+				);
+
 			return true;
 			}
 
@@ -1576,6 +1708,25 @@ public:
 		mIsRejoinedSplitThatHasNotComputed = false;
 		}
 
+	void placeInFinishedState(Fora::Interpreter::ComputationResult result)
+		{
+		mExecutionContext->teardown();
+		mOutsideEcValues.clearCompletely();
+		mBlockingComputationsInOrder.clear();
+		mChildCheckpointStatuses.clear();
+
+		mExecutionContext->setFinishedResult(result);
+		mComputationStatus = ComputationStatus::Finished();
+		mComputationStatisticsOutsideOfEC.timesComputed()++;
+		}
+
+	void placeInFailureState(Fora::Interpreter::ErrorState errorState)
+		{
+		placeInFinishedState(
+			Fora::Interpreter::ComputationResult::Failure(errorState)
+			);
+		}
+
 	void markComputationCircular()
 		{
 		LOG_WARN << "Marking " << prettyPrintStringWithoutWrapping(mOwnComputationId)
@@ -1583,33 +1734,20 @@ public:
 			<< prettyPrintStringWithoutWrapping(mComputationStatus)
 			;
 
-		mExecutionContext->teardown();
-		mOutsideEcValues.clearCompletely();
-		mBlockingComputationsInOrder.clear();
-		mChildCheckpointStatuses.clear();
-		
-		mExecutionContext->setFinishedResult(
-			Fora::Interpreter::ComputationResult::Failure(
-				Fora::Interpreter::ErrorState::IllegalComputationState(
-					"Computation produced a circular reference."
-					)
+		placeInFailureState(
+			Fora::Interpreter::ErrorState::IllegalComputationState(
+				"Computation produced a circular reference."
 				)
 			);
-		mComputationStatus = ComputationStatus::Finished();
 		}
 
 	void markSliceLoadFailedPermanently()
 		{
-		mExecutionContext->teardown();
-		mExecutionContext->setFinishedResult(
-			Fora::Interpreter::ComputationResult::Failure(
-				Fora::Interpreter::ErrorState::IllegalComputationState(
-					"PageLoad couldn't be completed due to an internal error."
-					)
+		placeInFailureState(
+			Fora::Interpreter::ErrorState::IllegalComputationState(
+				"PageLoad couldn't be completed due to an internal error."
 				)
 			);
-		mComputationStatus = ComputationStatus::Finished();
-		mComputationStatisticsOutsideOfEC.timesComputed()++;
 		}
 
 	void markSliceLoaded()

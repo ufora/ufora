@@ -13,7 +13,7 @@
    See the License for the specific language governing permissions and
    limitations under the License.
 ****************************************************************************/
-#include "OutOfProcessPythonTask.hppml"
+#include "OutOfProcessPythonTasks.hppml"
 
 #include <boost/python.hpp>
 
@@ -26,38 +26,37 @@
 #include "../FORA/python/PurePython/PythonParseResult.hppml"
 
 using namespace Fora;
+using namespace Cumulus;
 
-class OutOfProcessPythonTaskWrapper :
-    public native::module::Exporter<OutOfProcessPythonTaskWrapper> {
+class ScopedPyThreadsReacquireNew {
+public:
+    ScopedPyThreadsReacquireNew()
+        {
+        mGilState = PyGILState_Ensure();
+        }
+
+    ~ScopedPyThreadsReacquireNew()
+        {
+        PyGILState_Release(mGilState);
+        }
+
+private:
+    PyGILState_STATE mGilState;
+};
+
+class OutOfProcessPythonTasksWrapper :
+    public native::module::Exporter<OutOfProcessPythonTasksWrapper> {
 public:
     std::string getModuleName(void)
         {
-        return "FORA";
-        }
-
-    static void sendToFileDescriptor(
-                    PolymorphicSharedPtr<Cumulus::OutOfProcessPythonTask> task,
-                    int fd,
-                    ImplValContainer pyforaBuiltins,
-                    boost::python::object pythonToPyforaSingletonNamesPyDict
-                    )
-        {
-        ImmutableTreeMap<string, string> pythonToPyforaSingletonNames;
-        Ufora::python::toCPP(pythonToPyforaSingletonNamesPyDict, pythonToPyforaSingletonNames);
-
-        ScopedPyThreads releaseTheGil;
-
-        OFileDescriptorProtocol protocol(fd, 0, 0, OFileDescriptorProtocol::CloseOnDestroy::False);
-        OBinaryStream stream(protocol);
-
-        task->send(stream, pyforaBuiltins, pythonToPyforaSingletonNames);
+        return "Cumulus";
         }
 
     static boost::function<PythonParseResult (std::string)> makePyAstParserFromPyObject(boost::python::object parser)
         {
         return boost::function<PythonParseResult (std::string)>(
             [=](std::string text) {
-                ScopedPyThreadsReacquire reacquireTheGil;
+                ScopedPyThreadsReacquireNew reacquireTheGil;
         
                 try{
                     boost::python::object result = parser(text);
@@ -83,29 +82,26 @@ public:
             );
         }
 
-    static void readFromFileDescriptor(
-                    PolymorphicSharedPtr<Cumulus::OutOfProcessPythonTask> task,
-                    int fd,
+    static PolymorphicSharedPtr<OutOfProcessPythonTasks>* construct(
+                    boost::python::object pythonToPyforaSingletonNamesPyDict,
                     ImplValContainer pyforaBuiltins,
                     ImplValContainer foraBuiltins,
-                    boost::python::object pythonToPyforaSingletonNamesPyDict,
-                    boost::python::object pyAstConverter
+                    boost::python::object pyAstConverter,
+                    std::string pathToSocket
                     )
         {
         ImmutableTreeMap<string, string> pythonToPyforaSingletonNames;
+
         Ufora::python::toCPP(pythonToPyforaSingletonNamesPyDict, pythonToPyforaSingletonNames);
 
-        ScopedPyThreads releaseTheGil;
-
-        IFileDescriptorProtocol protocol(fd, 0, 0, IFileDescriptorProtocol::CloseOnDestroy::False);
-        IBinaryStream stream(protocol);
-
-        task->read(
-            stream, 
-            pyforaBuiltins, 
-            foraBuiltins, 
-            pythonToPyforaSingletonNames, 
-            makePyAstParserFromPyObject(pyAstConverter)
+        return new PolymorphicSharedPtr<OutOfProcessPythonTasks>(
+            new OutOfProcessPythonTasks(
+                pythonToPyforaSingletonNames, 
+                pyforaBuiltins, 
+                foraBuiltins, 
+                makePyAstParserFromPyObject(pyAstConverter),
+                pathToSocket
+                )
             );
         }
 
@@ -113,10 +109,9 @@ public:
         {
         using namespace boost::python;
 
-        class_<PolymorphicSharedPtr<Cumulus::OutOfProcessPythonTask>>(
-                "OutOfProcessPythonTask", no_init)
-            .def("readFromFileDescriptor", readFromFileDescriptor)
-            .def("sendToFileDescriptor", sendToFileDescriptor)
+        class_<PolymorphicSharedPtr<Cumulus::OutOfProcessPythonTasks>>(
+                "OutOfProcessPythonTasks", no_init)
+            .def("__init__", make_constructor(construct))
             ;
         }
 };
@@ -125,9 +120,9 @@ public:
 //explicitly instantiating the registration element causes the linker to need
 //this file
 template<>
-char native::module::Exporter<OutOfProcessPythonTaskWrapper>::mEnforceRegistration =
+char native::module::Exporter<OutOfProcessPythonTasksWrapper>::mEnforceRegistration =
     native::module::ExportRegistrar<
-        OutOfProcessPythonTaskWrapper>::registerWrapper();
+        OutOfProcessPythonTasksWrapper>::registerWrapper();
 
 
 

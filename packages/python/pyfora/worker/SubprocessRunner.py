@@ -172,6 +172,10 @@ class SubprocessRunner(object):
         assert self.isStarted
         self.process.terminate()
 
+    def kill(self):
+        assert self.isStarted
+        self.process.kill()
+
     def poll(self):
         return self.process.poll()
 

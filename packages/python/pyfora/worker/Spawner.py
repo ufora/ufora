@@ -18,16 +18,16 @@ import socket
 import sys
 import logging
 import traceback
+import threading
 
 import pyfora.worker.worker as worker
+import pyfora.worker.Worker as Worker
 import pyfora.worker.Common as Common
 import pyfora.worker.Messages as Messages
 import pyfora.worker.SubprocessRunner as SubprocessRunner
 
-
-class WorkerConnection:
-    def __init__(self, proc, socket_name, socket_dir):
-        self.proc = proc
+class WorkerConnectionBase:
+    def __init__(self, socket_name, socket_dir):
         self.socket_name = socket_name
         self.socket_dir = socket_dir
 
@@ -52,11 +52,7 @@ class WorkerConnection:
                 pass
 
     def teardown(self):
-        logging.error("Worker %s appears dead. Removing it.", self.socket_name)
-        self.proc.terminate()
-        self.proc.wait()
-        logging.error("Terminated %s successfully.", self.socket_name)
-
+        self.shutdown_worker()
         self.remove_socket()
 
     def remove_socket(self):
@@ -65,11 +61,93 @@ class WorkerConnection:
         except OSError:
             pass
 
+    def shutdown_worker(self):
+        raise NotImplementedError("Subclasses implement")
 
+    def processLooksTerminated(self):
+        raise NotImplementedError("Subclasses implement")
 
+    def cleanupAfterAppearingDead(self):
+        raise NotImplementedError("Subclasses implement")
+
+class OutOfProcessWorkerConnection(WorkerConnectionBase):
+    def __init__(self, socket_name, socket_dir):
+        WorkerConnectionBase.__init__(self, socket_name, socket_dir)
+
+        worker_socket_path = os.path.join(socket_dir, socket_name)
+
+        logging.error("socket path: %s", worker_socket_path)
+
+        def onStdout(msg):
+            logging.info("%s out> %s", socket_name, msg)
+
+        def onStderr(msg):
+            logging.info("%s err> %s", socket_name, msg)
+
+        self.proc = SubprocessRunner.SubprocessRunner(
+            [sys.executable, worker.__file__, worker_socket_path],
+            onStdout,
+            onStderr
+            )
+
+        self.proc.start()
+
+    def shutdown_worker(self):
+        self.proc.kill()
+        self.proc.wait()
+
+    def processLooksTerminated(self):
+        return self.proc.poll() is not None
+
+    def cleanupAfterAppearingDead(self):
+        #this worker is dead!
+        logging.info("worker %s was busy but looks dead to us", self.socket_name)
+        self.proc.wait()
+        self.remove_socket()
+
+class InProcessWorkerConnection(WorkerConnectionBase):
+    def __init__(self, socket_name, socket_dir):
+        WorkerConnectionBase.__init__(self, socket_name, socket_dir)
+
+        worker_socket_path = os.path.join(socket_dir, socket_name)
+
+        worker = Worker.Worker(worker_socket_path)
+
+        self.thread = threading.Thread(target=worker.executeLoop, args=())
+        self.thread.start()
+
+    def shutdown_worker(self):
+        self.send_shutdown_message()
+        self.thread.join()
+
+    def send_shutdown_message(self):
+        sock = None
+        try:
+            sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            sock.connect(os.path.join(self.socket_dir, self.socket_name))
+
+            Common.writeAllToFd(sock.fileno(), Messages.MSG_SHUTDOWN)
+            return True
+        except:
+            logging.error("Couldn't communicate with %s:\n%s", self.socket_name, traceback.format_exc())
+            return False
+        finally:
+            try:
+                sock.close()
+            except:
+                pass
+
+    def processLooksTerminated(self):
+        return False
+
+    def cleanupAfterAppearingDead(self):
+        raise UserWarning("This function makes no sense on an in-process worker")
 
 class Spawner:
-    def __init__(self, socket_dir, selector_name, max_processes):
+    def __init__(self, socket_dir, selector_name, max_processes, outOfProcess):
+        self.outOfProcess = outOfProcess
+        self.workerType = OutOfProcessWorkerConnection if outOfProcess else InProcessWorkerConnection
+
         self.selector_name = selector_name
         self.socket_dir = socket_dir
         self.max_processes = max_processes
@@ -101,21 +179,7 @@ class Spawner:
         worker_name = "worker_%s" % index
         worker_socket_path = os.path.join(self.socket_dir, worker_name)
 
-        def onStdout(msg):
-            logging.info("%s out> %s", worker_name, msg)
-
-        def onStderr(msg):
-            logging.info("%s err> %s", worker_name, msg)
-
-        childSubprocess = SubprocessRunner.SubprocessRunner(
-            [sys.executable, worker.__file__, worker_socket_path],
-            onStdout,
-            onStderr
-            )
-
-        self.waiting_workers.append(WorkerConnection(childSubprocess, worker_name, self.socket_dir))
-
-        childSubprocess.start()
+        self.waiting_workers.append(self.workerType(worker_name, self.socket_dir))
 
         t0 = time.time()
         TIMEOUT = 10
@@ -127,12 +191,9 @@ class Spawner:
         else:
             logging.info("Started worker %s with %s busy and %s idle", worker_name, len(self.busy_workers), len(self.waiting_workers))
 
-
     def terminate_workers(self):
         for w in self.busy_workers + self.waiting_workers:
-            w.proc.terminate()
-            w.proc.wait()
-            os.unlink(os.path.join(self.socket_dir, w.socket_name))
+            w.teardown()
 
     def can_start_worker(self):
         return self.max_processes is None or len(self.busy_workers) < self.max_processes
@@ -147,6 +208,7 @@ class Spawner:
 
                 #make sure the worker is happy
                 if not worker.answers_self_test():
+                    logging.error("Worker %s appears dead. Removing it.", worker.socket_name)
                     worker.teardown()
                 else:
                     return worker
@@ -158,11 +220,8 @@ class Spawner:
         new_busy = []
 
         for worker in self.busy_workers:
-            if worker.proc.poll() is not None:
-                #this worker is dead!
-                logging.info("worker %s was busy but looks dead to us", worker.socket_name)
-                worker.proc.wait()
-                worker.remove_socket()
+            if worker.processLooksTerminated():
+                worker.cleanupAfterAppearingDead()
             else:
                 new_busy.append(worker)
 
@@ -178,6 +237,7 @@ class Spawner:
         waiting_connection = self.waiting_sockets.pop(0)
 
         Common.writeString(waiting_connection.fileno(), worker.socket_name)
+        waiting_connection.close()
 
     def start_workers_if_necessary(self):
         self.check_all_busy_workers()
@@ -192,7 +252,7 @@ class Spawner:
         
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         sock.bind(self.selector_socket_path)
-        sock.listen(30)
+        sock.listen(100)
 
         try:
             while True:
@@ -206,6 +266,7 @@ class Spawner:
 
                 if connection is not None:
                     if self.handleConnection(connection):
+                        self.clearPath()
                         return
                     self.start_workers_if_necessary()
 
@@ -218,9 +279,9 @@ class Spawner:
 
     def handleConnection(self, connection):
         first_byte = Common.readAtLeast(connection.fileno(), 1)
-
+        
         if first_byte == Messages.MSG_SHUTDOWN:
-            logging.info("Received termination message with %s workers remaining", len(self.busy_workers + self.waiting_workers))
+            logging.info("Received termination message with %s busy and %s waiting workers", len(self.busy_workers), len(self.waiting_workers))
             self.terminate_workers()
             logging.info("workers terminating. Shutting down.")
             connection.close()
@@ -257,6 +318,7 @@ class Spawner:
                 else:
                     self.waiting_workers.append(worker)
             else:
+                logging.error("Worker %s appears dead. Removing it.", worker.socket_name)
                 worker.teardown()
 
         else:

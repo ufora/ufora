@@ -17,53 +17,79 @@
 #pragma once
 
 #include "../core/PolymorphicSharedPtr.hpp"
-#include "OutOfProcessPythonTask.hppml"
+#include "../core/containers/ImmutableTreeSet.hppml"
+#include "../core/containers/ImmutableTreeMap.hppml"
+#include "../FORA/VectorDataManager/PageId.hppml"
+#include "../FORA/python/PurePython/PythonParseResult.hppml"
+#include "../FORA/Core/ImplValContainer.hppml"
+
 #include <boost/thread.hpp>
+#include "../core/threading/Trigger.hppml"
 
 class VectorDataManager;
 
+namespace Fora {
+namespace Interpreter {
+
+class ExecutionContext;
+
+}
+}
+
 namespace Cumulus {
+
+/*******************
+
+Central infrastructure for communicating with a pyfora worker pool.
+
+The WorkerPool semantics are defined in the pyfora module (python/pyfora/worker/WorkerPool.py).
+
+All communication happens on a named socket whose path is given in 'pathToSocket'.
+
+*******************/
+
+@type OutOfProcessPythonTaskResult = 
+    -| ValidResult of ()
+    -| TerminatedEarly of ()
+    -| Blocked of ImmutableTreeSet<Fora::PageId> pages
+    ;
 
 class OutOfProcessPythonTasks : 
             public PolymorphicSharedPtrBase<OutOfProcessPythonTasks> {
 public:
-    OutOfProcessPythonTasks()
+    OutOfProcessPythonTasks(
+                ImmutableTreeMap<string, string> pythonNameToPyforaName,
+                ImplValContainer pyforaBuiltins,
+                ImplValContainer foraBuiltins,
+                boost::function<Fora::PythonParseResult (std::string)> pyAstParser,
+                std::string pathToSocket
+                ) : 
+            mPythonNameToPyforaName(pythonNameToPyforaName),
+            mPyforaBuiltins(pyforaBuiltins),
+            mForaBuiltins(foraBuiltins),
+            mPyAstParser(pyAstParser),
+            mPathToSocket(pathToSocket)
         {
-
         }
 
-    void addTask(hash_type taskId,  PolymorphicSharedPtr<OutOfProcessPythonTask> task)
-        {
-        boost::mutex::scoped_lock lock(mMutex);
-
-        lassert(mActiveTasks.find(taskId) == mActiveTasks.end());
-
-        mActiveTasks[taskId] = task;
-        }
-
-    void completeTask(hash_type taskId)
-        {
-        boost::mutex::scoped_lock lock(mMutex);
-        
-        mActiveTasks.erase(taskId);
-        }
-
-    PolymorphicSharedPtr<OutOfProcessPythonTask> getTask(hash_type taskId) const
-        {
-        boost::mutex::scoped_lock lock(mMutex);
-        
-        auto it = mActiveTasks.find(taskId);
-
-        if (it == mActiveTasks.end())
-            return PolymorphicSharedPtr<OutOfProcessPythonTask>();
-
-        return it->second;
-        }
+    OutOfProcessPythonTaskResult execute(
+                    const ImplValContainer& toCall, 
+                    PolymorphicSharedPtr<Fora::Interpreter::ExecutionContext> containingContext,
+                    Ufora::threading::Trigger& earlyTerminationTrigger
+                    );
 
 private:
     mutable boost::mutex mMutex;
 
-    map<hash_type, PolymorphicSharedPtr<OutOfProcessPythonTask> > mActiveTasks;
+    ImmutableTreeMap<string, string> mPythonNameToPyforaName;
+    
+    ImplValContainer mPyforaBuiltins;
+
+    ImplValContainer mForaBuiltins;
+
+    boost::function<Fora::PythonParseResult (std::string)> mPyAstParser;
+
+    std::string mPathToSocket;
 };
 
 }

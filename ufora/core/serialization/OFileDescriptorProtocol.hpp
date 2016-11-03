@@ -21,6 +21,7 @@
 #include "../Logging.hpp"
 #include "OProtocol.hpp"
 #include <stdio.h>
+#include <sys/socket.h>
 
 /******************
 
@@ -116,14 +117,7 @@ public:
 
 		if (mAlignment == 0)
 			{
-			auto written = ::write(mFD, inData, inByteCount);
-
-			if (written == -1 || written == 0)
-				{
-				std::string err = strerror(errno);
-				lassert_dump(false, "failed to write: " << err << ". tried to write " << inByteCount);
-				}
-			
+			write_(inByteCount, inData);
 			return;
 			}
 
@@ -162,10 +156,10 @@ private:
 			auto written = ::write(mFD, toWrite, inByteCount);
 
 			if (written == -1 || written == 0)
-				{
-				std::string err = strerror(errno);
-				lassert_dump(false, "failed to write: " << err << ". tried to write " << inByteCount);
-				}
+				throw StreamException(
+					"Failed to write data to file descriptor: " + std::string(strerror(errno))
+						+ Ufora::debug::StackTrace::getStringTrace()
+					);
 
 			inByteCount -= written;
 			toWrite += written;

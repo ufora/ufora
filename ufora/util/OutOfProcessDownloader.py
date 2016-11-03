@@ -174,7 +174,7 @@ class OutOfProcessDownloader:
             self.closeAllSockets_()
 
     def executeChild_(self):
-        logging.debug("Child started with %s, %s", self.childSocket)
+        logging.debug("Child started with %s", self.childSocket)
         self.hasStarted = True
         self.isChild = True
 
