@@ -16,6 +16,7 @@
 import logging
 import uuid
 
+from ufora.BackendGateway import tuple_it
 from ufora.BackendGateway.SubscribableWebObjects.ObjectClassesToExpose.PyforaToJsonTransformer \
     import PyforaToJsonTransformer
 from ufora.BackendGateway.SubscribableWebObjects.SubscribableObject \
@@ -45,14 +46,14 @@ class ComputationState(object):
     @cumulus_id.setter
     def cumulus_id(self, value):
         self._cumulus_id = value
-        self.comp_id = self._cumulus_id.toSimple()
+        self.comp_id = tuple_it(self._cumulus_id.toSimple())
 
 
 
 class Computation(SubscribableObject):
     def __init__(self, id, cumulus_env, args):
         super(Computation, self).__init__(id, cumulus_env)
-        comp_id = args.get('comp_id')
+        comp_id = tuple_it(args.get('comp_id')) if 'comp_id' in args else None
         logging.info("New computation with comp_id: %s", comp_id)
         self._state = (
             ComputationState(args) if comp_id is None
@@ -298,7 +299,7 @@ class RootComputation(Computation):
                 self._state
                 )
         else:
-            assert 'comp_id' in self.args
+            assert 'comp_id' in self.args, self.args
 
 
     @ExposedProperty

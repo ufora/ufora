@@ -51,7 +51,6 @@ def create_executor():
             cumulus_gateway
             )
 
-
         return MessageProcessor.MessageProcessor(
             cumulus_gateway,
             cache_loader

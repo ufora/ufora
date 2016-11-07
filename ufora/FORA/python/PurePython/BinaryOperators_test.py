@@ -16,12 +16,14 @@ import pyfora
 import pyfora.Connection as Connection
 
 
+import ufora.config.Setup as Setup
 import ufora.FORA.python.PurePython.OperationsToTest as OperationsToTest
 import ufora.BackendGateway.SubscribableWebObjects.InMemorySocketIoJsonInterface as InMemorySocketIoJsonInterface
 import ufora.BackendGateway.SubscribableWebObjects.MessageProcessor as MessageProcessor
 import ufora.cumulus.distributed.CumulusGatewayInProcess as CumulusGatewayInProcess
 import ufora.BackendGateway.ComputedValue.ComputedValueGateway as ComputedValueGateway
 import ufora.distributed.SharedState.tests.SharedStateTestHarness as SharedStateTestHarness
+import ufora.FORA.VectorDataManager.VectorDataManager as VectorDataManager
 
 
 import unittest
@@ -56,31 +58,31 @@ class TestAllBinaryOperators(unittest.TestCase):
         def createMessageProcessor():
             harness = SharedStateTestHarness.SharedStateTestHarness(inMemory=True)
 
-            def createCumulusComputedValueGateway():
-                def createCumulusGateway(callbackScheduler, vdm):
-                    with harness.viewFactory:
-                        result = CumulusGatewayInProcess.InProcessGateway(
-                            harness.callbackScheduler.getFactory(),
-                            harness.callbackScheduler,
-                            vdm
-                            )
+            ram_cache_size = Setup.config().computedValueGatewayRAMCacheMB * 1024 * 1024
+            vdm = VectorDataManager.constructVDM(harness.callbackScheduler, ram_cache_size)
 
-                        # pull out the inmemory s3 interface so that we can surface
-                        # it and attach it to the connection object.
-
-                        s3.append(result.s3Service)
-                        return result
-
-                return ComputedValueGateway.CumulusComputedValueGateway(
+            with harness.viewFactory:
+                cumulus_gateway = CumulusGatewayInProcess.InProcessGateway(
                     harness.callbackScheduler.getFactory(),
                     harness.callbackScheduler,
-                    createCumulusGateway
+                    vdm,
+                    pageSizeOverride=10000000,
+                    useInMemoryCache=200
                     )
 
-            return MessageProcessor.MessageProcessor(
+                #pull out the inmemory s3 interface so that we can surface it
+                # and attach it to the connection object.
+                s3.append(cumulus_gateway.s3Service)
+
+            cache_loader = ComputedValueGateway.CacheLoader(
                 harness.callbackScheduler,
-                harness.viewFactory,
-                createCumulusComputedValueGateway
+                vdm,
+                cumulus_gateway
+                )
+
+            return MessageProcessor.MessageProcessor(
+                cumulus_gateway,
+                cache_loader
                 )
 
         socketIoToJsonInterface = InMemorySocketIoJsonInterface.InMemorySocketIoJsonInterface(

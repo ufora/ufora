@@ -12,4 +12,8 @@
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
 
+def tuple_it(x):
+    if not isinstance(x, list):
+        return x
+    return tuple(tuple_it(i) for i in x)
 

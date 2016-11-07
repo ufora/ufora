@@ -16,6 +16,7 @@ import itertools
 import logging
 import threading
 
+from ufora.BackendGateway import tuple_it
 import ufora.FORA.python.ForaValue as ForaValue
 import ufora.native.Cumulus as CumulusNative
 import ufora.native.FORA as ForaNative
@@ -41,7 +42,7 @@ class Computations(object):
 
     def create_computation(self, state):
         cumulus_id = self.cumulus_gateway.getComputationIdForDefinition(state.computation_definition)
-        comp_id = cumulus_id.toSimple()
+        comp_id = tuple_it(cumulus_id.toSimple())
         with self.lock_:
             if cumulus_id not in self.computation_results:
                 future = Future(lambda: self.cancel(cumulus_id))
