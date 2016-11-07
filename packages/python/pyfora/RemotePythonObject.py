@@ -102,26 +102,26 @@ class ComputedRemotePythonObject(RemotePythonObject):
         :func:`~pyfora.Executor.Executor.submit`.
 
     Args:
-        computedValue: an instance of a SubscribableWebObject computedValue representing
+        computation: an instance of a SubscribableWebObject computation representing
             the computation that produced this :class:`ComputedRemotePythonObject`.
         executor: the :class:`~pyfora.Executor.Executor` that created this
             :class:`DefinedRemotePythonObject`.
     """
-    def __init__(self, computedValue, executor, isException):
+    def __init__(self, computation, executor, isException):
         super(ComputedRemotePythonObject, self).__init__(executor)
-        self.computedValue = computedValue
+        self.computation = computation
         self.isException = isException
 
     def _pyforaComputedValueArg(self):
         """Argument to be passed to PyforaComputedValue to represent this object."""
-        return self.computedValue
+        return self.computation
 
     def toLocal(self, maxBytecount=None):
-        return self.executor._downloadComputedValueResult(self.computedValue, maxBytecount)
+        return self.executor._downloadComputedValueResult(self.computation, maxBytecount)
 
     def toDictOfAssignedVarsToProxyValues(self):
-        return self.executor._expandComputedValueToDictOfAssignedVarsToProxyValues(self.computedValue)
+        return self.executor._expandComputedValueToDictOfAssignedVarsToProxyValues(self.computation)
 
     def toTupleOfProxies(self):
-        return self.executor._expandComputedValueToTupleOfProxies(self.computedValue)
+        return self.executor._expandComputedValueToTupleOfProxies(self.computation)
 

@@ -12,21 +12,32 @@
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
 
-import ufora.BackendGateway.SubscribableWebObjects.Decorators as Decorators
-import ufora.BackendGateway.SubscribableWebObjects.Exceptions as Exceptions
-import ufora.BackendGateway.ComputedGraph.ComputedGraph as ComputedGraph
 import time
 import threading
 
-class TestCGLocation(ComputedGraph.Location):
-    definition = ComputedGraph.Key(object)
-    aValue = ComputedGraph.Mutable(lambda: None, exposeToProtocol = True)
+from ufora.BackendGateway.SubscribableWebObjects.SubscribableObject \
+    import SubscribableObject, ExposedProperty, ExposedFunction
 
-    @ComputedGraph.ExposedProperty()
+class TestSubscribable(SubscribableObject):
+    def __init__(self, id, cumulus_env, args):
+        super(TestSubscribable, self).__init__(id, cumulus_env)
+        self.definition = args['definition']
+        self._aValue = 0
+
+
+    @ExposedProperty
+    def aValue(self):
+        return self._aValue
+
+
+    @ExposedFunction
+    def set_aValue(self, value):
+        self._aValue = value
+
+
+    @ExposedProperty
     def depth(self):
-        if isinstance(self.definition, Test):
-            return self.definition.depth + 1
-        elif isinstance(self.definition, list):
+        if isinstance(self.definition, list):
             res = 0
             for x in self.definition:
                 res += x.depth
@@ -34,95 +45,12 @@ class TestCGLocation(ComputedGraph.Location):
         else:
             return 0
 
-    @ComputedGraph.ExposedProperty()
-    def testCgLocation(self):
-        return self
 
-    @ComputedGraph.ExposedFunction()
-    def aFunction(self, jsonArg):
-        self.aValue = jsonArg
-
-    @ComputedGraph.Function
     def anUnexposedFunction(self, jsonArg):
         self.aValue = jsonArg
 
-    @ComputedGraph.ExposedFunction()
+
+    @ExposedFunction
     def testFunction(self, arg):
         return arg
 
-    @ComputedGraph.ExposedFunction(wantsCallback = True)
-    def aFunctionExpectingCallback(self, callback, jsonArg):
-        def aThread():
-            time.sleep(1)
-            callback(jsonArg)
-        threading.Thread(target=aThread).start()
-
-class Test(object):
-    """Model for the current number of active and desired cumulus cores."""
-    def __init__(self, jsonDefinition):
-        object.__init__(self)
-        self.definition = jsonDefinition
-        self.location = TestCGLocation(definition=self.definition)
-
-    @Decorators.Field()
-    def depth(self):
-        if isinstance(self.definition, Test):
-            return self.definition.depth + 1
-        elif isinstance(self.definition, list):
-            res = 0
-            for x in self.definition:
-                res += x.depth
-            return res
-        else:
-            return 0
-
-    @Decorators.Function()
-    def aFunction(self, jsonArg):
-        self.location.aValue = len(jsonArg)
-
-    @Decorators.Field()
-    def aFloat(self):
-        """Returns the number .5"""
-        return .5
-
-    def setMutableValue(self, value):
-        self.location.aValue = value
-
-    @Decorators.Field(setter=setMutableValue)
-    def mutableValue(self):
-        """a mutable value"""
-        return self.location.aValue
-
-    def setAValueThrowingAnArbitraryException(self, value):
-        assert False
-
-    @Decorators.Field(setter=setAValueThrowingAnArbitraryException)
-    def aValueThrowingAnArbitraryException(self):
-        assert False
-
-    @Decorators.Function()
-    def aFunctionThrowingAnArbitraryException(self, jsonArgs):
-        assert False
-
-    @Decorators.Function()
-    def aFunctionNotReturningJson(self, jsonArgs):
-        return Test
-
-    @Decorators.Field()
-    def aFieldNotReturningJson(self):
-        return Test
-
-    @Decorators.Function()
-    def aFunctionNotAcceptingAnyArguments(self):
-        return None
-
-    def setAValueThrowingASpecificException(self, value):
-        raise Exceptions.SubscribableWebObjectsException("swo exception: setter")
-
-    @Decorators.Field(setter=setAValueThrowingASpecificException)
-    def aValueThrowingASpecificException(self):
-        raise Exceptions.SubscribableWebObjectsException("swo exception: getter")
-
-    @Decorators.Function()
-    def aFunctionThrowingASpecificException(self, jsonArgs):
-        raise Exceptions.SubscribableWebObjectsException("swo exception: function call")

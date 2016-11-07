@@ -19,6 +19,8 @@ import ufora.config.Setup as Setup
 import ufora.cumulus.distributed.CumulusGatewayInProcess as CumulusGatewayInProcess
 import ufora.BackendGateway.ComputedValue.ComputedValueGateway as ComputedValueGateway
 import ufora.distributed.SharedState.tests.SharedStateTestHarness as SharedStateTestHarness
+import ufora.FORA.VectorDataManager.VectorDataManager as VectorDataManager
+
 import pyfora.Connection as Connection
 
 
@@ -27,16 +29,14 @@ def create_executor():
     def createMessageProcessor():
         harness = SharedStateTestHarness.SharedStateTestHarness(inMemory=True)
 
-        cache_loader = ComputedValueGateway.CacheLoader(
-            harness.callbackScheduler,
-            Setup.config().computedValueGatewayRAMCacheMB * 1024 * 1024
-            )
+        ram_cache_size = Setup.config().computedValueGatewayRAMCacheMB * 1024 * 1024
+        vdm = VectorDataManager.constructVDM(harness.callbackScheduler, ram_cache_size)
 
         with harness.viewFactory:
             cumulus_gateway = CumulusGatewayInProcess.InProcessGateway(
                 harness.callbackScheduler.getFactory(),
                 harness.callbackScheduler,
-                cache_loader.vdm,
+                vdm,
                 pageSizeOverride=10000000,
                 useInMemoryCache=200
                 )
@@ -45,9 +45,16 @@ def create_executor():
             # and attach it to the connection object.
             s3.append(cumulus_gateway.s3Service)
 
-        return MessageProcessor.MessageProcessor(
-            cache_loader,
+        cache_loader = ComputedValueGateway.CacheLoader(
+            harness.callbackScheduler,
+            vdm,
             cumulus_gateway
+            )
+
+
+        return MessageProcessor.MessageProcessor(
+            cumulus_gateway,
+            cache_loader
             )
 
     socketIoToJsonInterface = InMemorySocketIoJsonInterface.InMemorySocketIoJsonInterface(

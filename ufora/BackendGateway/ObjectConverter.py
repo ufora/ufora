@@ -38,7 +38,7 @@ class ObjectConverter(object):
             import ufora.FORA.python.ModuleImporter as ModuleImporter
 
 
-            logging.info("Initializing the PyforaObjectConverter")
+            logging.info("Initializing the ObjectConverter")
 
             self.object_registry = ObjectRegistry.ObjectRegistry()
 
@@ -95,7 +95,7 @@ class ObjectConverter(object):
                     foraBuiltinsImplVal=foraBuiltinsImplVal
                     )
         except:
-            logging.critical("Failed to initialize the PyforaObjectConverter: %s",
+            logging.critical("Failed to initialize the ObjectConverter: %s",
                              traceback.format_exc())
             raise
 

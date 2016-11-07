@@ -103,42 +103,25 @@ class TestSubscribableWebObjects(unittest.TestCase):
         event = threading.Event()
         interface = self.connect()
         webObjects = SubscribableWebObjects.WebObjectFactory(interface, maxObjectIds=10)
-        testCGLocation = webObjects.TestCGLocation({'definition': 0})
+        testSubscribable = webObjects.TestSubscribable({'definition': 0})
         eventHandler = EventHandler(event)
         inputArg = "test argument"
-        testCGLocation.testFunction(inputArg, eventHandler)
+        testSubscribable.testFunction(inputArg, eventHandler)
         event.wait()
         self.assertSuccessResponse(eventHandler)
         response = eventHandler.responses['Success'][0]
         self.assertTrue(response == inputArg)
         interface.close()
 
-    def test_ComputedGraphLocation(self):
-        event = threading.Event()
-
-        interface = self.connect()
-
-        webObjects = SubscribableWebObjects.WebObjectFactory(interface, maxObjectIds=10)
-        testCGLocation = webObjects.TestCGLocation({'definition': 0})
-
-        eventHandler = EventHandler(event)
-        testCGLocation.get_testCgLocation(eventHandler)
-        event.wait()
-
-        self.assertSuccessResponse(eventHandler)
-        response = eventHandler.responses['Success'][0]
-        self.assertIsInstance(response, SubscribableWebObjects.TestCGLocation)
-
-        interface.close()
 
     def test_failure_callback(self):
         event = threading.Event()
 
         interface = self.connect()
         webObjects = SubscribableWebObjects.WebObjectFactory(interface, maxObjectIds=10)
-        testCGLocation = webObjects.TestCGLocation({'this_should_fail': 0})
+        testSubscribable = webObjects.TestSubscribable({'this_should_fail': 0})
         eventHandler = EventHandler(event)
-        testCGLocation.get_testCgLocation(eventHandler)
+        testSubscribable.get_aValue(eventHandler)
         event.wait()
 
         self.assertEqual(len(eventHandler.responses['Success']), 0)
@@ -158,15 +141,15 @@ class TestSubscribableWebObjects(unittest.TestCase):
             interface = self.connect()
 
             webObjects = SubscribableWebObjects.WebObjectFactory(interface, maxObjectIds=10)
-            testCGLocation = webObjects.TestCGLocation({'definition': i})
+            testSubscribable = webObjects.TestSubscribable({'definition': i})
 
             eventHandler = EventHandler(event)
-            testCGLocation.get_testCgLocation(eventHandler)
+            testSubscribable.get_aValue(eventHandler)
             event.wait()
 
             self.assertSuccessResponse(eventHandler)
             response = eventHandler.responses['Success'][0]
-            self.assertIsInstance(response, SubscribableWebObjects.TestCGLocation)
+            self.assertEqual(response, 0)
 
             interface.close()
 
@@ -182,10 +165,10 @@ class TestSubscribableWebObjects(unittest.TestCase):
                 interface = self.connect()
 
                 webObjects = SubscribableWebObjects.WebObjectFactory(interface, maxObjectIds=10)
-                testCGLocation = webObjects.TestCGLocation({'definition': ix*iterations + i})
+                testSubscribable = webObjects.TestSubscribable({'definition': ix*iterations + i})
 
                 eventHandler = EventHandler(event)
-                testCGLocation.get_testCgLocation(eventHandler)
+                testSubscribable.get_aValue(eventHandler)
                 event.wait()
 
                 for eventType in ['Failure', 'Changed']:
@@ -207,11 +190,11 @@ class TestSubscribableWebObjects(unittest.TestCase):
             thread.join()
 
         self.assertTrue(
-            all([isinstance(res, SubscribableWebObjects.TestCGLocation) for res in threadResults]),
+            all([res == 0 for res in threadResults]),
             threadResults
             )
 
-    def test_volumeTest(self):
+    def disabled_test_volumeTest(self):
         interface = self.connect()
         webObjects = SubscribableWebObjects.WebObjectFactory(interface, maxObjectIds=50)
         initialTimesCleared = webObjects.sessionState.timesCleared
@@ -234,20 +217,17 @@ class TestSubscribableWebObjects(unittest.TestCase):
         def submitOne():
             #if totalSubmitted[0] % 100 == 0:
                 #print "submitting definition:", totalSubmitted[0]
-            def onLocation(location):
-                def onDefinition(d):
-                    totalReceived[0] += 1
-                    #if totalReceived[0] % 100 == 0:
-                        #print "total received:", totalReceived[0]
-                    if receivedAll():
-                        allDone.set()
-                    elif canSubmit():
-                        submitOne()
+            def onValue(value):
+                totalReceived[0] += 1
+                #if totalReceived[0] % 100 == 0:
+                    #print "total received:", totalReceived[0]
+                if receivedAll():
+                    allDone.set()
+                elif canSubmit():
+                    submitOne()
 
-                location.get_definition(EventHandler(onSuccess=onDefinition))
-
-            loc = webObjects.TestCGLocation({'definition': totalSubmitted[0]})
-            loc.get_testCgLocation(EventHandler(onSuccess=onLocation))
+            loc = webObjects.TestSubscribable({'definition': totalSubmitted[0]})
+            loc.get_aValue(EventHandler(onSuccess=onValue))
             totalSubmitted[0] += 1
 
         while canSubmit():

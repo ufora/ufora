@@ -24,7 +24,6 @@ import ufora.FORA.python.ModuleImporter as ModuleImporter
 
 import ufora.BackendGateway.Computations as Computations
 import ufora.BackendGateway.ObjectConverter as ObjectConverter
-import ufora.BackendGateway.ComputedGraph.ComputedGraph as ComputedGraph
 
 import ufora.BackendGateway.SubscribableWebObjects.AllObjectClassesToExpose \
     as AllObjectClassesToExpose
@@ -53,12 +52,6 @@ class InvalidFieldException(Exceptions.SubscribableWebObjectsException):
 class InvalidFunctionException(Exceptions.SubscribableWebObjectsException):
     def __init__(self):
         Exceptions.SubscribableWebObjectsException.__init__(self, "Invalid function.")
-
-
-def getObjectClass(o):
-    if ComputedGraph.isLocation(o):
-        return ComputedGraph.getLocationTypeFromLocation(o)
-    return o.__class__
 
 
 
@@ -133,32 +126,32 @@ class OutgoingObjectCache(object):
 
                 return newDict
 
-            objDefPopulated = False
-            try:
-                if ComputedGraph.isLocation(jsonCandidate):
-                    if jsonCandidate in self.objectToIdCache_:
-                        objDef = {
-                            'objectId_': self.lookupObjectId(jsonCandidate)
-                            }
-                    else:
-                        objDef = {
-                            "objectId_": self.lookupObjectId(jsonCandidate),
-                            "objectDefinition_": {
-                                'type': AllObjectClassesToExpose.typenameFromType(
-                                    ComputedGraph.getLocationTypeFromLocation(jsonCandidate)
-                                    ),
-                                'args': jsonCandidate.__reduce__()[1][0]
-                                }
-                            }
-                    objDefPopulated = True
-                else:
-                    objDef = jsonCandidate.objectDefinition_
-                    objDefPopulated = True
-            except AttributeError:
-                objDefPopulated = False
+            #objDefPopulated = False
+            #try:
+                #if ComputedGraph.isLocation(jsonCandidate):
+                    #if jsonCandidate in self.objectToIdCache_:
+                        #objDef = {
+                            #'objectId_': self.lookupObjectId(jsonCandidate)
+                            #}
+                    #else:
+                        #objDef = {
+                            #"objectId_": self.lookupObjectId(jsonCandidate),
+                            #"objectDefinition_": {
+                                #'type': AllObjectClassesToExpose.typenameFromType(
+                                    #ComputedGraph.getLocationTypeFromLocation(jsonCandidate)
+                                    #),
+                                #'args': jsonCandidate.__reduce__()[1][0]
+                                #}
+                            #}
+                    #objDefPopulated = True
+                #else:
+                    #objDef = jsonCandidate.objectDefinition_
+                    #objDefPopulated = True
+            #except AttributeError:
+                #objDefPopulated = False
 
-            if objDefPopulated:
-                return self.convertResponseToJson(objDef)
+            #if objDefPopulated:
+                #return self.convertResponseToJson(objDef)
 
             raiseException()
         except:
@@ -394,7 +387,7 @@ class MessageProcessor(object):
         field = intern(field)
 
         try:
-            fieldDef = getattr(getObjectClass(objectToRead), field)
+            fieldDef = getattr(objectToRead.__class__, field)
         except:
             raise InvalidFieldException()
 
@@ -490,9 +483,7 @@ class MessageProcessor(object):
 
         except Exception as e:
             try:
-                objectType = (objectToRead.__location_class__
-                              if ComputedGraph.isLocation(objectToRead)
-                              else str(objectToRead))
+                objectType = str(objectToRead)
                 logging.info("converting %s of type %s", fieldFun(objectToRead), objectType)
             except:
                 pass

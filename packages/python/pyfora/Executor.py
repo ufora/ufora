@@ -381,7 +381,7 @@ class Executor(object):
         return future
 
 
-    def _expandComputedValueToTupleOfProxies(self, computedValue):
+    def _expandComputedValueToTupleOfProxies(self, computation):
         future = self._create_future()
 
         def onExpanded(jsonResult):
@@ -397,14 +397,19 @@ class Executor(object):
                 else:
                     assert isinstance(jsonResult['tupleOfComputedValues'], tuple)
                     result = tuple(
-                        RemotePythonObject.ComputedRemotePythonObject(val, self, False)
-                        for val in jsonResult['tupleOfComputedValues']
+                        self._remoteObjectFromComputationId(comp_id, is_exception=False)
+                        for comp_id in jsonResult['tupleOfComputedValues']
                         )
 
             self._resolve_future(future, result)
 
-        self.connection.expandComputedValueToTupleOfProxies(computedValue, onExpanded)
+        self.connection.expandComputedValueToTupleOfProxies(computation, onExpanded)
         return future
+
+
+    def _remoteObjectFromComputationId(self, comp_id, is_exception):
+        computation = self.connection.computation_from_id(comp_id)
+        return RemotePythonObject.ComputedRemotePythonObject(computation, self, is_exception)
 
 
     def _downloadDefinedObject(self, objectId):

@@ -13,6 +13,9 @@
 #   limitations under the License.
 
 
+import logging
+import uuid
+
 from ufora.BackendGateway.SubscribableWebObjects.ObjectClassesToExpose.PyforaToJsonTransformer \
     import PyforaToJsonTransformer
 from ufora.BackendGateway.SubscribableWebObjects.SubscribableObject \
@@ -21,70 +24,85 @@ import ufora.FORA.python.ForaValue as ForaValue
 import ufora.native.FORA as ForaNative
 
 
+
+class ComputationState(object):
+    def __init__(self, args):
+        self.args = args
+        self.computation_definition = None
+        self.result = None
+        self.status = None
+        self.stats = None
+        self.json_result = None
+        self.comp_id = None
+        self._cumulus_id = None
+
+
+    @property
+    def cumulus_id(self):
+        return self._cumulus_id
+
+
+    @cumulus_id.setter
+    def cumulus_id(self, value):
+        self._cumulus_id = value
+        self.comp_id = self._cumulus_id.toSimple()
+
+
+
 class Computation(SubscribableObject):
     def __init__(self, id, cumulus_env, args):
         super(Computation, self).__init__(id, cumulus_env)
-        self.arg_ids = args['arg_ids']
-        self.computation_definition = self.computations.create_computation_definition(
-            self.computations.create_apply_tuple(self.arg_ids)
+        comp_id = args.get('comp_id')
+        logging.info("New computation with comp_id: %s", comp_id)
+        self._state = (
+            ComputationState(args) if comp_id is None
+            else self.computations.get_computation_state(comp_id)
             )
-        self._computation_id = self.computations.create_computation(self.computation_definition)
-
-        self._result = None
-        self._status = None
-        self._stats = None
-        self._json_result = None
-
-
-    @ExposedFunction
-    def start(self, _):
-        future = self.computations.start_computation(self._computation_id)
-        future.add_done_callback(self.on_computation_result)
-        return True
 
 
     @ExposedProperty
     def computation_id(self):
-        comp_id = self._computation_id.toSimple()
-        return comp_id
+        return self._state.comp_id
 
 
     @ExposedProperty
     def computation_status(self):
-        return self._status
+        return self._state.status
 
 
     @computation_status.setter
     @observable
     def computation_status(self, value):
-        self._status = value
-
-
-    def set_computation_result(self, result):
-        self._result = result
-        self.computation_status = self.status_from_result(result)
+        self._state.status = value
 
 
     @ExposedProperty
     def stats(self):
-        return self._stats
+        return self._state.stats
 
 
     @stats.setter
     @observable
     def stats(self, value):
-        self._stats = value
+        self._state.stats = value
 
 
     @ExposedProperty
     def result(self):
-        return self._json_result
+        return self._state.json_result
 
 
     @result.setter
     @observable
     def result(self, value):
-        self._json_result = value
+        self._state.json_result = value
+
+
+    @ExposedFunction
+    def start(self, _):
+        future = self.computations.start_computation(self.cumulus_id)
+        future.add_done_callback(self.on_computation_result)
+        return True
 
 
     @ExposedFunction
@@ -140,9 +158,54 @@ class Computation(SubscribableObject):
         return as_json
 
 
+    @property
+    def args(self):
+        return self._state.args
+
+
+    @property
+    def cumulus_id(self):
+        return self._state.cumulus_id
+
+
+    @property
+    def is_completed(self):
+        return self._state.result is not None
+
+
+    @property
+    def is_failure(self):
+        if self._state.result is None:
+            return None
+        return self._state.result.isFailure()
+
+
+    @property
+    def is_exception(self):
+        return self._state.result.isException()
+
+
+    @property
+    def as_exception(self):
+        exception = self._state.result.asException.exception
+        if exception is not None and exception.isTuple():
+            exception = exception[0]
+        return exception
+
+
+    @property
+    def as_result(self):
+        return self._state.result.asResult.result
+
+
+    @property
+    def ivc(self):
+        return self._state.result
+
+
     def exception_code_locations_as_json(self):
         assert self.is_exception
-        exception = self._result.asException.exception
+        exception = self._state.result.asException.exception
         if not exception.isTuple():
             return None
 
@@ -188,34 +251,9 @@ class Computation(SubscribableObject):
         self.stats = stats
 
 
-    @property
-    def is_completed(self):
-        return self._result is not None
-
-
-    @property
-    def is_failure(self):
-        if self._result is None:
-            return None
-        return self._result.isFailure()
-
-
-    @property
-    def is_exception(self):
-        return self._result.isException()
-
-
-    @property
-    def as_exception(self):
-        exception = self._result.asException.exception
-        if exception is not None and exception.isTuple():
-            exception = exception[0]
-        return exception
-
-
-    @property
-    def as_result(self):
-        return self._result.asResult.result
+    def set_computation_result(self, result):
+        self._state.result = result
+        self.computation_status = self.status_from_result(result)
 
 
     def status_from_result(self, result):
@@ -245,3 +283,62 @@ class Computation(SubscribableObject):
                     (memoryQuotaFailure.amount, memoryQuotaFailure.required)
 
         return {'status': 'failure', 'message': message}
+
+
+
+class RootComputation(Computation):
+    def __init__(self, id, cumulus_env, args):
+        super(RootComputation, self).__init__(id, cumulus_env, args)
+        if 'arg_ids' in self.args:
+            assert 'comp_id' not in self.args
+            self._state.computation_definition = self.computations.create_computation_definition(
+                self.computations.create_apply_tuple(self.args['arg_ids'])
+                )
+            self._state.cumulus_id = self.computations.create_computation(
+                self._state
+                )
+        else:
+            assert 'comp_id' in self.args
+
+
+    @ExposedProperty
+    def as_tuple(self):
+        if not self.is_completed:
+            return None
+
+        if self.is_exception:
+            return self.request_result(max_byte_count=None)
+
+        tuple_ivc = self.object_converter.converter.unwrapPyforaTupleToTuple(self.as_result)
+        assert isinstance(tuple_ivc, tuple)
+        tuple_elements = [
+            TupleElement(uuid.uuid4().hex,
+                         self.cumulus_env,
+                         {
+                             'parent_id': self.computation_id,
+                             'index': ix
+                         })
+            for ix in xrange(len(tuple_ivc))
+            ]
+        return {
+            'isException': False,
+            'tupleOfComputedValues': tuple(e.computation_id for e in tuple_elements)
+            }
+
+
+
+class TupleElement(Computation):
+    def __init__(self, id, cumulus_env, args):
+        super(TupleElement, self).__init__(id, cumulus_env, args)
+        if 'comp_id' not in args:
+            self.parent_comp_id = args['parent_id']
+            self.index = args['index']
+            parent_state = self.computations.get_computation_state(self.parent_comp_id)
+            self._state.computation_definition = self.computations.create_computation_definition((
+                parent_state.computation_definition,
+                ForaNative.makeSymbol("RawGetItemByInt"),
+                ForaNative.ImplValContainer(self.index)
+                ))
+            self._state.cumulus_id = self.computations.create_computation(
+                self._state
+                )

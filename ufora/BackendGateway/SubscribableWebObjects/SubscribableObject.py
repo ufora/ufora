@@ -32,10 +32,23 @@ class SubscribableObject(Observable.Observable):
     def __init__(self, id, cumulus_env):
         super(SubscribableObject, self).__init__()
         self.id = id
-        self.cumulus_gateway = cumulus_env.cumulus_gateway
-        self.cache_loader = cumulus_env.cache_loader
-        self.computations = cumulus_env.computations
-        self.object_converter = cumulus_env.object_converter
+        self.cumulus_env = cumulus_env
+
+    @property
+    def cumulus_gateway(self):
+        return self.cumulus_env.cumulus_gateway
+
+    @property
+    def cache_loader(self):
+        return self.cumulus_env.cache_loader
+
+    @property
+    def computations(self):
+        return self.cumulus_env.computations
+
+    @property
+    def object_converter(self):
+        return self.cumulus_env.object_converter
 
 
 

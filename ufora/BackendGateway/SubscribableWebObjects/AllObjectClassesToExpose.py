@@ -14,7 +14,7 @@
 
 import ufora.BackendGateway.SubscribableWebObjects.Exceptions as Exceptions
 
-#import ufora.BackendGateway.SubscribableWebObjects.ObjectClassesToExpose.Test as Test
+import ufora.BackendGateway.SubscribableWebObjects.ObjectClassesToExpose.Test as Test
 import ufora.BackendGateway.SubscribableWebObjects.ObjectClassesToExpose.PyforaObjectConverter \
     as PyforaObjectConverter
 import ufora.BackendGateway.SubscribableWebObjects.Computation as Computation
@@ -30,7 +30,7 @@ import ufora.BackendGateway.ComputedValue.ViewOfEntireCumulusSystem as ViewOfEnt
 
 classMap = {
     #"Test": Test.Test,
-    #"TestCGLocation": Test.TestCGLocation,
+    "TestSubscribable": Test.TestSubscribable,
     #"ComputedValue": ComputedValue.ComputedValue,
     #"ComputedValueForMember": ComputedValue.ComputedValueForMember,
     #"ComputedValueVectorFromComputedValue": ComputedValue.ComputedValueVectorFromComputedValue,
@@ -38,7 +38,9 @@ classMap = {
     #"PersistentCacheIndex": PersistentCacheIndex.PersistentCacheIndex,
     "PyforaObjectConverter": PyforaObjectConverter.PyforaObjectConverter,
     #"PyforaComputedValue": PyforaComputedValue.PyforaComputedValue,
-    "Computation": Computation.Computation,
+    "Computation": Computation.RootComputation,
+    "RootComputation": Computation.RootComputation,
+    "TupleElement": Computation.TupleElement,
     "ViewOfEntireCumulusSystem": ViewOfEntireCumulusSystem.ViewOfEntireCumulusSystem,
     #"WriteToS3Task": WriteToS3Task.WriteToS3Task,
     #"PyforaDictionaryElement": PyforaComputedValue.PyforaDictionaryElement,

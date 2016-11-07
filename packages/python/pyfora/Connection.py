@@ -235,7 +235,7 @@ class Connection(object):
         assert isinstance(fn, RemotePythonObject.RemotePythonObject)
         assert all([isinstance(arg, RemotePythonObject.RemotePythonObject) for arg in args])
 
-        computation = self.webObjectFactory.Computation({
+        computation = self.webObjectFactory.RootComputation({
             'arg_ids': (fn._pyforaComputedValueArg(), ) + tuple(
                 arg._pyforaComputedValueArg() for arg in args
                 )
@@ -282,6 +282,14 @@ class Connection(object):
             'onSuccess': onSuccess,
             'onFailure': onFailure
             })
+
+
+    def computation_from_id(self, computation_id):
+        return self.webObjectFactory.Computation(
+            {
+                'comp_id': computation_id
+            })
+
 
     def triggerCompilationOnComputation(self, computation, onCompleted):
         """Trigger compilation of the code underlying a computation.
@@ -341,7 +349,7 @@ class Connection(object):
             })
 
 
-    def expandComputedValueToTupleOfProxies(self, computedValue, onExpanded):
+    def expandComputedValueToTupleOfProxies(self, computation, onExpanded):
         def onResult(result):
             if result is not None and not self.closed:
                 onExpanded(result)
@@ -352,15 +360,11 @@ class Connection(object):
             else:
                 onExpanded(
                     Exceptions.PyforaError(
-                        "Unknown error translating to dictionary of proxies: %s" + str(result)
+                        "Unknown error expanding tuple: %s" + str(result)
                         )
                     )
 
-        computedValue.increaseRequestCount(
-            {},
-            {'onSuccess': lambda *args: None, 'onFailure': lambda *args: None}
-            )
-        computedValue.subscribe_pyforaTupleToTupleOfComputedValues({
+        computation.get_as_tuple({
             'onSuccess': onResult,
             'onFailure': onFailure,
             'onChanged': onResult

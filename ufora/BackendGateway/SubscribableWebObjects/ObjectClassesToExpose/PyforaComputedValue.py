@@ -91,7 +91,8 @@ class PyforaComputedValue(ComputedValue.ComputedValue):
 
         return {
             'isException': False,
-            'tupleOfComputedValues': tuple([PyforaTupleElement(baseCV=self, index=ix) for ix in range(len(tupleIVC))])
+            'tupleOfComputedValues': tuple([PyforaTupleElement(baseCV=self, index=ix)
+                                            for ix in range(len(tupleIVC))])
             }
 
     @ComputedGraph.ExposedProperty()

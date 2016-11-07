@@ -541,7 +541,7 @@ class Converter(object):
         if pyforaTuple is None:
             return None
 
-        res = tuple([pyforaValue for pyforaValue in pyforaTuple])
+        res = tuple(pyforaValue for pyforaValue in pyforaTuple)
         return res
 
     def transformPyforaImplval(self, implval, transformer, vectorContentsExtractor):

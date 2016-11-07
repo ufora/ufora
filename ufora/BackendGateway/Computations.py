@@ -33,65 +33,72 @@ class Computations(object):
         self.object_converter = object_converter
 
         self.lock_ = threading.RLock()
-        self.pending_computations = {}
+        self.computation_states = {}
+        self.computation_results = {}
         self.priority_allocator = itertools.count()
         self.cumulus_gateway.onComputationResult = self.on_computation_result
 
 
-    def create_computation(self, computation_definition):
-        comp_id = self.cumulus_gateway.getComputationIdForDefinition(computation_definition)
+    def create_computation(self, state):
+        cumulus_id = self.cumulus_gateway.getComputationIdForDefinition(state.computation_definition)
+        comp_id = cumulus_id.toSimple()
         with self.lock_:
-            logging.info("adding computation: %s", comp_id)
-            if comp_id not in self.pending_computations:
-                future = Future(lambda: self.cancel(comp_id))
-                self.pending_computations[comp_id] = (future, False)
+            if cumulus_id not in self.computation_results:
+                future = Future(lambda: self.cancel(cumulus_id))
+                self.computation_results[cumulus_id] = (future, False)
+            assert comp_id not in self.computation_states
+            self.computation_states[comp_id] = state
 
-        return comp_id
+        return cumulus_id
 
 
-    def start_computation(self, comp_id):
+    def start_computation(self, cumulus_id):
         with self.lock_:
-            if comp_id not in self.pending_computations:
+            if cumulus_id not in self.computation_results:
                 # TODO: error - computation wasn't created
-                logging.error("Computation doesn't exist: %s", comp_id)
+                logging.error("Computation doesn't exist: %s", cumulus_id)
 
-            future, is_started = self.pending_computations[comp_id]
+            future, is_started = self.computation_results[cumulus_id]
             if is_started:
                 return future
 
             self.cumulus_gateway.setComputationPriority(
-                comp_id,
+                cumulus_id,
                 CumulusNative.ComputationPriority(self.priority_allocator.next())
                 )
         return future
 
 
-    def cancel(self, comp_id):
+    def cancel(self, cumulus_id):
         # TODO: implement...
         return True
 
 
     def cancel_all(self):
         with self.lock_:
-            for comp_id, refcount in self.refcount_by_comp_id.iteritems():
+            for cumulus_id, refcount in self.refcount_by_cumulus_id.iteritems():
                 if refcount > 0:
                     self.cumulus_gateway.setComputationPriority(
-                        comp_id,
+                        cumulus_id,
                         CumulusNative.ComputationPriority()
                         )
-                    self.refcount_by_comp_id[comp_id] = 0
+                    self.refcount_by_cumulus_id[cumulus_id] = 0
 
             self.cumulus_gateway.resetStateCompletely()
 
 
-    def on_computation_result(self, comp_id, result, statistics):
+    def get_computation_state(self, comp_id):
+        return self.computation_states.get(comp_id)
+
+
+    def on_computation_result(self, cumulus_id, result, statistics):
         with self.lock_:
-            future, is_started = self.pending_computations.get(comp_id)
+            future, is_started = self.computation_results.get(cumulus_id)
             logging.info("result for computation %s: %s. started? %s\npending: %s",
-                         comp_id,
+                         cumulus_id,
                          result,
                          is_started,
-                         self.pending_computations)
+                         self.computation_results)
         future.set_result((result, statistics))
 
 
@@ -120,7 +127,7 @@ class Computations(object):
                 terms.append(CumulusNative.ComputationDefinitionTerm.Value(a, None))
             else:
                 terms.append(CumulusNative.ComputationDefinitionTerm.Subcomputation(
-                    a.computation_definition.asRoot.terms
+                    a.asRoot.terms
                     ))
 
         return CumulusNative.ComputationDefinition.Root(
