@@ -34,7 +34,6 @@ class WorkerConnectionBase:
     def answers_self_test(self):
         sock = None
         try:
-            logging.info("Starting self-test on %s", self.socket_name)
             sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             sock.connect(os.path.join(self.socket_dir, self.socket_name))
 
@@ -45,7 +44,6 @@ class WorkerConnectionBase:
             logging.error("Couldn't communicate with %s:\n%s", self.socket_name, traceback.format_exc())
             return False
         finally:
-            logging.info("Done with self-test on %s", self.socket_name)
             try:
                 sock.close()
             except:
