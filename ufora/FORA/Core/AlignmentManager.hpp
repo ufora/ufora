@@ -32,7 +32,7 @@ public:
 	uint8_t* allocateAlignedData(const Type& type, uword_t count);
 
 private:
-	ImmutableTreeSet<uint8_t*> mManagedMemory;
+	std::set<uint8_t*> mManagedMemory;
 	MemoryPool *mPool;
 	bool mFreeOnDestroy;
 };
