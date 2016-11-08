@@ -307,6 +307,12 @@ class WithBlockExecutor(object):
             if isinstance(exceptionValue, str):
                 exceptionValue = Exceptions.InternalError(exceptionValue)
 
+            if not isinstance(exceptionValue, Exception):
+                exceptionValue = Exceptions.InternalError(
+                    "Unknown exception encountered: %s\n%s" % 
+                        (exceptionValue, "\n".join(traceback.format_tb(tb)))
+                    )
+
             raise exceptionValue, None, tb
 
         self.executor.connection.pullAllMessagesAndProcess()

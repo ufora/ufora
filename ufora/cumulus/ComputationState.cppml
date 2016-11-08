@@ -710,14 +710,17 @@ public:
 				tasks->execute(
 					valueInWorkingContext,
 					mExecutionContext,
-					trigger
+					trigger,
+					mOutsideEcValues.getUnconsumedDefinition()->getOutOfProcessCall().policy()
 					)
 				)
 			-| ValidResult() ->> {
 				mComputationStatus = ComputationStatus::Finished();
 				}
-			-| Blocked(pages) ->> {
-		    	mComputationStatus = ComputationStatus::BlockedOnVectorLoad(pages);
+			-| Blocked(pages, bytesOfMemory) ->> {
+				lassert(pages.size() || bytesOfMemory);
+
+		    	mComputationStatus = ComputationStatus::BlockedOnResources(pages, bytesOfMemory);
 				}
 		    -| TerminatedEarly() ->> {
 		    	placeInFinishedState(
@@ -1276,9 +1279,10 @@ public:
 		else
 		if (mExecutionContext->isVectorLoad())
 			{
-			mComputationStatus = ComputationStatus::BlockedOnVectorLoad(
+			mComputationStatus = ComputationStatus::BlockedOnResources(
 				mExecutionContext->getVDM().getBigVectorLayouts()
-					->convertSliceToPages(mExecutionContext->getVectorLoad())
+					->convertSliceToPages(mExecutionContext->getVectorLoad()),
+				0
 				);
 			}
 			else
@@ -1361,7 +1365,7 @@ public:
 		Nullable<pair<Symbol, ImplValContainer> > alt =
 			ImplValContainerUtilities::extractAsAlternative(*cacheLoadRequest.tupleGetItem(0));
 
-		if (alt && alt->first == Symbol("OutOfProcessPythonCall") && *alt->second.tupleGetSize() == 1)
+		if (alt && alt->first == Symbol("OutOfProcessPythonCall"))
 			return true;
 
 		return false;
@@ -1376,8 +1380,29 @@ public:
 		Nullable<pair<Symbol, ImplValContainer> > alt =
 			ImplValContainerUtilities::extractAsAlternative(*cacheLoadRequest.tupleGetItem(0));
 
-		if (alt && alt->first == Symbol("OutOfProcessPythonCall") && *alt->second.tupleGetSize() == 1)
+		if (alt && alt->first == Symbol("OutOfProcessPythonCall"))
 			{
+			Nullable<OutOfProcessPythonTaskPolicy> policy = 
+				OutOfProcessPythonTaskPolicy::parsePolicyFromForaTuple(
+					alt->second,
+					mExecutionContext->getVDM().getDefaultOutOfProcessPythonTaskPolicy()
+					);
+
+			if (!policy)
+				{
+				mOutsideEcValues.setPendingCacheResult(
+					Fora::Interpreter::ComputationResult::Exception(
+						ImplValContainer(
+							emptyTreeVec() 
+								+ ImplValContainer(CSTValue("Invalid OutOfProcessPythonTaskPolicy specified"))
+								+ ImplValContainer(ImmutableTreeVector<ImplValContainer>())
+							),
+						ImplValContainer()
+						)
+					);
+				return true;
+				}
+
 			auto createThread = [&](ComputationDefinition def) {
 				ioGuid = ioGuid + computationStateHashIncrement;
 				ComputationId id = ComputationId::CreateIdForSplit(def, ioGuid, mTimesEverSplit++);
@@ -1387,7 +1412,11 @@ public:
 
 			mBlockingComputationsInOrder.push_back(
 				createThread(
-					ComputationDefinition::OutOfProcessCall(mOwnComputationId, *alt->second.tupleGetItem(0))
+					ComputationDefinition::OutOfProcessCall(
+						mOwnComputationId, 
+						*alt->second.tupleGetItem(0),
+						*policy
+						)
 					)
 				);
 
@@ -1486,7 +1515,7 @@ public:
 				computations.ioTasks() = computations.ioTasks() + taskId + externalTask;
 				}
 			-| PageLoad(pages) ->> {
-				mComputationStatus = ComputationStatus::BlockedOnVectorLoad(pages);
+				mComputationStatus = ComputationStatus::BlockedOnResources(pages, 0);
 				}
 
 		return true;
@@ -1750,10 +1779,10 @@ public:
 			);
 		}
 
-	void markSliceLoaded()
+	void markResourcesAvailable()
 		{
 		@match ComputationStatus(mComputationStatus)
-			-| BlockedOnVectorLoad(slice) ->> {
+			-| BlockedOnResources(slice) ->> {
 				mComputationStatus = ComputationStatus::Computable();
 				}
 			-| _ ->> {
@@ -1837,7 +1866,7 @@ public:
 
 	bool canExtractPausedComputation() const
 		{
-		return (mComputationStatus.isComputable() || mComputationStatus.isBlockedOnVectorLoad())
+		return (mComputationStatus.isComputable() || mComputationStatus.isBlockedOnResources())
 					&& !mOutsideEcValues.getUnconsumedDefinition();
 		}
 
@@ -2216,10 +2245,10 @@ public:
 
 	void resetStateForAddDrop()
 		{
-		if (mComputationStatus.isBlockedOnVectorLoad())
+		if (mComputationStatus.isBlockedOnResources())
 			{
 			//we'll just retry later
-			markSliceLoaded();
+			markResourcesAvailable();
 			return;
 			}
 
@@ -2375,9 +2404,9 @@ void ComputationState::addComputationResult(
 	mImpl->addComputationResult(computation, result, statistics);
 	}
 
-void ComputationState::markSliceLoaded()
+void ComputationState::markResourcesAvailable()
 	{
-	mImpl->markSliceLoaded();
+	mImpl->markResourcesAvailable();
 	}
 
 void ComputationState::markComputationCircular()

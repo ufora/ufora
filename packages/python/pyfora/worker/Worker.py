@@ -28,22 +28,25 @@ import pyfora.BinaryObjectRegistry as BinaryObjectRegistry
 
 class Worker:
     def __init__(self, socket_path):
-        logging.info("Worker started, listening on %s", socket_path)
-
         self.namedSocketPath = socket_path
 
         assert not os.path.exists(socket_path)
 
     def executeLoop(self):
+        logging.info("Worker started, listening on %s", self.namedSocketPath)
+
         try:
             sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             sock.bind(self.namedSocketPath)
-            sock.listen(1)
+            sock.listen(2)
 
             while True:
                 connection, _ = sock.accept()
 
-                first_byte = Common.readAtLeast(connection.fileno(), 1)
+                try:
+                    first_byte = Common.readAtLeast(connection.fileno(), 1)
+                except:
+                    first_byte = '<no first byte>'
 
                 if first_byte == Messages.MSG_SHUTDOWN:
                     sock.close()
@@ -56,6 +59,8 @@ class Worker:
                 elif first_byte == Messages.MSG_TEST:
                     aString = Common.readString(connection.fileno())
                     Common.writeString(connection.fileno(), aString)
+                else:
+                    logging.error("Worker %s had an incorrect first-byte: %s", self.namedSocketPath, first_byte)
 
                 connection.close()
         except:

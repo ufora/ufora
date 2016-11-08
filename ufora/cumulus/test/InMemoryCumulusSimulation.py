@@ -81,7 +81,9 @@ def createWorker_(machineId,
                   memoryLimitMb,
                   cacheFunction,
                   pageSizeOverride,
-                  disableEventHandler):
+                  disableEventHandler,
+                  maxBytesPerOutOfProcessPythonTask
+                  ):
     if callbackSchedulerToUse is None:
         callbackSchedulerToUse = CallbackScheduler.singletonForTesting()
 
@@ -105,6 +107,11 @@ def createWorker_(machineId,
             callbackSchedulerToUse
             )
         )
+
+    if maxBytesPerOutOfProcessPythonTask is not None:
+        defaults = vdm.getDefaultOutOfProcessPythonTaskPolicy()
+        defaults.bytesOfExternalMemoryRequired = maxBytesPerOutOfProcessPythonTask
+        vdm.setDefaultOutOfProcessPythonTaskPolicy(defaults)
 
     cache = cacheFunction()
 
@@ -219,7 +226,8 @@ class InMemoryCumulusSimulation(object):
                 channelThroughputMBPerSecond=None,
                 pageSizeOverride=None,
                 disableEventHandler=False,
-                machineIdHashSeed=None
+                machineIdHashSeed=None,
+                maxBytesPerOutOfProcessPythonTask=None
                 ):
         self.useInMemoryCache = useInMemoryCache
         self.machineIdHashSeed = machineIdHashSeed
@@ -271,7 +279,7 @@ class InMemoryCumulusSimulation(object):
         self.outOfProcessTaskServices = []
         self.clientTeardownGates = []
         self.workerTeardownGates = []
-
+        self.maxBytesPerOutOfProcessPythonTask = maxBytesPerOutOfProcessPythonTask
 
         for ix in range(workerCount):
             self.addWorker()
@@ -304,7 +312,8 @@ class InMemoryCumulusSimulation(object):
                 callbackSchedulerToUse = self.callbackScheduler,
                 cacheFunction = self.cacheFunction,
                 pageSizeOverride = self.pageSizeOverride,
-                disableEventHandler = self.disableEventHandler
+                disableEventHandler = self.disableEventHandler,
+                maxBytesPerOutOfProcessPythonTask = self.maxBytesPerOutOfProcessPythonTask
                 )
             )
 

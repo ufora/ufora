@@ -41,7 +41,6 @@ class WorkerConnectionBase:
             Common.writeString(sock.fileno(), "msg")
             return Common.readString(sock.fileno()) == "msg"
         except:
-            logging.error("Couldn't communicate with %s:\n%s", self.socket_name, traceback.format_exc())
             return False
         finally:
             try:
@@ -77,10 +76,10 @@ class OutOfProcessWorkerConnection(WorkerConnectionBase):
         logging.error("socket path: %s", worker_socket_path)
 
         def onStdout(msg):
-            logging.info("%s out> %s", socket_name, msg)
+            logging.info("%s/%s out> %s", socket_dir, socket_name, msg)
 
         def onStderr(msg):
-            logging.info("%s err> %s", socket_name, msg)
+            logging.info("%s/%s err> %s", socket_dir, socket_name, msg)
 
         self.proc = SubprocessRunner.SubprocessRunner(
             [sys.executable, worker.__file__, worker_socket_path],
@@ -99,7 +98,7 @@ class OutOfProcessWorkerConnection(WorkerConnectionBase):
 
     def cleanupAfterAppearingDead(self):
         #this worker is dead!
-        logging.info("worker %s was busy but looks dead to us", self.socket_name)
+        logging.info("worker %s/%s was busy but looks dead to us", self.socket_dir, self.socket_name)
         self.proc.wait()
         self.remove_socket()
 
@@ -127,7 +126,7 @@ class InProcessWorkerConnection(WorkerConnectionBase):
             Common.writeAllToFd(sock.fileno(), Messages.MSG_SHUTDOWN)
             return True
         except:
-            logging.error("Couldn't communicate with %s:\n%s", self.socket_name, traceback.format_exc())
+            logging.error("Couldn't communicate with %s/%s:\n%s", self.socket_dir, self.socket_name, traceback.format_exc())
             return False
         finally:
             try:
@@ -177,17 +176,27 @@ class Spawner:
         worker_name = "worker_%s" % index
         worker_socket_path = os.path.join(self.socket_dir, worker_name)
 
-        self.waiting_workers.append(self.workerType(worker_name, self.socket_dir))
+        newWorker = self.workerType(worker_name, self.socket_dir)
+
+        self.waiting_workers.append(newWorker)
 
         t0 = time.time()
         TIMEOUT = 10
-        while not os.path.exists(worker_socket_path) and time.time() - t0 < TIMEOUT:
-            time.sleep(0.001)
+        delay = 0.001
+        while not newWorker.answers_self_test() and time.time() - t0 < TIMEOUT:
+            time.sleep(delay)
+            delay *= 2
 
-        if not os.path.exists(worker_socket_path):
+        if not newWorker.answers_self_test():
             raise UserWarning("Couldn't start another worker.")
         else:
-            logging.info("Started worker %s with %s busy and %s idle", worker_name, len(self.busy_workers), len(self.waiting_workers))
+            logging.info(
+                "Started worker %s/%s with %s busy and %s idle", 
+                self.socket_dir, 
+                worker_name, 
+                len(self.busy_workers), 
+                len(self.waiting_workers)
+                )
 
     def terminate_workers(self):
         for w in self.busy_workers + self.waiting_workers:

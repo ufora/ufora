@@ -15,13 +15,15 @@
 ****************************************************************************/
 
 #include "OutOfProcessPythonTasks.hppml"
+#include "OutOfProcessPythonTaskPolicy.hppml"
+
 #include "../core/serialization/IFileDescriptorProtocol.hpp"
 #include "../core/serialization/OFileDescriptorProtocol.hpp"
 #include "../FORA/Core/ExecutionContextImpl.hppml"
 #include "../FORA/python/PurePython/PythonBinaryStreamToImplval.hppml"
 #include "../FORA/python/PurePython/PythonBinaryStreamFromImplval.hppml"
 #include "../FORA/TypedFora/ABI/FindAllReachableVectorPages.hppml"
-    
+
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -138,7 +140,7 @@ public:
             NamedSocketConnection connection(mSocketPath + "/" + name);
 
             try {
-                c(connection);
+                c(connection, name);
                 }
             catch(...)
                 {
@@ -154,18 +156,52 @@ private:
     std::string mSocketPath;
 };
 
+class ExternalMemoryAllocator {
+public:
+    ExternalMemoryAllocator(PolymorphicSharedPtr<VectorDataMemoryManager> inVDMM) : 
+            mVDMM(inVDMM),
+            mBytesAllocated(0)
+        {
+        }
+
+    ~ExternalMemoryAllocator()
+        {
+        if (mBytesAllocated)
+            mVDMM->releaseExternalMemory(mBytesAllocated);
+        }
+
+    bool tryToAllocate(int64_t bytes)
+        {
+        if (mVDMM->allocateExternalMemory(bytes))
+            {
+            mBytesAllocated += bytes;
+            return true;
+            }
+        else
+            return false;
+        }
+
+
+private:
+    PolymorphicSharedPtr<VectorDataMemoryManager> mVDMM;
+
+    int64_t mBytesAllocated;
+};
 
 OutOfProcessPythonTaskResult OutOfProcessPythonTasks::execute(
                     const ImplValContainer& toCall, 
                     PolymorphicSharedPtr<Fora::Interpreter::ExecutionContext> containingContext,
-                    Ufora::threading::Trigger& earlyTerminationTrigger
+                    Ufora::threading::Trigger& earlyTerminationTrigger,
+                    const OutOfProcessPythonTaskPolicy& taskPolicy
                     )
     {
     Nullable<OutOfProcessPythonTaskResult> finalResult;
 
     WorkerPoolCommunicator communicator(mPathToSocket);
 
-    communicator.withWorker([&](NamedSocketConnection& conn) {
+    ExternalMemoryAllocator memAllocator(containingContext->getVDM().getMemoryManager());
+
+    communicator.withWorker([&](NamedSocketConnection& conn, std::string workername) {
         
         containingContext->getImpl()->lockAndExecute([&]() {
 
@@ -179,7 +215,8 @@ OutOfProcessPythonTaskResult OutOfProcessPythonTasks::execute(
             if (reachable.getMissedPages().size())
                 {
                 finalResult = OutOfProcessPythonTaskResult::Blocked(
-                    ImmutableTreeSet<Fora::PageId>(reachable.getReachablePages())
+                    ImmutableTreeSet<Fora::PageId>(reachable.getReachablePages()),
+                    taskPolicy.bytesOfExternalMemoryRequired()
                     );
 
                 OBinaryStream stream(conn.outputProtocol());
@@ -187,33 +224,45 @@ OutOfProcessPythonTaskResult OutOfProcessPythonTasks::execute(
 
                 return;
                 }
-            else
+
+            //now try to allocate physical memory
+            if (!memAllocator.tryToAllocate(taskPolicy.bytesOfExternalMemoryRequired()))
                 {
-                PolymorphicSharedPtr<Fora::PythonBinaryStreamFromImplval> converter(
-                    new Fora::PythonBinaryStreamFromImplval(
-                        containingContext->getVDM().polymorphicSharedPtrFromThis(),
-                        mPyforaBuiltins,
-                        mPythonNameToPyforaName
-                        )
+                finalResult = OutOfProcessPythonTaskResult::Blocked(
+                    ImmutableTreeSet<Fora::PageId>(), 
+                    taskPolicy.bytesOfExternalMemoryRequired()
                     );
 
                 OBinaryStream stream(conn.outputProtocol());
+                stream << MSG_NO_OP;
 
-                stream << MSG_OOPP_CALL;
+                return;
+                }
 
-                try {
-                    int64_t id = converter->write(stream, toCall);
-                    converter->writeTerminator(stream);
-                    stream.write(sizeof(id), &id);
-                    }
-                catch(StreamException& err)
-                    {
-                    LOG_ERROR << "OutOfProcessPythonTasks caught an error communicating with "
-                        << "worker process: " << err.what();
+            PolymorphicSharedPtr<Fora::PythonBinaryStreamFromImplval> converter(
+                new Fora::PythonBinaryStreamFromImplval(
+                    containingContext->getVDM().polymorphicSharedPtrFromThis(),
+                    mPyforaBuiltins,
+                    mPythonNameToPyforaName
+                    )
+                );
 
-                    finalResult = OutOfProcessPythonTaskResult::TerminatedEarly();
-                    return;
-                    }
+            OBinaryStream stream(conn.outputProtocol());
+
+            stream << MSG_OOPP_CALL;
+
+            try {
+                int64_t id = converter->write(stream, toCall);
+                converter->writeTerminator(stream);
+                stream.write(sizeof(id), &id);
+                }
+            catch(StreamException& err)
+                {
+                LOG_ERROR << "OutOfProcessPythonTasks caught an error communicating with "
+                    << "worker process: " << err.what();
+
+                finalResult = OutOfProcessPythonTaskResult::TerminatedEarly();
+                return;
                 }
             });
         
