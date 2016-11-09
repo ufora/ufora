@@ -261,8 +261,6 @@ class WithRegularPython_test(unittest.TestCase):
                     
             self.assertTrue("Ufora Inc." in x)
 
-
-            
     def test_class_chain_access(self):
         class A():
             def __init__(self):
@@ -281,3 +279,20 @@ class WithRegularPython_test(unittest.TestCase):
                     outX = x
         
         self.assertTrue(outX.y.z == 20)
+
+    def test_key_errors_out_of_process_marshall_correctly(self):
+        with self.assertRaises(KeyError):
+            with self.create_executor() as fora:
+                with fora.remotely.downloadAll():
+                    with helpers.python:
+                        aDict = {}
+                        aDict[10]
+
+    def test_key_errors_in_process_marshall_correctly(self):
+        with self.assertRaises(KeyError):
+            with self.create_executor() as fora:
+                with fora.remotely.downloadAll():
+                    aDict = {}
+                    aDict[10]
+    
+
