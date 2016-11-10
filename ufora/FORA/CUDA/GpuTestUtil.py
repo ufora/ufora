@@ -63,7 +63,7 @@ class GpuTestUtil:
     def basic_gpu_works_helper(self, function, onGPU=True):
         s3 = InMemoryS3Interface.InMemoryS3InterfaceFactory()
 
-        testingVectorText = "Vector.range(1024*4, {_+1000000})"
+        testingVectorText = "Vector.range(1024*4, fun(x){x+1000000})"
 
         text = """
             let f = fun(ct) {
