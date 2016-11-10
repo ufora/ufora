@@ -64,15 +64,18 @@ def roundtripConvert(toConvert, vdm, allowUserCodeModuleLevelLookups = False):
 
     registry = ObjectRegistry.ObjectRegistry()
 
-    BinaryObjectRegistryDeserializer.deserializeFromString(binaryObjectRegistry.str(), registry, lambda x:x)
+    BinaryObjectRegistryDeserializer.deserializeFromString(
+        binaryObjectRegistry.str(), registry, lambda x:x)
 
     t2 = time.time()
 
-    objId, registry.objectIdToObjectDefinition = pickle.loads(pickle.dumps((objId,registry.objectIdToObjectDefinition),2))
+    objId, registry.objectIdToObjectDefinition = pickle.loads(
+        pickle.dumps((objId,registry.objectIdToObjectDefinition),2))
 
     t3 = time.time()
 
-    converter = Converter.constructConverter(Converter.canonicalPurePythonModule(), vdm)
+    converter = Converter.constructConverter(
+        Converter.canonicalPurePythonModule(), vdm)
     anObjAsImplval = converter.convertDirectly(objId, registry)
 
     t4 = time.time()
@@ -94,7 +97,8 @@ def roundtripConvert(toConvert, vdm, allowUserCodeModuleLevelLookups = False):
         allowUserCodeModuleLevelLookups
         )
 
-    finalResult = rehydrator.convertEncodedStringToPythonObject(outputStream.str(), root_id)
+    finalResult = rehydrator.convertEncodedStringToPythonObject(
+        outputStream.str(), root_id)
 
     t6 = time.time()
 
@@ -123,17 +127,20 @@ class ConverterTest(unittest.TestCase):
         binaryObjectRegistry.defineEndOfStream()
 
         registry = ObjectRegistry.ObjectRegistry()
-        BinaryObjectRegistryDeserializer.deserializeFromString(binaryObjectRegistry.str(), registry, lambda x:x)
+        BinaryObjectRegistryDeserializer.deserializeFromString(
+            binaryObjectRegistry.str(), registry, lambda x:x)
 
         self.assertEqual(
             sorted(
-                registry.objectIdToObjectDefinition[objId].freeVariableMemberAccessChainsToId.keys()
+                registry.objectIdToObjectDefinition[objId]\
+                .freeVariableMemberAccessChainsToId.keys()
                 ),
             ["multiprocessing"]
             )
 
     def test_roundtrip_conversion_simple(self):
-        vdm = FORANative.VectorDataManager(CallbackScheduler.singletonForTesting(), 10000000)
+        vdm = FORANative.VectorDataManager(
+            CallbackScheduler.singletonForTesting(), 10000000)
 
         for obj in [10, 10.0, "asdf", None, False, True, 
                 [], (), [1,2], [1, [1]], (1,2), (1,2,[]), {1:2}
@@ -141,19 +148,29 @@ class ConverterTest(unittest.TestCase):
             self.assertEqual(roundtripConvert(obj, vdm)[0], obj, obj)
 
     def test_roundtrip_convert_function(self):
-        vdm = FORANative.VectorDataManager(CallbackScheduler.singletonForTesting(), 10000000)
+        vdm = FORANative.VectorDataManager(
+            CallbackScheduler.singletonForTesting(), 10000000)
 
         self.assertTrue(
-            roundtripConvert(ThisIsAFunction, vdm, allowUserCodeModuleLevelLookups=True)[0] 
+            roundtripConvert(ThisIsAFunction,
+                             vdm, 
+                             allowUserCodeModuleLevelLookups=True
+                         )[0] 
                 is ThisIsAFunction
             )
         self.assertTrue(
-            roundtripConvert(ThisIsAClass, vdm, allowUserCodeModuleLevelLookups=True)[0] 
+            roundtripConvert(ThisIsAClass,
+                             vdm,
+                             allowUserCodeModuleLevelLookups=True
+                         )[0] 
                 is ThisIsAClass
             )
         self.assertTrue(
             isinstance(
-                roundtripConvert(ThisIsAClass(), vdm, allowUserCodeModuleLevelLookups=True)[0],
+                roundtripConvert(ThisIsAClass(),
+                                 vdm,
+                                 allowUserCodeModuleLevelLookups=True
+                             )[0],
                 ThisIsAClass
                 )
             )
@@ -198,7 +215,8 @@ class ConverterTest(unittest.TestCase):
 
             rehydrator = PythonObjectRehydrator(mappings, False)
 
-            convertedInstance = rehydrator.convertEncodedStringToPythonObject(stream.str(), root_id)
+            convertedInstance = rehydrator.convertEncodedStringToPythonObject(
+                stream.str(), root_id)
 
             convertedInstanceModified = rehydrator.convertEncodedStringToPythonObject(
                 stream.str().replace("return 100", "return 200"),
@@ -221,6 +239,7 @@ class ConverterTest(unittest.TestCase):
                 numpy.array([False])
                 ]:
             dt = array.dtype
-            dt2 = TypeDescription.primitiveToDtype(TypeDescription.dtypeToPrimitive(array.dtype))
+            dt2 = TypeDescription.primitiveToDtype(
+                TypeDescription.dtypeToPrimitive(array.dtype))
             self.assertEqual(str(dt.descr), str(dt2.descr))
 
