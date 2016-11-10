@@ -20,6 +20,7 @@ import tempfile
 import gc
 import unittest
 
+import ufora.config.Mainline as Mainline
 import ufora.util.ManagedThread as ManagedThread
 import ufora.distributed.ServerUtils.SimpleServer as SimpleServer
 import ufora.native.Storage as StorageNative
@@ -418,4 +419,7 @@ class SharedStateMemoryTest(unittest.TestCase):
         cache.newMinimumId(numKeys * 2)
         gc.collect()
         self.assertLess(TCMalloc.getBytesUsed() - m0, 1024 * 4)
+
+if __name__ == '__main__':
+    Mainline.UnitTestMainline([])
 
