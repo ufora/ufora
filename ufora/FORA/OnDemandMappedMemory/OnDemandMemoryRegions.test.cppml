@@ -23,6 +23,36 @@
 #include "../../core/threading/Queue.hpp"
 #include "../../core/Clock.hpp"
 
+BOOST_AUTO_TEST_CASE( test_OnDemandMemoryRegions_shm_prefix )
+	{
+	Queue<OnDemandMemoryRegions::BlockingThread> blocking;
+
+	BOOST_CHECK_THROW(
+			OnDemandMemoryRegions regions(
+				[&](OnDemandMemoryRegions::BlockingThread t) { blocking.write(t); },
+				[]() -> void* { return (void*)1; },
+				""
+				),
+			std::logic_error );
+
+	BOOST_CHECK_THROW(
+			OnDemandMemoryRegions regions(
+				[&](OnDemandMemoryRegions::BlockingThread t) { blocking.write(t); },
+				[]() -> void* { return (void*)1; },
+				"ufora_test"
+				),
+			std::logic_error );
+
+	BOOST_CHECK_THROW(
+			OnDemandMemoryRegions regions(
+				[&](OnDemandMemoryRegions::BlockingThread t) { blocking.write(t); },
+				[]() -> void* { return (void*)1; },
+				"ufora/_test"
+				),
+			std::logic_error );
+
+	}
+
 BOOST_AUTO_TEST_CASE( test_OnDemandMemoryRegions_access_memory )
 	{
 		{
@@ -40,6 +70,7 @@ BOOST_AUTO_TEST_CASE( test_OnDemandMemoryRegions_access_memory )
 		uint64_t writeSize = PAGE_SIZE * 128;
 
 		uint8_t* writeable = regions.allocateSharedRegion(writeSize);
+		BOOST_CHECK(writeable != nullptr);
 
 		for (long k = 0; k < writeSize; k++)
 			writeable[k] = 1;
@@ -68,6 +99,7 @@ BOOST_AUTO_TEST_CASE( test_OnDemandMemoryRegions_access_memory )
 			if (blocking.getTimeout(thread, 0.01))
 				{
 				uint64_t offset = thread.offsetInRegion();
+
 				offset -= offset % PAGE_SIZE;
 
 				uint64_t offsetInWriteable = offset % writeSize;
@@ -100,11 +132,12 @@ BOOST_AUTO_TEST_CASE( test_OnDemandMemoryRegions_big_segment )
 		"/ufora_test"
 		);
 
-	uint8_t* writeable = regions.allocateSharedRegion(128 * 1024 * 1024);
+	uint64_t writeSize = 128 * 1024 * PAGE_SIZE;
+	uint8_t* writeable = regions.allocateSharedRegion(writeSize);
 	BOOST_CHECK(writeable != nullptr);
 
 	writeable[0] = 0;
-	writeable[128 * 1024 * 1024 - 1] = 0;
+	writeable[writeSize - 1] = 0;
 	}
 
 BOOST_AUTO_TEST_CASE( test_OnDemandMemoryRegions_many_allocations )
@@ -119,10 +152,10 @@ BOOST_AUTO_TEST_CASE( test_OnDemandMemoryRegions_many_allocations )
 		"/ufora_test"
 		);
 
-	for (long k = 0; k < 10000;k++)
+	for (long k = 0; k < 10000; k++)
 		{
-		uint8_t* writeable = regions.allocateSharedRegion(4 * 1024);
-		lassert(writeable);
+		uint8_t* writeable = regions.allocateSharedRegion(PAGE_SIZE);
+		BOOST_CHECK(writeable != nullptr);
 		regions.freeSharedRegion(writeable);
 		}
 	}
@@ -184,14 +217,15 @@ BOOST_AUTO_TEST_CASE( test_OnDemandMemoryRegions_mutiple_region_handlers )
 		*readable2 = 10;
 		};
 
-	boost::shared_ptr<boost::thread> thread1(new boost::thread(thread1Func));
-	boost::shared_ptr<boost::thread> thread2(new boost::thread(thread2Func));
+	std::shared_ptr<boost::thread> thread1(new boost::thread(thread1Func));
+	std::shared_ptr<boost::thread> thread2(new boost::thread(thread2Func));
 
 	auto blocked1 = blocking1.get();
 	auto blocked2 = blocking2.get();
 
-	regions1.mapShareableRegion(writeable1,0,readable1,0,PAGE_SIZE);
-	regions2.mapShareableRegion(writeable2,0,readable2,0,PAGE_SIZE);
+	BOOST_CHECK(true == regions1.mapShareableRegion(writeable1, 0, readable1, 0, PAGE_SIZE));
+	BOOST_CHECK(true == regions2.mapShareableRegion(writeable2, 0, readable2, 0, PAGE_SIZE));
+
 
 	thread1->join();
 	thread2->join();

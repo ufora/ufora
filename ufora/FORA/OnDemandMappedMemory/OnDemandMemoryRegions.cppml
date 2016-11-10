@@ -28,8 +28,7 @@
 
 namespace {
 
-//return an interator to the largest key that's <= 'inKey', or "end" if none
-//exists
+//return an iterator to the largest key that's <= 'inKey', or "end" if none exists
 template<class K, class V>
 typename std::map<K,V>::const_iterator block_containing(const std::map<K,V>& inMap, const K& inKey)
 	{
@@ -51,8 +50,11 @@ typename std::map<K,V>::const_iterator block_containing(const std::map<K,V>& inM
 	return it;
 	}
 
+/// protects activeMemoryRegions
 boost::mutex singletonMutex;
+/// global set that holds OnDemandMemoryRegions
 std::set<OnDemandMemoryRegions*> activeMemoryRegions;
+
 struct sigaction* oldSigActionPtr;
 
 void cleanupAndTerminateProcess()
@@ -69,7 +71,7 @@ void cleanupAndTerminateProcess()
 	_exit(1);
 	}
 
-void sighandler(int i, siginfo_t* info, void* dat)
+void sighandler(int signum, siginfo_t* info, void* dat)
 	{
 	OnDemandMemoryRegions* regionPtr = OnDemandMemoryRegions::curRegionPtr();
 
@@ -101,6 +103,21 @@ OnDemandMemoryRegions::OnDemandMemoryRegions(
 	{
 		{
 		boost::mutex::scoped_lock lock(singletonMutex);
+
+		lassert_dump(
+				sharedMemoryPrefix.size() > 0,
+				"shared memory prefix cannot be empty"
+				);
+		lassert_dump(
+				sharedMemoryPrefix[0] == '/',
+				"shared memory prefix must start with a forward slash (/): "
+				<< sharedMemoryPrefix
+				);
+		lassert_dump(
+				sharedMemoryPrefix.find('/', 1) == std::string::npos,
+				"shared memory prefix cannot contain a forward slash after the first position: '"
+				<< sharedMemoryPrefix
+				);
 
 		auto anyHaveOurPrefix = [&]() {
 			for (auto other: activeMemoryRegions)
@@ -292,6 +309,7 @@ void OnDemandMemoryRegions::setSignalMaskOnCurrentThread()
 		);
 	}
 
+
 uint8_t* OnDemandMemoryRegions::allocateSharedRegion(uint64_t bytecount)
 	{
 	boost::mutex::scoped_lock lock(mMutex);
@@ -302,7 +320,7 @@ uint8_t* OnDemandMemoryRegions::allocateSharedRegion(uint64_t bytecount)
 
 	if (shm_fd == -1)
 		{
-		LOG_ERROR << "Failed to allocate a shared-memory segment of size " << bytecount / 1024 / 1024.0 << " MB: " 
+		LOG_ERROR << "Failed to allocate (shm_open) a shared-memory segment of size " << bytecount / 1024 / 1024.0 << " MB: "
 			<< strerror(errno);
 
 		return nullptr;
@@ -310,9 +328,10 @@ uint8_t* OnDemandMemoryRegions::allocateSharedRegion(uint64_t bytecount)
 
 	if (ftruncate(shm_fd, bytecount))
 		{
-		LOG_ERROR << "Failed to allocate a shared-memory segment of size " << bytecount / 1024 / 1024.0 << " MB: " 
+		LOG_ERROR << "Failed to allocate (ftruncate) a shared-memory segment of size " << bytecount / 1024 / 1024.0 << " MB: "
 			<< strerror(errno);
 
+		close(shm_fd);
 		shm_unlink(segmentName.c_str());
 
 		return nullptr;
@@ -328,11 +347,12 @@ uint8_t* OnDemandMemoryRegions::allocateSharedRegion(uint64_t bytecount)
 
 	if (addr == (uint8_t*)-1)
 		{
-		LOG_ERROR << "Failed to allocate a shared-memory segment of size " << bytecount / 1024 / 1024.0 << " MB: " 
+		LOG_ERROR << "Failed to allocate (mmap " << mIndex << ") a shared-memory segment of size " << bytecount / 1024 / 1024.0 << " MB: "
 			<< strerror(errno);
 
+		close(shm_fd);
 		shm_unlink(segmentName.c_str());
-
+		sleep(100);
 		return nullptr;
 		}
 
@@ -417,12 +437,17 @@ bool OnDemandMemoryRegions::mapShareableRegion(
 	{
 	boost::mutex::scoped_lock lock(mMutex);
 
+	uint8_t* mappableRegionAddress = mappableRegion + mappableRegionOffset;
+
 	auto shareableIt = mSharedMemoryRecords.find(shareableRegion);
 
 	if (shareableIt == mSharedMemoryRecords.end())
 		return false;
 
-	void* result = ::mmap(mappableRegion + mappableRegionOffset, 
+	lassert(shareableRegionOffset + bytesToMap <= shareableIt->second.size());
+
+	void* result = ::mmap(
+			mappableRegionAddress,
 			bytesToMap, 
 			PROT_READ | PROT_WRITE, 
 			MAP_FIXED | MAP_SHARED, 
@@ -436,9 +461,9 @@ bool OnDemandMemoryRegions::mapShareableRegion(
 		return false;
 		}
 
-	lassert(result == mappableRegion + mappableRegionOffset);
+	lassert(result == mappableRegionAddress);
 
-	mMappedMemoryRecords[mappableRegion + mappableRegionOffset] = 
+	mMappedMemoryRecords[mappableRegionAddress] =
 		MappedMemoryRecord(
 			shareableRegion,
 			shareableRegionOffset,
@@ -447,8 +472,9 @@ bool OnDemandMemoryRegions::mapShareableRegion(
 			bytesToMap
 			);
 
-	uint8_t* activeRegionBase = mappableRegion + mappableRegionOffset;
+	uint8_t* activeRegionBase = mappableRegionAddress;
 
+	// notify blocked threads and clear served waiting queues
 	while (true)
 		{
 		auto it = mBlockingThreadQueues.lower_bound(activeRegionBase);
@@ -473,17 +499,21 @@ bool OnDemandMemoryRegions::unmap(
 	{
 	boost::mutex::scoped_lock lock(mMutex);
 
-	auto it = mMappedMemoryRecords.find(mappableRegion + mappableRegionOffset);
+	uint8_t* mappableRegionAddress = mappableRegion + mappableRegionOffset;
+
+	auto it = mMappedMemoryRecords.find(mappableRegionAddress);
 	
 	lassert(it != mMappedMemoryRecords.end());
 	lassert(bytesToMap == it->second.bytesToMap());
 
 	mMappedMemoryRecords.erase(it);
 
-	//reset the mapping for this portion of the object to something reasonable
+	// reset the mapping for this portion of the object to something reasonable
+	// we don't want to ::munmap because part of the virtual address space may
+	// then be claimed by malloc, which we don't want.
 	uint8_t* blockStart = 
 		(uint8_t*)::mmap(
-			mappableRegion + mappableRegionOffset, 
+			mappableRegionAddress,
 			bytesToMap,
 			PROT_NONE, 
 			MAP_ANONYMOUS | MAP_PRIVATE | MAP_FIXED, 
@@ -491,7 +521,7 @@ bool OnDemandMemoryRegions::unmap(
 			0
 			);
 
-	if (blockStart != mappableRegion + mappableRegionOffset)
+	if (blockStart != mappableRegionAddress)
 		{
 		LOG_CRITICAL << "resetting shared map region failed: " << strerror(errno);
 		lassert(false);
