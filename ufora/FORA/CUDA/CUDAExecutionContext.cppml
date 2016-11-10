@@ -39,6 +39,10 @@
 #include <cuda.h>
 #include <cuda_runtime_api.h>
 
+#include <fstream>
+#include <iostream>
+
+
 using TypedFora::Abi::VectorHandle;
 using TypedFora::Abi::VectorRecord;
 using Fora::Interpreter::ExecutionContext;
@@ -231,6 +235,8 @@ public:
 		lassert(outCudaDestDataVectors.size() > 0);
 
 		uword_t outputTypesCount = outCudaDestDataVectors.size();
+		LOG_DEBUG << "executeFunction : 1: outputTypesCount = " << outputTypesCount;
+
 		CUcontext contextToUse = mUnusedContexts.get();
 
 		try {
@@ -242,6 +248,7 @@ public:
 			// Grid/Block configuration
 			int threadsPerBlock = 1024;
 			int blocksPerGrid   = (inN + threadsPerBlock - 1) / threadsPerBlock;
+			LOG_DEBUG << "executeFunction : 2:";
 
 			uword_t kk = 0;
 			uword_t extraArgs = 2; // inN and sourceDataPtr
@@ -250,6 +257,7 @@ public:
 			if (outCudaIndexData)
 				++extraArgs;
 			uword_t argCount = outputTypesCount + extraArgs;
+			LOG_DEBUG << "executeFunction : 3: argCount " << argCount;
 			void **args = (void**) malloc(sizeof(void*) * (argCount));
 			if (inCudaClosureData)
 				args[kk++] = &inCudaClosureData;
@@ -265,6 +273,11 @@ public:
 			lassert(kk == argCount);
 
 			// Launch the CUDA kernel
+			LOG_DEBUG << "executeFunction: 4: About to launch CUDA kernel";
+			LOG_DEBUG << "executeFunction: 4.1: first 64bits of closure as int: " << ((int64_t*)inCudaClosureData)[0];
+			LOG_DEBUG << "executeFunction: 4.2: initialized CUDA outVecIdx with " << (int)outCudaIndexData[0]
+					<< ", at address " << (uint64_t)outCudaIndexData;
+
 			error = cuLaunchKernel( functionNameForModule(contextToUse, inModuleName),
 									blocksPerGrid, 1, 1,
 									threadsPerBlock, 1, 1,
@@ -274,12 +287,18 @@ public:
 			lassert_dump(error == CUDA_SUCCESS, "UNKNOWN CUDA ERROR");
 			cudaDeviceSynchronize();
 			//free cuda memory
+			LOG_DEBUG << "executeFunction: 5: About to free CUDA kernel args";
+			LOG_DEBUG << "executeFunction: 5.1: first 64bits of closure as int: " << ((int64_t*)inCudaClosureData)[0];
+			LOG_DEBUG << "executeFunction: 5.2: initialized CUDA outVecIdx with " << (int)outCudaIndexData[0]
+					<< ", at address " << (uint64_t)outCudaIndexData;
 			free(args);
 
+			LOG_DEBUG << "executeFunction : 6";
 			mUnusedContexts.write(contextToUse);
 			}
 		catch(...)
 			{
+			LOG_DEBUG << "executeFunction : 7";
 			mUnusedContexts.write(contextToUse);
 			// FIXME: we are not freeing the cuda allocated memory properly
 			throw;
@@ -317,6 +336,10 @@ void	CUDAExecutionContext::define(
 	string 	ptxDefinition =
 		computePTXVectorApplyKernelFromNativeCFG(inCFG, inKernelName);
 
+	// std::ofstream outF("generatedPtx.ptx");
+	// outF << ptxDefinition;
+	// outF.close();
+
 	mCUDAState->addCudaModule(inKernelName, inKernelName, ptxDefinition);
 
 	mNativeKernelsByName[inKernelName] = inCFG;
@@ -339,18 +362,29 @@ ImplValContainer    createFORAVector(
 
 	lassert(inPool);
 
+	LOG_DEBUG << "createFORAVector: 1: Starting";
 	TypedFora::Abi::ForaValueArray* array =
 		TypedFora::Abi::ForaValueArray::Empty(inPool);
 
 	std::set<JOV> jovSet;
 	std::vector<uint8_t*> slots(count);
 	std::vector<JOV> jovs(count);
+	LOG_DEBUG << "createFORAVector: 2";
 	if (indexData)
 		{
+		LOG_DEBUG << "createFORAVector: 3.0";
 		for (uword_t k = 0; k < count; ++k)
 			{
 			lassert(indexData);
+			LOG_DEBUG << "createFORAVector: 3.0.1 (k=" << k << ")." << (uint64_t)indexData;
 			uint8_t index = indexData[k];
+			LOG_DEBUG << "createFORAVector: 3.0.2 (k=" << k << "). type-index = " << (int)index;
+			for (uword_t i = 0; i < outputElementTypes.size(); ++i)
+				{
+				LOG_DEBUG << "[lower byte]outputVal_" << i << "[" << k << "]= "
+					<< (long)alignedDataVectors[i][k*outputElementTypes[i].alignedSize()]
+					<< ", type: " << prettyPrintString(outputElementTypes[i]);
+				}
 			if (index == GPU_EXCEPTION_INDEX)
 				return ImplValContainerUtilities::createVector(VectorRecord());
 
@@ -362,9 +396,12 @@ ImplValContainer    createFORAVector(
 			jovSet.insert(jovs[k]);
 			}
 		}
-	else
+	else {
+		LOG_DEBUG << "createFORAVector: 3.1";
 		jovSet.insert(JOV::OfType(outputElementTypes[0]));
+		}
 
+	LOG_DEBUG << "createFORAVector: 4 ";
 	lassert(jovSet.size() > 0);
 	if (jovSet.size() == 1)
 		{
@@ -465,6 +502,8 @@ ImplValContainer	CUDAExecutionContext::executeKernel(
 	if (!cudaInVecData || (!cudaClosureData && inApplyObject.type().size() > 0))
 		return ImplValContainer(CSTValue::blankOf(Type::Vector()));
 
+	LOG_DEBUG << "executeKernel(2): first 64bits of closure as int: " << ((int64_t*)cudaClosureData)[0];
+
 	uword_t outputElementTypesCount = outputElementTypes->size();
 	lassert_dump(outputElementTypesCount < GPU_EXCEPTION_INDEX, // reserve value 0xFF to flag exceptions
 			"Too many output types for 8bit unsigned integer to encode");
@@ -473,8 +512,13 @@ ImplValContainer	CUDAExecutionContext::executeKernel(
 	uint8_t* cudaOutVecIndex = nullptr;
 	if (outputElementTypesCount > 1 || mayThrowException) {
 		cudaOutVecIndex = alignMgr.allocateCudaAlignedData(indexElementType, elementCount);
+		LOG_DEBUG << "allocated " << elementCount << " slots in the cuda result index vector (using CUDA unified memory)";
 		memset(cudaOutVecIndex, 0xff, elementCount * indexElementType.alignedSize());
+		LOG_DEBUG << "executeKernel(2): initialized CUDA outVecIdx with " << (int)cudaOutVecIndex[0]
+				<< ", at address " << (uint64_t)cudaOutVecIndex;
 	}
+	LOG_DEBUG << "executeKernel(2): 4";
+
 	std::vector<uint8_t*> cudaOutVecDataVectors(outputElementTypesCount);
 
 	for (uword_t k = 0; k < outputElementTypesCount; ++k)
@@ -501,6 +545,12 @@ ImplValContainer	CUDAExecutionContext::executeKernel(
 
 	lassert(ExecutionContext::currentExecutionContext());
 	MemoryPool* pool = ExecutionContext::currentExecutionContext()->getMemoryPool();
+
+	LOG_DEBUG << "executeKernel(2): 5: about to createFORAVector";
+	LOG_DEBUG << "executeKernel(2): 6: first 64bits of closure as int: " << ((int64_t*)cudaClosureData)[0];
+	LOG_DEBUG << "executeKernel(2): 7: initialized CUDA outVecIdx with " << (int)cudaOutVecIndex[0]
+				<< ", at address " << (uint64_t)cudaOutVecIndex;
+
 	auto res = createFORAVector(
 					cudaOutVecIndex,
 					indexElementType.alignedSize(),
@@ -509,6 +559,7 @@ ImplValContainer	CUDAExecutionContext::executeKernel(
 					elementCount,
 					pool);
 
+	LOG_DEBUG << "executeKernel(2): 8: DONE";
 	return res;
 	}
 
@@ -519,6 +570,8 @@ ImplValContainer	CUDAExecutionContext::executeKernel(
 						)
 	{
 	Type vecElementType = *inSourceVector.cast<VectorRecord>().jor()[0].type();
+	LOG_DEBUG << "CUDAApply Vector Element Type:" << prettyPrintString(vecElementType);
+	LOG_DEBUG << "CUDAApply Function Object:" << prettyPrintString(inApplyObject);
 
 	if (!vecElementType.isPOD())
 		{
@@ -542,6 +595,7 @@ ImplValContainer	CUDAExecutionContext::executeKernel(
 					JudgmentOnValue::Constant(CSTValue(Symbol::Call())) +
 					JudgmentOnValue::OfType(vecElementType)
 				;
+			LOG_DEBUG << "signature JOVs: " << prettyPrintString(signatureJOVs);
 
 			PolymorphicSharedPtr<Fora::SimpleForwardReasoner> reasoner(
 				new Fora::SimpleForwardReasoner(
@@ -590,7 +644,11 @@ ImplValContainer	CUDAExecutionContext::executeKernel(
 
 			lassert(res->first == TypedFora::BlockID::entry());
 
+			// LOG_DEBUG << "CFG before any processing: "
+					// << prettyPrintString(cfg);
+
 			cfg = NativeCFGTransforms::convertForGpuExecution(cfg, frame->exits().resultPart().size());
+			LOG_DEBUG << "CFG after initial processing";
 
 			while (cfg.externalBranches().size())
 				{
@@ -611,6 +669,7 @@ ImplValContainer	CUDAExecutionContext::executeKernel(
 						),
 					nameOfSubbranch
 					);
+				LOG_DEBUG << "CFG after processing inlined code";
 				}
 
 			try {
@@ -630,9 +689,11 @@ ImplValContainer	CUDAExecutionContext::executeKernel(
 								"return type at index " << k << " of CUDA kernel '"
 									<< kernelName << "' is missing");
 						outputTypes[k] = *t;
+						LOG_DEBUG << " output_type[" << k << "] = " << prettyPrintString(*t);
 						++k;
 						}
 					}
+				LOG_DEBUG << "executeKernel: 7";
 				define(kernelName, cfg, vecElementType, outputTypes);
 				}
 			catch(std::logic_error e)
