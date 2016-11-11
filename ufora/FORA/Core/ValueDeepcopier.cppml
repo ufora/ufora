@@ -53,11 +53,7 @@ ValueDeepcopier::ValueDeepcopier(
 						bool collapsePageletTrees,
 						bool deepcopyAwayPagelets
 						) :
-		mVectors(ioState.mVectors),
-		mMutableVectors(ioState.mMutableVectors),
-		mComputationDefinitions(ioState.mComputationDefinitions),
-		mPageletTreePtrs(ioState.mPageletTreePtrs),
-		mStrings(ioState.mStrings),
+		mState(ioState),
 		mProduceNewIdentitiesForMutableVectors(produceNewIdentitiesForMutableVectors),
 		mTargetMemoryPool(targetMemoryPool),
 		mUnpagedVectorsAreWriteable(unpagedVectorsAreWriteable),
@@ -99,15 +95,15 @@ void ValueDeepcopier::duplicate(
 					new (destString) String(*sourceString, mTargetMemoryPool);
 				else
 					{
-					auto it = mStrings.find(sourceString->base());
-					if (it != mStrings.end())
+					auto it = mState.mStrings.find(sourceString->base());
+					if (it != mState.mStrings.end())
 						{
 						new (destString) String(it->second);
 						}
 					else
 						{
 						new (destString) String(*sourceString, mTargetMemoryPool);
-						mStrings[sourceString->base()] = *destString;
+						mState.mStrings[sourceString->base()] = *destString;
 						}
 					}
 				}
@@ -261,15 +257,15 @@ void ValueDeepcopier::duplicateScattered(
 					new (destString) String(*sourceString, mTargetMemoryPool);
 				else
 					{
-					auto it = mStrings.find(sourceString->base());
-					if (it != mStrings.end())
+					auto it = mState.mStrings.find(sourceString->base());
+					if (it != mState.mStrings.end())
 						{
 						new (destString) String(it->second);
 						}
 					else
 						{
 						new (destString) String(*sourceString, mTargetMemoryPool);
-						mStrings[sourceString->base()] = *destString;
+						mState.mStrings[sourceString->base()] = *destString;
 						}
 					}
 				}
@@ -401,8 +397,8 @@ void ValueDeepcopier::duplicateScattered(
 
 MutableVectorRecord ValueDeepcopier::duplicateMutableVector(MutableVectorRecord inHandle) const
 	{
-	if (mMutableVectors.find(inHandle) != mMutableVectors.end())
-		return mMutableVectors[inHandle];
+	if (mState.mMutableVectors.find(inHandle) != mState.mMutableVectors.end())
+		return mState.mMutableVectors[inHandle];
 
 	hash_type newHash = mProduceNewIdentitiesForMutableVectors ?
 				RandomHashGenerator::singleton().generateRandomHash()
@@ -443,7 +439,7 @@ MutableVectorRecord ValueDeepcopier::duplicateMutableVector(MutableVectorRecord 
 				);
 		}
 
-	mMutableVectors[inHandle] = newVectorRecord;
+	mState.mMutableVectors[inHandle] = newVectorRecord;
 
 	return newVectorRecord;
 	}
@@ -453,19 +449,19 @@ PageletTreePtr ValueDeepcopier::duplicatePageletTree(PageletTreePtr ptr) const
 	if (ptr.isEmpty())
 		return ptr;
 
-	auto it = mPageletTreePtrs.find(ptr);
+	auto it = mState.mPageletTreePtrs.find(ptr);
 
-	if (it != mPageletTreePtrs.end())
+	if (it != mState.mPageletTreePtrs.end())
 		return it->second;
 
 	if (ptr->leaf())
-		mPageletTreePtrs[ptr] = mTargetMemoryPool->construct<PageletTree>(
+		mState.mPageletTreePtrs[ptr] = mTargetMemoryPool->construct<PageletTree>(
 			mTargetMemoryPool,
 			ptr->leaf(),
 			ptr->leafValuesUsed()
 			);
 	else
-		mPageletTreePtrs[ptr] = mTargetMemoryPool->construct<PageletTree>(
+		mState.mPageletTreePtrs[ptr] = mTargetMemoryPool->construct<PageletTree>(
 			mTargetMemoryPool,
 			duplicatePageletTree(ptr->left()),
 			ptr->leftPtrValuesUsed(),
@@ -473,7 +469,7 @@ PageletTreePtr ValueDeepcopier::duplicatePageletTree(PageletTreePtr ptr) const
 			ptr->rightPtrValuesUsed()
 			);
 
-	return mPageletTreePtrs[ptr];
+	return mState.mPageletTreePtrs[ptr];
 	}
 
 ImplValContainer ValueDeepcopier::duplicate(ImplValContainer ivc) const
@@ -492,8 +488,8 @@ TypedFora::Abi::VectorRecord	ValueDeepcopier::duplicate(const TypedFora::Abi::Ve
 
 	lassert_dump(in.dataPtr(), "VectorRecord with nonzero size but zero dataPtr found");
 
-	if (mVectors.find(in) != mVectors.end())
-		return mVectors[in];
+	if (mState.mVectors.find(in) != mState.mVectors.end())
+		return mState.mVectors[in];
 
 	if (in.dataPtr()->size() != in.size())
 		{
@@ -624,7 +620,7 @@ TypedFora::Abi::VectorRecord	ValueDeepcopier::duplicate(const TypedFora::Abi::Ve
 		in.stride()
 		);
 
-	mVectors[in] = result;
+	mState.mVectors[in] = result;
 
 	return result;
 	}
@@ -689,9 +685,9 @@ Cumulus::ComputationDefinition ValueDeepcopier::processDown(
 	{
 	outContinue = false;
 
-	auto it = mComputationDefinitions.find(in.hash());
+	auto it = mState.mComputationDefinitions.find(in.hash());
 
-	if (it != mComputationDefinitions.end())
+	if (it != mState.mComputationDefinitions.end())
 		return it->second;
 
 	Cumulus::ComputationDefinition out;
@@ -716,7 +712,28 @@ Cumulus::ComputationDefinition ValueDeepcopier::processDown(
 				);
 			}
 
-	mComputationDefinitions[in.hash()] = out;
+	mState.mComputationDefinitions[in.hash()] = out;
+
+	return out;
+	}
+
+PolymorphicSharedPtr<CFGWithFutures> ValueDeepcopier::processDown(
+						const PolymorphicSharedPtr<CFGWithFutures>& in,
+						bool& outContinue
+						) const
+	{
+	outContinue = false;
+
+	auto it = mState.mCFGWithFutures.find(in);
+
+	if (it != mState.mCFGWithFutures.end())
+		return it->second;
+
+	PolymorphicSharedPtr<CFGWithFutures> out = in->deepcopy(
+		[&](ImplValContainer ivc) { return duplicate(ivc); }
+		);
+
+	mState.mCFGWithFutures[in] = out;
 
 	return out;
 	}

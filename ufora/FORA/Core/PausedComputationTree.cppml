@@ -1,20 +1,92 @@
+/***************************************************************************
+    Copyright 2016 Ufora Inc.
+ 
+    Licensed under the Apache License, Version 2.0 (the "License");
+    you may not use this file except in compliance with the License.
+    You may obtain a copy of the License at
+ 
+        http://www.apache.org/licenses/LICENSE-2.0
+ 
+    Unless required by applicable law or agreed to in writing, software
+    distributed under the License is distributed on an "AS IS" BASIS,
+    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    See the License for the specific language governing permissions and
+    limitations under the License.
+****************************************************************************/
+
 #include "PausedComputationTree.hppml"
 #include "../../core/Logging.hpp"
 #include "../ControlFlowGraph/ControlFlowGraphToCodeLocation.hppml"
+#include "../VectorDataManager/ExtractBigVectorReferencesVisitor.hppml"
+#include "../TypedFora/ABI/ImplValVisitor.hppml"
+#include "../../core/cppml/CPPMLVisit.hppml"
+
+class BigVecExtractVisitor {
+public:
+	BigVecExtractVisitor(boost::function1<void, ImplValContainer> visitor) :
+			mVisitor(visitor)
+		{
+
+		}
+
+	template<class T>
+	void processDown(const T& in, bool& outCont)
+		{
+		}
+
+	template<class T>
+	void processUp(const T& in)
+		{
+		}
+
+	void processDown(const Type& t, bool& outCont)
+		{
+		outCont = false;
+		}
+
+	void processDown(const ImplValContainer& in, bool& outCont)
+		{
+		mVisitor(in);
+		}
+
+	void processDown(const PolymorphicSharedPtr<CFGWithFutures>& in, bool& outCont)
+		{
+		in->visitValues(mVisitor);
+		}
+
+private:
+	boost::function1<void, ImplValContainer> mVisitor;
+};
 
 namespace Fora {
 namespace Interpreter {
 
 
-PausedComputationTreeStats& PausedComputationTreeStats::operator+=(const PausedComputationTreeStats& other)
+ImmutableTreeSet<Fora::BigVectorId> PausedComputationTree::bigvecsReferenced() const
 	{
-	countOfActiveThreads() += other.countOfActiveThreads();
-	countOfBlockingThreads() += other.countOfBlockingThreads();
-	countOfCachecallThreads() += other.countOfCachecallThreads();
-	pagesBlockedOn() = pagesBlockedOn() + other.pagesBlockedOn();
-	totalBranchCount() += other.totalBranchCount();
-	
-	return *this;
+	std::set<Fora::BigVectorId> bigvecsSet;
+
+	ExtractBigVectorReferencesVisitor extractor(bigvecsSet);
+
+	ImplValVisitor<ExtractBigVectorReferencesVisitor> visitor(extractor);
+
+	BigVecExtractVisitor vis([&](ImplValContainer c) { visitor.visit(c); });
+	::visit(*this, vis);
+
+	return ImmutableTreeSet<Fora::BigVectorId>(bigvecsSet);
+	}
+
+PausedComputationTree PausedComputationTree::Value(const ImplValContainer& ivc)
+	{
+	return PausedComputationTree::Thread(
+		PausedComputationTreeThreadChildren::NoChildren(),
+		PausedComputation(
+			emptyTreeVec(),
+			PausedComputationTail::PendingResult(ivc,false)
+			),
+		TimeElapsed(),
+		PausedComputationTreeStats()
+		);
 	}
 
 hash_type PausedComputationTree::hashSelf() const
@@ -108,11 +180,11 @@ void PausedComputationTree::treeStateToString(std::ostringstream& stream, long d
 						child.first.treeStateToString(stream, depth+1);
 					}
 				-| MultipleChildrenAsApply(children) ->> {
-					for (long k = 0; k < depth+2;k++)
+					for (long k = 0; k < depth+1;k++)
 						stream << " ";
-					stream << "ApplyResults:\n";
+					stream << "ApplyResults (" << children.size() << ")\n";
 					for (auto& child: children)
-						child.first.treeStateToString(stream, depth+1);
+						child.first.treeStateToString(stream, depth+2);
 					}
 			}
 		-| Simulation(children, simulation, timeElapsed, treeStats) ->> {
@@ -140,7 +212,7 @@ void PausedComputationTree::treeStateToString(std::ostringstream& stream, long d
 				child.second.treeStateToString(stream, depth+1);
 			}
 		-| Hole(guid) ->> {
-			stream << "Hole(" << prettyPrintString(guid) << ")";
+			stream << "Hole(" << prettyPrintString(guid) << ")\n";
 			}
 	}
 

@@ -227,10 +227,9 @@ class CumulusWorkerDatasetLoadServiceIntegrationTest(unittest.TestCase):
             let f = fun(ix) { fun(a) { a * ix } };
             let g = fun(ix) { sum(0,10**9, f(ix)) };
 
-            //first, do a papply so that we have some cachenodes in the system
+            //first, do an apply with cached so that we have some cachenodes in the system
             let res1 = Vector.range(4).apply(fun(ix) { cached(g(ix))[0] + 1 });
 
-            //now repeat the calculation with non-papply nodes
             let res2 = Vector.range(4).apply(fun(ix) { g(ix) + 1 });
 
             if (res1 == res2)
@@ -253,7 +252,7 @@ class CumulusWorkerDatasetLoadServiceIntegrationTest(unittest.TestCase):
         text = """
             let sumVec = fun(v) { v.sum() };
 
-            let v2 = Vector.range(100).papply(fun(ix) {
+            let v2 = Vector.range(100).apply(fun(ix) {
                 let v = Vector.range(ix).paged;
                 cached(sumVec(v))[0]
                 });
@@ -265,7 +264,7 @@ class CumulusWorkerDatasetLoadServiceIntegrationTest(unittest.TestCase):
 
         res = self.computeUsingSeveralWorkers(text, s3, 4, timeout=20)
 
-        self.assertTrue(res.isResult())
+        self.assertTrue(res.isResult(), res)
         self.assertEqual(res.asResult.result.pyval, "OK")
 
     @PerformanceTestReporter.PerfTest("python.InMemoryCumulus.VectorsAndSums")
@@ -458,7 +457,7 @@ class CumulusWorkerDatasetLoadServiceIntegrationTest(unittest.TestCase):
 
                     res
                     """ % ix, s3, 1, wantsStats = True, timeout=240
-                    )[1].timeSpentInInterpreter
+                    )[1].timeElapsed.timeSpentInInterpreter
 
             interpreterTimes.append(interpTime)
 

@@ -64,7 +64,7 @@ class EffectiveParallelismTest(unittest.TestCase):
                 )[1]
 
         timeElapsed = time.time() - t0
-        totalTime = stats.timeSpentInInterpreter + stats.timeSpentInCompiler
+        totalTime = stats.timeElapsed.timeSpentInInterpreter + stats.timeElapsed.timeSpentInCompiledCode
         effParallelism = totalTime / timeElapsed
 
         PerformanceTestReporter.recordTest(

@@ -45,6 +45,8 @@ using Fora::Interpreter::ExecutionContext;
 using Fora::Interpreter::PausedComputation;
 using Fora::Interpreter::PausedComputationTree;
 using Fora::Interpreter::PausedComputationTreeSplit;
+using Fora::Interpreter::PausedComputationTreeStats;
+using Fora::Interpreter::PausedComputationTreeThreadChildren;
 
 const double kMinTimeInCompiledCodeToDisableTracing = .1;
 
@@ -54,9 +56,9 @@ static hash_type computationStateHashIncrement = hash_type::SHA1("ComputationSta
 
 namespace Cumulus {
 
-class ComputationStateValuesOutsideOfExecutionContext {
+class OriginalComputationDefinition {
 public:
-	ComputationStateValuesOutsideOfExecutionContext(
+	OriginalComputationDefinition(
 								PolymorphicSharedPtr<VectorDataManager> inVDM,
 								ComputationId inId
 								) :
@@ -69,13 +71,9 @@ public:
 			);
 		}
 
-	~ComputationStateValuesOutsideOfExecutionContext()
+	~OriginalComputationDefinition()
 		{
-		mUnconsumedDefinition = null();
-		mPartialComputationResults.clear();
-		mSplitComputation = null();
-		mPendingCacheResult = null();
-		mExternalIoTaskResult = null();
+		mDefinition = null();
 
 		if (mRefcountKeepaliveExecutionContext.getMemoryPool()->totalBytesAllocated() > 0)
 			{
@@ -95,257 +93,28 @@ public:
 		return mRefcountKeepaliveExecutionContext.getMemoryPool();
 		}
 
-	const Nullable<Fora::Interpreter::ComputationResult> & getExternalIoTaskResult() const
+	const Nullable<ComputationDefinition>& getDefinition() const
 		{
-		return mExternalIoTaskResult;
+		return mDefinition;
 		}
 
-	const Nullable<ComputationDefinition>& getUnconsumedDefinition() const
+	void setDefinition(const Nullable<ComputationDefinition>& definition)
 		{
-		return mUnconsumedDefinition;
-		}
-
-	const map<ComputationId, pair<Fora::Interpreter::ComputationResult, TimeElapsed> >& getPartialComputationResults() const
-		{
-		return mPartialComputationResults;
-		}
-
-	const Nullable<ImmutableTreeVector<pair<ComputationId, hash_type> > >& getSplitComputation() const
-		{
-		return mSplitComputation;
-		}
-
-	const Nullable<Fora::Interpreter::ComputationResult>& getPendingCacheResult() const
-		{
-		return mPendingCacheResult;
-		}
-
-	const pair<Fora::Interpreter::ComputationResult, TimeElapsed>& 
-				getPartialComputationResult(const ComputationId& inId) const
-		{
-		auto it = mPartialComputationResults.find(inId);
-		lassert(it != mPartialComputationResults.end());
-
-		return it->second;
-		}
-
-	void setUnconsumedDefinition(const ComputationDefinition& definition)
-		{
-		mUnconsumedDefinition = copyToKeepalive(definition);
-		}
-
-	void clearUnconsumedDefinition()
-		{
-		mUnconsumedDefinition = null();
-		}
-
-	void placeUnconsumedDefinitionIntoConsumedDefinition()
-		{
-		mUnconsumedDefinition = null();
-
-		mPartialComputationResults.clear();
-		mSplitComputation = null();
-		mPendingCacheResult = null();
-		}
-
-	void setSplitComputation(const ImmutableTreeVector<pair<ComputationId, hash_type> >& comp)
-		{
-		mSplitComputation = comp;
-		}
-
-	void clearSplitComputation()
-		{
-		mSplitComputation = null();
-		}
-
-	void clearPendingCacheResult()
-		{
-		mPendingCacheResult = null();
-		}
-
-	void setPendingCacheResult(Fora::Interpreter::ComputationResult in)
-		{
-		mPendingCacheResult = copyToKeepalive(in);
-		}
-
-	void clearExternalIoTaskResult()
-		{
-		mExternalIoTaskResult = null();
-		}
-
-	void setExternalIoTaskResult(Fora::Interpreter::ComputationResult value)
-		{
-		}
-
-	void setExternalIoTaskResult(ExternalIoTaskResult result)
-		{
-		@match ExternalIoTaskResult(result)
-			-| Success() ->> {
-				mExternalIoTaskResult = Fora::Interpreter::ComputationResult::Result(
-					ImplValContainer()
-					);
-				}
-			-| TaskResultAsForaValue(computationResult) ->> {
-				mExternalIoTaskResult = copyToKeepalive(computationResult);
-				}
-			-| S3KeyDoesNotExist() ->> {
-				mExternalIoTaskResult =
-					Fora::Interpreter::ComputationResult::Exception(
-						ImplValContainerUtilities::createString(
-							String(
-								"No such key exists",
-								mRefcountKeepaliveExecutionContext.getMemoryPool()
-								)
-							)
-						);
-				}
-			-| S3PermissionError() ->> {
-				mExternalIoTaskResult =
-					Fora::Interpreter::ComputationResult::Exception(
-						ImplValContainerUtilities::createString(
-							String(
-								"S3 credentials error",
-								mRefcountKeepaliveExecutionContext.getMemoryPool()
-								)
-							)
-						);
-				}
-            -| UserCausedPythonFailure(reason) ->> {
-                mExternalIoTaskResult =
-                    Fora::Interpreter::ComputationResult::Exception(
-                        ImplValContainerUtilities::createString(
-                            String(
-                                reason,
-                                mRefcountKeepaliveExecutionContext.getMemoryPool()
-                                )
-                            )
-                        );
-                }
-			-| _ ->> {
-				mExternalIoTaskResult = Fora::Interpreter::ComputationResult::Failure(
-					Fora::Interpreter::ErrorState::IllegalComputationState(
-						prettyPrintString(result)
-						)
-					);
-				}
-		}
-
-	bool hasExternalIoTaskResult()
-		{
-		return mExternalIoTaskResult.isValue();
-		}
-
-	void clearCompletely(std::string name = "")
-		{
-		mUnconsumedDefinition = null();
-		mPartialComputationResults.clear();
-		mSplitComputation = null();
-		mPendingCacheResult = null();
-		mExternalIoTaskResult = null();
-
-		tryToTeardown_(name);
-		}
-
-	void clear(std::string name = "")
-		{
-		if (!mUnconsumedDefinition)
-			{
-			clearCompletely(name);
-			return;
-			}
-
-		ExecutionContext c(mRefcountKeepaliveExecutionContext.getVDM().polymorphicSharedPtrFromThis());
-
-			{
-			Nullable<ComputationDefinition> unconsumedDefinition;
-			Nullable<ComputationDefinition> consumedDefinition;
-
-			boost::shared_ptr<ValueDeepcopierState> state(new ValueDeepcopierState());
-			unconsumedDefinition = copyTo(mUnconsumedDefinition, c.getMemoryPool(), *state);
-			state.reset();
-
-			clearCompletely();
-
-			state.reset(new ValueDeepcopierState());
-			mUnconsumedDefinition = copyToKeepalive(unconsumedDefinition, *state);
-			}
-		}
-
-	//this function is only used for testing. This function verifies that the contents of
-	//mRefcountKeepaliveExecutionContext consist only of the members of this function.
-	void recycle(std::string name = "")
-		{
-		ExecutionContext c(mRefcountKeepaliveExecutionContext.getVDM().polymorphicSharedPtrFromThis());
-
-		boost::shared_ptr<ValueDeepcopierState> state(new ValueDeepcopierState());
-		auto v1 = copyTo(mUnconsumedDefinition, c.getMemoryPool(), *state);
-		auto v3 = copyTo(mPartialComputationResults, c.getMemoryPool(), *state);
-		auto v4 = copyTo(mSplitComputation, c.getMemoryPool(), *state);
-		auto v5 = copyTo(mPendingCacheResult, c.getMemoryPool(), *state);
-		auto v6 = copyTo(mExternalIoTaskResult, c.getMemoryPool(), *state);
-		state.reset();
-
-		clearCompletely(name);
-
-		state.reset(new ValueDeepcopierState());
-		mUnconsumedDefinition = copyToKeepalive(v1, *state);
-		mPartialComputationResults = copyToKeepalive(v3, *state);
-		mSplitComputation = copyToKeepalive(v4, *state);
-		mPendingCacheResult = copyToKeepalive(v5, *state);
-		mExternalIoTaskResult = copyToKeepalive(v6, *state);
-		}
-
-	bool hasPartialComputationResult(const ComputationId& inId)
-		{
-		return mPartialComputationResults.find(inId) != mPartialComputationResults.end();
-		}
-
-	void setPartialComputationResult(
-			const ComputationId& inId, 
-			Fora::Interpreter::ComputationResult result,
-			TimeElapsed totalTimeElapsed
-			)
-		{
-		mPartialComputationResults[inId] = make_pair(copyToKeepalive(result), totalTimeElapsed);
-		}
-
-	void clearPartialComputationResults()
-		{
-		mPartialComputationResults.clear();
+		mDefinition = copyToKeepalive(definition);
 		}
 
 	void serialize(Fora::ForaValueSerializationStream& valueStream)
 		{
-		ValueDeepcopierState state;
-
-		valueStream.serialize(copyToFreeStore(mUnconsumedDefinition, state));
-		valueStream.serialize(copyToFreeStore(mPartialComputationResults, state));
-		valueStream.serialize(copyToFreeStore(mSplitComputation, state));
-		valueStream.serialize(copyToFreeStore(mPendingCacheResult, state));
-		valueStream.serialize(copyToFreeStore(mExternalIoTaskResult, state));
+		valueStream.serialize(copyToFreeStore(mDefinition));
 		}
 
 	void deserialize(Fora::ForaValueDeserializationStream& valueStream)
 		{
-		Nullable<ComputationDefinition> sUnconsumedDefinition;
-		map<ComputationId, pair<Fora::Interpreter::ComputationResult, TimeElapsed> > sPartialComputationResults;
-		Nullable<ImmutableTreeVector<pair<ComputationId, hash_type> > > sSplitComputation;
-		Nullable<Fora::Interpreter::ComputationResult> sPendingCacheResult;
-		Nullable<Fora::Interpreter::ComputationResult> sExternalIoTaskResult;
-
-		valueStream.deserialize(sUnconsumedDefinition);
-		valueStream.deserialize(sPartialComputationResults);
-		valueStream.deserialize(sSplitComputation);
-		valueStream.deserialize(sPendingCacheResult);
-		valueStream.deserialize(sExternalIoTaskResult);
-
-		ValueDeepcopierState state;
-
-		mUnconsumedDefinition = copyToKeepalive(sUnconsumedDefinition, state);
-		mPartialComputationResults = copyToKeepalive(sPartialComputationResults, state);
-		mSplitComputation = copyToKeepalive(sSplitComputation, state);
-		mPendingCacheResult = copyToKeepalive(sPendingCacheResult, state);
-		mExternalIoTaskResult = copyToKeepalive(sExternalIoTaskResult, state);
+		Nullable<ComputationDefinition> sDefinition;
+		
+		valueStream.deserialize(sDefinition);
+		
+		mDefinition = copyToKeepalive(sDefinition);
 		}
 
 	void disableVectorPaging()
@@ -382,27 +151,10 @@ private:
 		}
 
 	template<class T>
-	T copyToKeepalive(const T& in, ValueDeepcopierState& state)
-		{
-		return copyTo(in, mRefcountKeepaliveExecutionContext.getMemoryPool(), state);
-		}
-
-	template<class T>
-	static T copyToFreeStore(const T& in, ValueDeepcopierState& state)
-		{
-		return copyTo(in, MemoryPool::getFreeStorePool(), state);
-		}
-
-	template<class T>
 	static T copyTo(const T& in, MemoryPool* pool)
 		{
 		ValueDeepcopierState state;
-		return copyTo(in, pool, state);
-		}
 
-	template<class T>
-	static T copyTo(const T& in, MemoryPool* pool, ValueDeepcopierState& state)
-		{
 		ValueDeepcopier deepcopier(
 			state,
 			false,
@@ -414,47 +166,14 @@ private:
 		return deepcopier.duplicate(in);
 		}
 
-	void tryToTeardown_(std::string name = "")
-		{
-		if (!mUnconsumedDefinition &&
-				!mPartialComputationResults.size() &&
-				!mSplitComputation &&
-				!mPendingCacheResult
-				)
-			{
-			if (mRefcountKeepaliveExecutionContext.getMemoryPool()->totalBytesAllocated() > 0)
-				{
-				LOG_ERROR << " still has bytes allocated: " << name
-					<< "\n"
-					<< "Total bytes: "
-					<< mRefcountKeepaliveExecutionContext.getMemoryPool()
-						->totalBytesAllocatedFromOS() / 1024 / 1024.0 << " MB."
-					<< "Total bytes in Pagelets: "
-					<< mRefcountKeepaliveExecutionContext.getExecutionContextMemoryPool()
-						->totalBytesFromOSHeldInPagelets() / 1024 / 1024.0 << " MB."
-					<< "\n"
-					<< Ufora::debug::StackTrace::getStringTrace()
-					;
-				}
-
-			mRefcountKeepaliveExecutionContext.teardown();
-			}
-		}
-
 	ComputationId mId;
 
 	mutable ExecutionContext mRefcountKeepaliveExecutionContext;
 
-	Nullable<ComputationDefinition> mUnconsumedDefinition;
-
-	map<ComputationId, pair<Fora::Interpreter::ComputationResult, TimeElapsed> > mPartialComputationResults;
-
-	Nullable<Fora::Interpreter::ComputationResult> mExternalIoTaskResult;
-
-	Nullable<ImmutableTreeVector<pair<ComputationId, hash_type> > > mSplitComputation;
-
-	Nullable<Fora::Interpreter::ComputationResult> mPendingCacheResult;
+	Nullable<ComputationDefinition> mDefinition;
 };
+
+
 
 class ComputationStateImpl : public PolymorphicSharedPtrBase<ComputationStateImpl> {
 public:
@@ -468,11 +187,10 @@ public:
 			mTimesEverSplit(0),
 			mOwnComputationId(computationId),
 			mExecutionContext(new ExecutionContext(inVDM)),
-			mOutsideEcValues(inVDM, computationId),
+			mOriginalComputationDefinition(inVDM, computationId),
 			mComputationStatus(ComputationStatus::Uninitialized()),
 			mIsTemporary(false),
 			mIsComputing(false),
-			mIsRejoinedSplitThatHasNotComputed(false),
 			mInterruptTriggered(false),
 			mTimesComputedButMadeNoProgress(0),
 			mIsPagingDisabled(false)
@@ -492,10 +210,12 @@ public:
 	void clearCurrentState()
 		{
 		mComputationStatus = ComputationStatus::Uninitialized();
-		mOutsideEcValues.clearCompletely();
-		mBlockingComputationsInOrder.clear();
+		mOriginalComputationDefinition.setDefinition(null());
+
 		mChildCheckpointStatuses.clear();
+		
 		mComputationStatisticsOutsideOfEC = ComputationStatistics();
+		
 		mIsComputing = false;
 		mCurrentBlockingPages = emptyTreeSet();
 		mTimeElapsedAtLastCompute = TimeElapsed();
@@ -553,20 +273,16 @@ public:
 		{
 		mIsTemporary = definition.isTemporary();
 
-		mOutsideEcValues.clearCompletely();
+		mOriginalComputationDefinition.setDefinition(null());
 
-		mComputationStatus = ComputationStatus::Computable();
+		mComputationStatus = ComputationStatus::ComputableWithSubcomputations(emptyTreeSet());
 
-		mBlockingComputationsInOrder.clear();
 		mChildCheckpointStatuses.clear();
 
 		mExecutionContext->teardown();
 		mExecutionContext->resetInterruptState();
 
-		mOutsideEcValues.setUnconsumedDefinition(definition);
-
-		//import any values we can into the ExecutionContext
-		resumeUnconsumedDefinition_(false);
+		mOriginalComputationDefinition.setDefinition(null() << definition);
 
 		mTimesEverSplit = 0;
 
@@ -576,7 +292,7 @@ public:
 	CreatedComputations compute(hash_type guid)
 		{
 		lassert(!mIsPagingDisabled);
-		lassert(!mExecutionContext->isFinished());
+		lassert_dump(!mExecutionContext->isFinished(), "Tried to compute but we're finished. state is " << prettyPrintString(mComputationStatus));
 
 		mComputationStatisticsOutsideOfEC.timesComputed() ++;
 
@@ -584,9 +300,16 @@ public:
 
 		mComputingStartTime = curClock();
 
+		auto preStatus = mComputationStatus;
+
 		CreatedComputations created = compute_(guid);
 
 		mIsComputing = false;
+
+		LOG_DEBUG << mOwnComputationId << " changed state from " << preStatus << " to " << mComputationStatus;
+
+		if (mExecutionContext->isFinished())
+			lassert(mComputationStatus.isFinished());
 
 		return created;
 		}
@@ -608,12 +331,10 @@ public:
 
 	CreatedComputations compute_(hash_type guid)
 		{
-		mIsRejoinedSplitThatHasNotComputed = false;
-
 		CreatedComputations computations;
 
-		if (mOutsideEcValues.getUnconsumedDefinition() && 
-				mOutsideEcValues.getUnconsumedDefinition()->isOutOfProcessCall())
+		if (mOriginalComputationDefinition.getDefinition() && 
+				mOriginalComputationDefinition.getDefinition()->isOutOfProcessCall())
 			{
 			computeOutOfProcessCall_();
 			return computations;
@@ -621,10 +342,13 @@ public:
 		else
 			{
 			@match ComputationStatus(mComputationStatus)
-				-|	Computable() ->> {
+				-|	ComputableWithSubcomputations() ->> {
 					while (true)
 						{
-						stepComputation_();
+						stepComputation_(computations, guid);
+
+						if (!computations.isEmpty())
+							return computations;
 
 						if (!postComputationStateUpdate_(
 								computations,
@@ -670,7 +394,6 @@ public:
 			return;
 			}
 
-
 		ImplValContainer valueInWorkingContext;
 
 			{
@@ -685,7 +408,7 @@ public:
 		        );
 
 		    valueInWorkingContext = deepcopier.duplicate(
-		    	mOutsideEcValues.getUnconsumedDefinition()->getOutOfProcessCall().toCall()
+		    	mOriginalComputationDefinition.getDefinition()->getOutOfProcessCall().toCall()
 		    	);
 			}
 
@@ -696,7 +419,7 @@ public:
 					valueInWorkingContext,
 					mExecutionContext,
 					trigger,
-					mOutsideEcValues.getUnconsumedDefinition()->getOutOfProcessCall().policy()
+					mOriginalComputationDefinition.getDefinition()->getOutOfProcessCall().policy()
 					)
 				)
 			-| ValidResult() ->> {
@@ -722,33 +445,31 @@ public:
 
 	bool canResubmitBlockingThreads()
 		{
-		if (isBlockedOnExternalIoTask_())
-			return false;
-
-		for (auto b: mBlockingComputationsInOrder)
-			if (b.isSplit())
-				return false;
-
-		return true;
+		if (mExecutionContext->isCacheRequest())
+			return true;
+		if (mOriginalComputationDefinition.getDefinition() && !mIsTemporary)
+			return true;
+		return false;
 		}
 
 	CreatedComputations resubmitBlockingThreads(hash_type guid)
 		{
-		lassert(canResubmitBlockingThreads());
-		lassert(!mOutsideEcValues.getSplitComputation());
-		lassert(!isBlockedOnExternalIoTask_());
-
+		lassert_dump(
+			canResubmitBlockingThreads(), 
+			prettyPrintString(mOwnComputationId) << " can't resubmit computations:\n" 
+				<< prettyPrintString(mExecutionContext->extractPausedComputation())
+			);
+		
 		mComputationStatisticsOutsideOfEC.timesComputationsLost() += 1;
 
 		lassert_dump(
-			mExecutionContext->isCacheRequest() || mOutsideEcValues.getUnconsumedDefinition(),
+			mExecutionContext->isCacheRequest() || mOriginalComputationDefinition.getDefinition(),
 			prettyPrintString(mComputationStatus)
 			);
 
-		mBlockingComputationsInOrder.clear();
 		mChildCheckpointStatuses.clear();
 
-		mOutsideEcValues.clearPartialComputationResults();
+		mComputationStatus = ComputationStatus::ComputableWithSubcomputations(emptyTreeSet());
 
 		CreatedComputations computations;
 
@@ -760,179 +481,59 @@ public:
 		return computations;
 		}
 
-	bool isBlockedOnExternalIoTask_()
+	void copyDefinitionIntoContext(CreatedComputations& outComputations, hash_type& ioGuid)
 		{
-		return mOutsideEcValues.hasExternalIoTaskResult()
-					|| mComputationStatus.isBlockedOnExternalIoTask();
-		}
+		if (mOriginalComputationDefinition.getDefinition()->isOutOfProcessCall()) 
+			return;
 
-	ImmutableTreeVector<ComputationDefinition> currentUnconsumedDefinitionSubcomputations_()
-		{
-		@match ComputationDefinition(*mOutsideEcValues.getUnconsumedDefinition())
+		@match ComputationDefinition(*mOriginalComputationDefinition.getDefinition())
 			-| Root(terms) ->> {
+				ImmutableTreeVector<pair<PausedComputationTree, Nullable<Symbol> > > subtrees;
 				ImmutableTreeVector<ComputationDefinition> defs;
+				ImmutableTreeSet<ComputationId> comps;
 
 				for (long k = 0; k < terms.size(); k++)
 					@match ComputationDefinitionTerm(terms[k])
-						-| Value(v, n) ->> {}
+						-| Value(v, n) ->> {
+							subtrees = subtrees + make_pair(PausedComputationTree::Value(v), n);
+							}
 						-| Subcomputation(subcomputationTerms) ->> {
-							defs = defs + ComputationDefinition::Root(subcomputationTerms);
+							ComputationDefinition def = ComputationDefinition::Root(subcomputationTerms);
+
+							ComputationId subcompId =
+								ComputationId::CreateIdForRootOnWorker(
+									def,
+									ioGuid
+									);
+
+							subtrees = subtrees + make_pair(PausedComputationTree::Hole(subcompId.hash()), Nullable<Symbol>());
+
+							outComputations.computations() = outComputations.computations() + subcompId + def;
+
+							comps = comps + subcompId;
 							}
 
-				return defs;
-				}
-			-| _ ->> {
-				return emptyTreeVec();
-				}
-		}
-
-	Fora::Interpreter::ComputationResult
-					assembleInitialEvaluate_(
-						const ImmutableTreeVector<ComputationDefinitionTerm>& terms
+				mExecutionContext->resumePausedComputation(
+					PausedComputationTree::Thread(
+						PausedComputationTreeThreadChildren::MultipleChildrenAsApply(subtrees),
+						PausedComputation(),
+						TimeElapsed(),
+						PausedComputationTreeStats()
 						)
-		{
-		ImmutableTreeVector<std::pair<ImplValContainer, Nullable<Symbol>>> arguments;
+					);
 
-		long subdefsConsumed = 0;
+				if (comps.size())
+					mComputationStatus = ComputationStatus::BlockedOnComputations(comps);
+				}
+			-| Split(parentId, pausedComputationTree) ->> {
+				mExecutionContext->resumePausedComputation(pausedComputationTree);
 
-		for (long k = 0; k < terms.size();k++)
-			@match ComputationDefinitionTerm(terms[k])
-				-| Value(v, n) ->> {
-					arguments = arguments + std::make_pair(v, n);
-					}
-				-| Subcomputation(_) ->> {
-					ComputationId subcompId = mBlockingComputationsInOrder[subdefsConsumed++];
-
-					lassert_dump(
-						mOutsideEcValues.hasPartialComputationResult(subcompId),
-						"Partial computations are missing for " << prettyPrintString(subcompId)
-						);
-
-					@match Fora::Interpreter::ComputationResult(mOutsideEcValues.getPartialComputationResult(subcompId).first)
-						-| Failure() ->> {
-							return mOutsideEcValues.getPartialComputationResult(subcompId).first;
-							}
-						-| Exception() ->> {
-							return mOutsideEcValues.getPartialComputationResult(subcompId).first;
-							}
-						-| Result(res) ->> {
-							arguments = arguments + std::make_pair(res, null());
-							}
-					}
-
-		return Fora::Interpreter::ComputationResult::Result(
-			ImplValContainer(arguments)
-			);
-		}
-
-	bool allComputationsHaveResults_()
-		{
-		for (auto it = mBlockingComputationsInOrder.begin();
-					it != mBlockingComputationsInOrder.end(); ++it)
-			if (!mOutsideEcValues.hasPartialComputationResult(*it))
-				return false;
-
-		return true;
-		}
-
-	//push the unconsumed definition forward if possible. if actuallyCalculate is false, then
-	//place the computation in the ExecutionContext if possible, but don't execute any FORA code.
-	void resumeUnconsumedDefinition_(bool actuallyCalculate)
-		{
-		if (mOutsideEcValues.getUnconsumedDefinition()->isOutOfProcessCall()) 
-			return;
-
-		bool wantsCalculate = false;
-
-			{
-			@match ComputationDefinition(*mOutsideEcValues.getUnconsumedDefinition())
-				-| Root(terms) ->> {
-					ImmutableTreeVector<ComputationDefinition> subdefs =
-						currentUnconsumedDefinitionSubcomputations_();
-
-					if (subdefs.size() == 0 ||
-								mBlockingComputationsInOrder.size() && allComputationsHaveResults_())
-						{
-						Fora::Interpreter::ComputationResult toCompute = assembleInitialEvaluate_(terms);
-
-						mOutsideEcValues.clearPartialComputationResults();
-
-						mBlockingComputationsInOrder.clear();
-						mChildCheckpointStatuses.clear();
-
-						@match Fora::Interpreter::ComputationResult(toCompute)
-							-| Result(r) ->> {
-								mExecutionContext->placeInEvaluationState(r);
-
-								mInitialRuntimePredictionSignature =
-									RuntimePredictionSignature::Root(
-										RuntimePredictionValue::FromValue(
-											r,
-											mExecutionContext->getVDM().polymorphicSharedPtrFromThis()
-											)
-										);
-
-								if (actuallyCalculate)
-									wantsCalculate = true;
-								}
-							-| _ ->> {
-								mExecutionContext->setFinishedResult(toCompute);
-								}
-						}
-					else
-						{
-						lassert_dump(
-							mBlockingComputationsInOrder.size() == 0,
-							"Subdefs: " << prettyPrintString(subdefs) << "\n"
-								<< "mPartialComputationResults: "
-									<< prettyPrintString(mOutsideEcValues.getPartialComputationResults()) << "\n"
-								<< "mBlockingComputationsInOrder: "
-									<< prettyPrintString(mBlockingComputationsInOrder) << "\n"
-							);
-
-						return;
-						}
-					}
-				-| Split(parentId, pausedComputationTree) ->> {
-					@match PausedComputationTree(pausedComputationTree)
-						-| Thread(_, pausedComputation, _) ->> {
-							if (pausedComputation.frames().size() == 1 && 
-									pausedComputation.tail().isNone())
-								mInitialRuntimePredictionSignature = 
-									RuntimePredictionSignature::Split(
-										hashValue(pausedComputation.frames()[0].graph()),
-										pausedComputation.frames()[0].label(),
-										RuntimePredictionValue::FromValue(
-											pausedComputation.frames()[0].values(),
-											mExecutionContext->getVDM().polymorphicSharedPtrFromThis()
-											)
-										);
-							}
-						-| _ ->> {}
-
-					mExecutionContext->resumePausedComputation(pausedComputationTree);
-
-					mBlockingComputationsInOrder.clear();
-					mChildCheckpointStatuses.clear();
-
-					if (actuallyCalculate)
-						wantsCalculate = true;
-					}
-				;
-			}
+				mChildCheckpointStatuses.clear();
+				}
+			;
 
 		if (mIsTemporary)
-			mOutsideEcValues.clearUnconsumedDefinition();
-		else
-			mOutsideEcValues.placeUnconsumedDefinitionIntoConsumedDefinition();
-
-		mOutsideEcValues.clear();
-
-		if (wantsCalculate)
-			{
-			mExecutionContext->compute();
-			updateBlockingPages_();
-			}
+			mOriginalComputationDefinition.setDefinition(null());
 		}
 
 	void updateBlockingPages_()
@@ -952,7 +553,7 @@ public:
 			}
 		}
 
-	void stepComputation_(void)
+	void stepComputation_(CreatedComputations& outComputations, hash_type& ioGuid)
 		{
 		mTimesComputedButMadeNoProgress++;
 
@@ -978,33 +579,16 @@ public:
 					return;
 				}
 
-			if (mOutsideEcValues.getUnconsumedDefinition())
-				resumeUnconsumedDefinition_(true);
-				else
-			if (mOutsideEcValues.getPendingCacheResult())
+			if (mOriginalComputationDefinition.getDefinition() && mExecutionContext->isEmpty())
 				{
+				copyDefinitionIntoContext(outComputations, ioGuid);
+
+				if (!mExecutionContext->isFinished() && outComputations.isEmpty())
 					{
-					Fora::Interpreter::ComputationResult toResumeWith = *mOutsideEcValues.getPendingCacheResult();
-
-					if (!mExecutionContext->isInterrupted())
-						mTimesComputedButMadeNoProgress = 0;
-
-					mExecutionContext->addCachecallResult(toResumeWith);
 					mExecutionContext->compute();
 					updateBlockingPages_();
 					}
-
-				mOutsideEcValues.clear();
 				}
-				else
-			if (mOutsideEcValues.getSplitComputation())
-				resumeSplitComputation();
-				else
-			if (mOutsideEcValues.hasExternalIoTaskResult())
-				resumeExternalIoTaskResult_();
-				else
-			if (mBlockingComputationsInOrder.size())
-				resumeCacheCall_();
 			else
 				{
 				if (!mExecutionContext->isInterrupted())
@@ -1028,19 +612,6 @@ public:
 			}
 		}
 
-	void resumeSplitComputation()
-		{
-		assertAllComputationsCompleted_();
-
-		mOutsideEcValues.clear();
-
-		if (!mExecutionContext->isInterrupted())
-			mTimesComputedButMadeNoProgress = 0;
-
-		mExecutionContext->compute();
-		updateBlockingPages_();
-		}
-
 	ImmutableTreeVector<pair<ForaStackTrace, Fora::Interpreter::StackframeMetadata> >
 														extractStacktrace(bool extractValues)
 		{
@@ -1049,172 +620,17 @@ public:
 		return result;
 		}
 
-	void resumeExternalIoTaskResult_()
-		{
-		mTimesComputedButMadeNoProgress = 0;
-
-		Fora::Interpreter::ComputationResult result = *mOutsideEcValues.getExternalIoTaskResult();
-
-		if (result.isFailure())
-			{
-			mExecutionContext->setFinishedResult(result);
-			}
-		else
-			{
-			mExecutionContext->addCachecallResult(result);
-			mExecutionContext->compute();
-			updateBlockingPages_();
-			}
-
-		mOutsideEcValues.clearExternalIoTaskResult();
-		}
-
-	void resumeCacheCall_()
-		{
-		assertAllComputationsCompleted_();
-
-			{
-			ImmutableTreeVector<ImplValContainer> cacheResults;
-
-			Nullable<Fora::Interpreter::ComputationResult> resultToUse;
-
-			for (long k = 0; k < mBlockingComputationsInOrder.size() && !resultToUse; k++)
-				{
-				ComputationId id = mBlockingComputationsInOrder[k];
-				pair<Fora::Interpreter::ComputationResult, TimeElapsed> result = 
-					mOutsideEcValues.getPartialComputationResult(id);
-
-				if (result.first.isFailure())
-					resultToUse = result.first;
-				}
-
-			for (long k = 0; k < mBlockingComputationsInOrder.size() && !resultToUse; k++)
-				{
-				ComputationId id = mBlockingComputationsInOrder[k];
-				Fora::Interpreter::ComputationResult result = 
-					mOutsideEcValues.getPartialComputationResult(id).first;
-
-				if (!result.isResult())
-					{
-					lassert(result.isException());
-					resultToUse = result;
-					}
-				else
-					{
-					cacheResults = cacheResults + result.getResult().result();
-					}
-
-				}
-
-			if (!resultToUse)
-				{
-				ImplValContainer cacheLoadRequest = mExecutionContext->getCacheRequest();
-
-				if (isOutOfProcessSubtaskCacheLoad_(cacheLoadRequest))
-					{
-					lassert(cacheResults.size() == 1);
-					resultToUse = Fora::Interpreter::ComputationResult::Result(
-						cacheResults[0]
-						);
-					}
-				else
-					resultToUse = Fora::Interpreter::ComputationResult::Result(
-						ImplValContainer(cacheResults)
-						);
-				}
-
-			if (!mExecutionContext->isInterrupted())
-				mTimesComputedButMadeNoProgress = 0;
-
-			if (resultToUse->isFailure())
-				mExecutionContext->setFinishedResult(*resultToUse);
-			else
-				{
-				mExecutionContext->addCachecallResult(*resultToUse);
-				mExecutionContext->compute();
-				updateBlockingPages_();
-				}
-			}
-
-		mOutsideEcValues.clear();
-		mBlockingComputationsInOrder.clear();
-		mChildCheckpointStatuses.clear();
-		}
-
-	void assertAllComputationsCompleted_()
-		{
-		if (mOutsideEcValues.getSplitComputation())
-			{
-			lassert(!mBlockingComputationsInOrder.size());
-			}
-		else
-			{
-			lassert_dump(mOutsideEcValues.getPartialComputationResults().size() == mBlockingComputationsInOrder.size(),
-				prettyPrintString(mBlockingComputationsInOrder) << " vs. "
-					<< prettyPrintString(mOutsideEcValues.getPartialComputationResults())
-				);
-
-			for (long k = 0; k < mBlockingComputationsInOrder.size();k++)
-				lassert(mOutsideEcValues.hasPartialComputationResult(mBlockingComputationsInOrder[k]));
-			}
-		}
-
 	bool postComputationStateUpdate_(CreatedComputations& ioComputations, hash_type& ioGuid)
 		{
-		if (mOutsideEcValues.getUnconsumedDefinition())
+		CreatedComputations splitResult = tryToSplitCachecalls(ioGuid);
+		if (!splitResult.isEmpty())
 			{
-			ImmutableTreeVector<ComputationDefinition> subdefs =
-					currentUnconsumedDefinitionSubcomputations_();
-
-			lassert_dump(
-				mBlockingComputationsInOrder.size() == 0,
-				prettyPrintString(mComputationStatus)
-				);
-
-			for (long k = 0; k < subdefs.size(); k++)
-				{
-				ComputationDefinition def = copyToFreeStore(subdefs[k]);
-
-				ioGuid = ioGuid + computationStateHashIncrement;
-
-				ComputationId subcompId =
-					ComputationId::CreateIdForRootOnWorker(
-						def,
-						ioGuid
-						);
-
-				ioComputations.computations() = ioComputations.computations() + subcompId + def;
-
-				mBlockingComputationsInOrder.push_back(subcompId);
-				}
-
-			mComputationStatisticsOutsideOfEC.timesComputed()++;
-
-			mComputationStatus = ComputationStatus::BlockedOnComputations(
-				ImmutableTreeSet<ComputationId>(
-					mBlockingComputationsInOrder.begin(),
-					mBlockingComputationsInOrder.end()
-					)
-				);
-
+			ioComputations = splitResult;
 			return false;
 			}
-			else
-		if (mExecutionContext->isCacheRequest())
+
+		if (mExecutionContext->isCacheRequest() && !mComputationStatus.isBlockedOnComputations())
 			{
-			//it's possible that we entered the compute function with all subcomputations
-			//completed, but didn't actually run computation (because gates are closed)
-			//so that the computation is still in a 'cacheload' state
-			if (mBlockingComputationsInOrder.size() && mOutsideEcValues.getPartialComputationResults().size())
-				return false;
-
-			CreatedComputations splitResult = tryToSplit(ioGuid);
-			if (!splitResult.isEmpty())
-				{
-				ioComputations = splitResult;
-				return false;
-				}
-
 			ImplValContainer cacheLoadRequest = mExecutionContext->getCacheRequest();
 
 			if (isLogMessageCacheLoad_(cacheLoadRequest))
@@ -1235,13 +651,16 @@ public:
 				return true;
 
 			if (isValidCacheLoad_(cacheLoadRequest))
-				return stateChangeToRegularCacheLoad_(
+				{
+				stateChangeToRegularCacheLoad_(
 						cacheLoadRequest,
 						ioComputations,
 						ioGuid
 						);
+				return true;
+				}
 			
-			mOutsideEcValues.setPendingCacheResult(
+			mExecutionContext->addCachecallResult(
 				Fora::Interpreter::ComputationResult::Exception(
 					ImplValContainer(CSTValue("Badly formed cache argument"))
 					)
@@ -1249,8 +668,8 @@ public:
 
 			return true;
 			}
-		else
-		if (mExecutionContext->isVectorLoad())
+			else
+		if (mExecutionContext->isVectorLoad() && currentSubComputations().size() == 0)
 			{
 			mComputationStatus = ComputationStatus::BlockedOnResources(
 				mExecutionContext->getVDM().getBigVectorLayouts()
@@ -1261,12 +680,34 @@ public:
 			else
 		if (mExecutionContext->isFinished())
 			handleExecutionContextFinishedTransition();
+		else
+			{
+			@match ComputationStatus(mComputationStatus)
+				-| ComputableWithSubcomputations(s) ->> {
+					if (s.size() && !stillWantsToComputeDespiteSubthreads())
+						mComputationStatus = ComputationStatus::BlockedOnComputations(s);
+					}
+				-| _ ->> {}				
+			}
 
 		return false;
 		}
 
 	void handleExecutionContextFinishedTransition()
 		{
+		//we can't finish the calculation, even though we might want to, because
+		//we still have outstanding threads. Right now, we have no way to "cancel"
+		//sub computations
+		@match ComputationStatus(mComputationStatus)
+			-| ComputableWithSubcomputations(s) ->> { 
+				if (s.size()) 
+					{
+					mComputationStatus = ComputationStatus::BlockedOnComputations(s);
+					return;
+					}
+				}
+			-| _ ->> {}
+
 		mExecutionContext->pageLargeVectorHandles(
 			mIsTemporary ? 
 				mExecutionContext->getVDM().maxPageSizeInBytes()
@@ -1283,6 +724,8 @@ public:
 				;
 
 		mComputationStatus = ComputationStatus::Finished();
+
+		mOriginalComputationDefinition.setDefinition(null());
 
 		if (!mIsTemporary)
 			mExecutionContext->setMemoryPoolPageSize(
@@ -1363,7 +806,7 @@ public:
 
 			if (!policy)
 				{
-				mOutsideEcValues.setPendingCacheResult(
+				mExecutionContext->addCachecallResult(
 					Fora::Interpreter::ComputationResult::Exception(
 						ImplValContainer(
 							emptyTreeVec() 
@@ -1382,24 +825,19 @@ public:
 				return id;
 				};
 
-			mBlockingComputationsInOrder.push_back(
+			ImmutableTreeSet<ComputationId> comps;
+			comps = comps + 
 				createThread(
 					ComputationDefinition::OutOfProcessCall(
 						mOwnComputationId, 
 						*alt->second.tupleGetItem(0),
 						*policy
 						)
-					)
-				);
+					);
 
 			mComputationStatisticsOutsideOfEC.timesComputed()++;
 
-			mComputationStatus = ComputationStatus::BlockedOnComputations(
-				ImmutableTreeSet<ComputationId>(
-					mBlockingComputationsInOrder.begin(),
-					mBlockingComputationsInOrder.end()
-					)
-				);
+			mComputationStatus = ComputationStatus::BlockedOnComputations(comps);
 
 			return true;
 			}
@@ -1418,7 +856,7 @@ public:
 
 		if (alt->first == Symbol("Print"))
 			{
-			mOutsideEcValues.setPendingCacheResult(
+			mExecutionContext->addCachecallResult(
 				Fora::Interpreter::ComputationResult::Result(
 					ImplValContainer(CSTValue())
 					)
@@ -1438,7 +876,7 @@ public:
 			}
 
 		if (alt->first == Symbol("Time"))
-			mOutsideEcValues.setPendingCacheResult(
+			mExecutionContext->addCachecallResult(
 				Fora::Interpreter::ComputationResult::Result(
 					ImplValContainerUtilities::createDouble(curClock())
 					)
@@ -1491,98 +929,48 @@ public:
 		return true;
 		}
 
-	bool stateChangeToRegularCacheLoad_(
+	void stateChangeToRegularCacheLoad_(
 				ImplValContainer cacheLoadRequest,
 				CreatedComputations& ioComputations,
 				hash_type& ioGuid
 				)
 		{
-		lassert(mBlockingComputationsInOrder.size() == 0);
+		lassert(isValidCacheLoad_(cacheLoadRequest));
 
-		long tupleCt = *cacheLoadRequest.tupleGetSize();
+		Nullable<pair<Symbol, ImplValContainer> > alt =
+			ImplValContainerUtilities::extractAsAlternative(*cacheLoadRequest.tupleGetItem(0));
 
-		for (long k = 0; k < tupleCt; k++)
-			{
-			ImplValContainer elt = processCacheCallRequest_(*cacheLoadRequest.tupleGetItem(k));
+		ioGuid = ioGuid + computationStateHashIncrement;
 
-			ioGuid = ioGuid + computationStateHashIncrement;
+		ComputationDefinition def =
+			ComputationDefinition::ApplyFromTuple(
+				copyToFreeStore(alt->second)
+				);
 
-			ComputationDefinition def =
-				ComputationDefinition::ApplyFromTuple(
-					copyToFreeStore(elt)
-					);
+		ComputationId computation =
+			ComputationId::CreateIdForRootOnWorker(
+				def,
+				ioGuid
+				);
 
-			ComputationId computation =
-				ComputationId::CreateIdForRootOnWorker(
-					def,
-					ioGuid
-					);
+		ioComputations.computations() =
+			ioComputations.computations() +
+				computation +
+				def
+				;
 
-			ioComputations.computations() =
-				ioComputations.computations() +
-					computation +
-					def;
-
-			mBlockingComputationsInOrder.push_back(computation);
-			}
-
-		mComputationStatisticsOutsideOfEC.timesComputed()++;
-
-		mComputationStatus = ComputationStatus::BlockedOnComputations(
-			ImmutableTreeSet<ComputationId>(
-				mBlockingComputationsInOrder.begin(),
-				mBlockingComputationsInOrder.end()
-				)
-			);
-
-		return false;
-		}
-
-	ImplValContainer processCacheCallRequest_(const ImplValContainer& in)
-		{
-		//turn (agent, (*args)) into (agent, *args)
-		ImplValContainer agent = *in.tupleGetItem(0);
-		ImplValContainer args = *in.tupleGetItem(1);
-
-		ImmutableTreeVector<ImplValContainer> allArgs;
-
-		allArgs = allArgs + agent;
-
-		allArgs = allArgs + ImplValContainer(CSTValue(Symbol("Call")));
-
-		for (long k = 0; k < *args.tupleGetSize(); k++)
-			allArgs = allArgs + *args.tupleGetItem(k);
-
-		return ImplValContainer(allArgs);
+		mComputationStatus = ComputationStatus::BlockedOnComputations(emptyTreeSet() + computation);
 		}
 
 	bool isValidCacheLoad_(const ImplValContainer& cacheLoadRequest)
 		{
-		//cacheload should be a tuple of items, each of which looks like
-		//(agent, (*args))
-
-		if (!cacheLoadRequest.tupleGetSize())
+		if (!cacheLoadRequest.tupleGetSize() || !cacheLoadRequest.tupleGetSize() == 1)
 			return false;
 
-		long tupleCt = *cacheLoadRequest.tupleGetSize();
+		Nullable<pair<Symbol, ImplValContainer> > alt =
+			ImplValContainerUtilities::extractAsAlternative(*cacheLoadRequest.tupleGetItem(0));
 
-		if (tupleCt < 1)
-			return false;
-
-		for (long k = 0; k < tupleCt; k++)
-			{
-			ImplValContainer elt = *cacheLoadRequest.tupleGetItem(k);
-
-			if (!elt.tupleGetSize() || *elt.tupleGetSize() != 2)
-				return false;
-
-			ImplValContainer rhs = *elt.tupleGetItem(1);
-
-			if (!rhs.tupleGetSize())
-				return false;
-			}
-
-		return true;
+		return alt && alt->first == Symbol("Cached");
 		}
 
 	void addComputationResult(const Cumulus::ComputationResult& inResult)
@@ -1598,6 +986,10 @@ public:
 		addComputationResult(inResult.computation(), compResult, inResult.statistics());
 		}
 
+	bool stillWantsToComputeDespiteSubthreads()
+		{
+		return mExecutionContext->extractComputationTreeStats().countOfActiveThreads() > 0;
+		}
 
 	void addComputationResult(
 			ComputationId computation,
@@ -1605,113 +997,130 @@ public:
 			ComputationStatistics statistics
 			)
 		{
-		if (mOutsideEcValues.getSplitComputation())
+		if (mExecutionContext->isCacheRequest())
 			{
-			@match ComputationStatus(mComputationStatus)
-				-| BlockedOnComputations(subthreads) ->> {
-					long whichIndex = -1;
-					for (long k = 0; k < mBlockingComputationsInOrder.size();k++)
-						if (mBlockingComputationsInOrder[k] == computation)
-							whichIndex = k;
+			lassert(mExecutionContext->extractComputationTreeStats().holes().size() == 0);
 
-					lassert_dump(whichIndex != -1, "received a split-result for a computation we dont think we own");
+			mExecutionContext->addCachecallResult(result);
 
-					lassert_dump(mOutsideEcValues.getSplitComputation(), "we don't have a split");
+			if (mExecutionContext->isFinished())
+				handleExecutionContextFinishedTransition();
+			else
+				mComputationStatus = ComputationStatus::ComputableWithSubcomputations(emptyTreeSet());
 
-					mExecutionContext->absorbSplitResult(
-						(*mOutsideEcValues.getSplitComputation())[whichIndex].second,
-						result,
-						TimeElapsed(
-							statistics.timeSpentInInterpreter(),
-							statistics.timeSpentInCompiler(),
-							statistics.timeSpentGarbageCollecting()
-							)
-						);
+			return;
+			}
 
-					mTimeElapsedAtLastCompute = mExecutionContext->getTotalTimeElapsed();
+		lassert(currentSubComputations().contains(computation));
 
-					mComputationStatisticsOutsideOfEC.timesComputed()++;
 
-					statistics.timeSpentInInterpreter() = 0;
-					statistics.timeSpentInCompiler() = 0;
-					statistics.timeSpentGarbageCollecting() = 0;
-				
-					mComputationStatisticsOutsideOfEC =
-						ComputationStatistics::merge(
-							mComputationStatisticsOutsideOfEC,
-							statistics,
-							false
-							);
+		TimeElapsed timeElapsed = statistics.timeElapsed();
 
-					ImmutableTreeSet<ComputationId> newSubthreads = subthreads - computation;
+		bool successfullyAbsorbed = mExecutionContext->absorbSplitResult(
+			computation.hash(),
+			result,
+			//we don't want to count root-computation timings
+			computation.isRoot() ? TimeElapsed() : timeElapsed
+			);
 
-					mBlockingComputationsInOrder.erase(mBlockingComputationsInOrder.begin() + whichIndex);
-					
-					mOutsideEcValues.setSplitComputation(
-						mOutsideEcValues.getSplitComputation()->slice(0, whichIndex) + 
-							mOutsideEcValues.getSplitComputation()->slice(whichIndex+1)
-						);
+		mTimeElapsedAtLastCompute = mExecutionContext->getTotalTimeElapsed();
 
-					if (newSubthreads.size() == 0)
-						{
-						mIsRejoinedSplitThatHasNotComputed = false;
-						mChildCheckpointStatuses.clear();
-						mOutsideEcValues.clear();
+		mComputationStatisticsOutsideOfEC.timesComputed()++;
 
-						if (mExecutionContext->isFinished())
-							handleExecutionContextFinishedTransition();
-						else
-							mComputationStatus = ComputationStatus::Computable();
-						}
-					else
-						mComputationStatus = ComputationStatus::BlockedOnComputations(newSubthreads);
-					}
-				-| _ ->> {
-					lassert_dump(false, 
-						"Illegal to add a thread result for a thread in state " << 
-							mComputationStatus.tagName()
-						);
-					}
+		statistics.timeElapsed() = TimeElapsed();
+	
+		mComputationStatisticsOutsideOfEC =
+			ComputationStatistics::merge(
+				mComputationStatisticsOutsideOfEC,
+				statistics,
+				false
+				);
+
+		ImmutableTreeSet<ComputationId> newSubthreads = currentSubComputations() - computation;
+
+		if (newSubthreads.size() == 0)
+			{
+			mChildCheckpointStatuses.clear();
+
+			mComputationStatus = ComputationStatus::ComputableWithSubcomputations(emptyTreeSet());			
+
+			if (mExecutionContext->isFinished())
+				handleExecutionContextFinishedTransition();
 			}
 		else
 			{
-			@match ComputationStatus(mComputationStatus)
-				-| BlockedOnComputations(subthreads) ->> {
-					mOutsideEcValues.setPartialComputationResult(computation, result, TimeElapsed());
-
-					ImmutableTreeSet<ComputationId> newSubthreads = subthreads - computation;
-
-					if (newSubthreads.size() == 0)
-						{
-						mComputationStatus = ComputationStatus::Computable();
-						mIsRejoinedSplitThatHasNotComputed = false;
-						}
-					else
-						mComputationStatus = ComputationStatus::BlockedOnComputations(newSubthreads);
-					}
-				-| _ ->> {
-					lassert_dump(false, 
-						"Illegal to add a thread result for a thread in state " << 
-							mComputationStatus.tagName()
-						);
-					}
+			if (mExecutionContext->isFinished())
+				mComputationStatus = ComputationStatus::BlockedOnComputations(newSubthreads);
+			else
+				mComputationStatus = ComputationStatus::ComputableWithSubcomputations(newSubthreads);
 			}
 		}
 
 	void markExternalIoTaskCompleted(ExternalIoTaskCompleted completed)
 		{
-		mOutsideEcValues.setExternalIoTaskResult(completed.result());
+		Fora::Interpreter::ComputationResult result;
 
-		mComputationStatus = ComputationStatus::Computable();
+		@match ExternalIoTaskResult(completed.result())
+			-| Success() ->> {
+				result = Fora::Interpreter::ComputationResult::Result(
+					ImplValContainer()
+					);
+				}
+			-| TaskResultAsForaValue(computationResult) ->> {
+				result = computationResult;
+				}
+			-| S3KeyDoesNotExist() ->> {
+				result =
+					Fora::Interpreter::ComputationResult::Exception(
+						ImplValContainerUtilities::createString(
+							String(
+								"No such key exists",
+								MemoryPool::getFreeStorePool()
+								)
+							)
+						);
+				}
+			-| S3PermissionError() ->> {
+				result =
+					Fora::Interpreter::ComputationResult::Exception(
+						ImplValContainerUtilities::createString(
+							String(
+								"S3 credentials error",
+								MemoryPool::getFreeStorePool()
+								)
+							)
+						);
+				}
+            -| UserCausedPythonFailure(reason) ->> {
+                result =
+                    Fora::Interpreter::ComputationResult::Exception(
+                        ImplValContainerUtilities::createString(
+                            String(
+                                reason,
+                                MemoryPool::getFreeStorePool()
+                                )
+                            )
+                        );
+                }
+			-| _ ->> {
+				result = Fora::Interpreter::ComputationResult::Failure(
+					Fora::Interpreter::ErrorState::IllegalComputationState(
+						prettyPrintString(result)
+						)
+					);
+				}
 
-		mIsRejoinedSplitThatHasNotComputed = false;
+		mExecutionContext->addCachecallResult(result);
+		mComputationStatus = ComputationStatus::ComputableWithSubcomputations(emptyTreeSet());
+
+		if (mExecutionContext->isFinished())
+			handleExecutionContextFinishedTransition();
 		}
 
 	void placeInFinishedState(Fora::Interpreter::ComputationResult result)
 		{
 		mExecutionContext->teardown();
-		mOutsideEcValues.clearCompletely();
-		mBlockingComputationsInOrder.clear();
+		mOriginalComputationDefinition.setDefinition(null());
 		mChildCheckpointStatuses.clear();
 
 		mExecutionContext->setFinishedResult(result);
@@ -1753,7 +1162,7 @@ public:
 		{
 		@match ComputationStatus(mComputationStatus)
 			-| BlockedOnResources(slice) ->> {
-				mComputationStatus = ComputationStatus::Computable();
+				mComputationStatus = ComputationStatus::ComputableWithSubcomputations(emptyTreeSet());
 				}
 			-| _ ->> {
 				lassert_dump(false,
@@ -1804,9 +1213,6 @@ public:
 		if (Runtime::getRuntime().getConfig().disableSplitting())
 			return CreatedComputations();
 
-		if (mIsRejoinedSplitThatHasNotComputed)
-			return CreatedComputations();
-
 		if (mExecutionContext->getInterpreterHistory().isTracing() &&
 				curClock() - mExecutionContext->getInterpreterHistory().timeOfLastTraceEvent() <
 					kMinTimeInCompiledCodeToDisableTracing)
@@ -1819,71 +1225,121 @@ public:
 
 		ImmutableTreeVector<PausedComputationTreeSplit> computation;
 		
-		computation = mExecutionContext->splitComputation(true, mCurrentBlockingPages.size() > 10 ? 0.0 : 0.01);
+		CreatedComputations result;
 
-		mComputationStatisticsOutsideOfEC.totalSplitCount() += 1;
+		ImmutableTreeSet<ComputationId> subcomps = currentSubComputations();
 
-		if (!computation.size())
+		bool createdAny = 
+			mExecutionContext->splitComputation(
+				[&](PausedComputationTree tree) { 
+					for (auto bv: tree.bigvecsReferenced())
+						if (!result.bigvecsReferenced().contains(bv))
+							{
+							result.bigvecsReferenced() = result.bigvecsReferenced() + bv;
+							mExecutionContext->getVDM().getPageRefcountTracker()->bigVectorIncreffed(bv);
+							}
+
+					ComputationDefinition def = 
+						ComputationDefinition::Split(
+							mOwnComputationId,
+							copyToFreeStore(tree)
+							);
+
+					ioGuid = ioGuid + computationStateHashIncrement;
+
+					ComputationId id = ComputationId::CreateIdForSplit(def, ioGuid, mTimesEverSplit++);
+					
+					result.computations() = result.computations() + id + def;
+					
+					subcomps = subcomps + id;
+
+					return id.hash();
+					},
+				mCurrentBlockingPages.size() > 10 ? 0.0 : 0.01
+				);
+
+		if (createdAny)
+			{	
+			mComputationStatisticsOutsideOfEC.timesComputed()++;
+
+			mComputationStatus = ComputationStatus::ComputableWithSubcomputations(subcomps);
+			
+			mChildCheckpointStatuses.clear();
+			
+			mComputationStatisticsOutsideOfEC.totalSplitCount() += 1;
+			}
+
+		return result;
+		}
+
+	CreatedComputations tryToSplitCachecalls(hash_type& ioGuid)
+		{
+		if (Runtime::getRuntime().getConfig().disableSplitting())
 			return CreatedComputations();
 
-		CreatedComputations computations =
-			setStatusForSplitComputation(computation, ioGuid);
+		if (!canExtractPausedComputation())
+			return CreatedComputations();
 
-		mExecutionContext->enableVectorPaging();
+		ImmutableTreeVector<PausedComputationTreeSplit> computation;
+		
+		CreatedComputations result;
 
-		return computations;
+		ImmutableTreeSet<ComputationId> subcomps = currentSubComputations();
+
+		bool createdAny = 
+			mExecutionContext->getImpl()->splitCachecallFrames(
+				[&](PausedComputationTree tree) { 
+					for (auto bv: tree.bigvecsReferenced())
+						if (!result.bigvecsReferenced().contains(bv))
+							{
+							result.bigvecsReferenced() = result.bigvecsReferenced() + bv;
+							mExecutionContext->getVDM().getPageRefcountTracker()->bigVectorIncreffed(bv);
+							}
+
+					ComputationDefinition def = 
+						ComputationDefinition::Split(
+							mOwnComputationId,
+							copyToFreeStore(tree)
+							);
+
+					ioGuid = ioGuid + computationStateHashIncrement;
+
+					ComputationId id = ComputationId::CreateIdForSplit(def, ioGuid, mTimesEverSplit++);
+					
+					result.computations() = result.computations() + id + def;
+					
+					subcomps = subcomps + id;
+
+					return id.hash();
+					}
+				);
+
+		if (createdAny)
+			{	
+			mComputationStatisticsOutsideOfEC.timesComputed()++;
+
+			mComputationStatus = ComputationStatus::ComputableWithSubcomputations(subcomps);
+			
+			mChildCheckpointStatuses.clear();
+			
+			mComputationStatisticsOutsideOfEC.totalSplitCount() += 1;
+			}
+
+		return result;
+		}
+
+	ImmutableTreeSet<ComputationId> currentSubComputations()
+		{
+		@match ComputationStatus(mComputationStatus)
+			-| BlockedOnComputations(c) ->> { return c; }
+			-| ComputableWithSubcomputations(c) ->> { return c; }
+			-| _ ->> { return emptyTreeSet(); }
 		}
 
 	bool canExtractPausedComputation() const
 		{
-		return (mComputationStatus.isComputable() || mComputationStatus.isBlockedOnResources())
-					&& !mOutsideEcValues.getUnconsumedDefinition();
-		}
-
-	CreatedComputations setStatusForSplitComputation(
-				ImmutableTreeVector<PausedComputationTreeSplit> splits,
-				hash_type& ioGuid
-				)
-		{
-		mBlockingComputationsInOrder.clear();
-		mChildCheckpointStatuses.clear();
-
-		mOutsideEcValues.clearPartialComputationResults();
-
-		CreatedComputations result;
-
-		ImmutableTreeVector<pair<ComputationId, hash_type> > computationIdsAndHashes;
-
-		for (auto subcomp: splits)
-			{
-			ComputationDefinition def = 
-				ComputationDefinition::Split(
-					mOwnComputationId,
-					copyToFreeStore(
-						subcomp.childComputation()
-						)
-					);
-
-			ioGuid = ioGuid + computationStateHashIncrement;
-			ComputationId id = ComputationId::CreateIdForSplit(def, ioGuid, mTimesEverSplit++);
-			result.computations() = result.computations() + id + def;
-			
-			mBlockingComputationsInOrder.push_back(id);
-			computationIdsAndHashes = computationIdsAndHashes + make_pair(id, subcomp.computationHash());
-			}
-
-		mOutsideEcValues.setSplitComputation(computationIdsAndHashes);
-
-		mComputationStatisticsOutsideOfEC.timesComputed()++;
-
-		mComputationStatus = ComputationStatus::BlockedOnComputations(
-			ImmutableTreeSet<ComputationId>(
-				mBlockingComputationsInOrder.begin(),
-				mBlockingComputationsInOrder.end()
-				)
-			);
-
-		return result;
+		return (mComputationStatus.isComputableWithSubcomputations() || mComputationStatus.isBlockedOnResources())
+					&& !mExecutionContext->isEmpty();
 		}
 
 	void pageLargeVectorHandles()
@@ -1953,7 +1409,9 @@ public:
 			result = result.withFinishedRootComputation();
 
 		bool anyAreNotRepresented = false;
-		for (auto c: mBlockingComputationsInOrder)
+		ImmutableTreeSet<ComputationId> comps = currentSubComputations();
+
+		for (auto c: comps)
 			{
 			if (c.isRoot())
 				{
@@ -1961,28 +1419,21 @@ public:
 				}
 			else
 				{
-				if (mOutsideEcValues.hasPartialComputationResult(c))
+				auto it = mChildCheckpointStatuses.find(c);
+
+				if (it == mChildCheckpointStatuses.end())
 					{
-					//pass - stats already incorporated
+					anyAreNotRepresented = true;
 					}
 				else
 					{
-					auto it = mChildCheckpointStatuses.find(c);
-
-					if (it == mChildCheckpointStatuses.end())
+					if (it->second.first != *mCheckpointStatusTimestamp)
 						{
 						anyAreNotRepresented = true;
 						}
 					else
 						{
-						if (it->second.first != *mCheckpointStatusTimestamp)
-							{
-							anyAreNotRepresented = true;
-							}
-						else
-							{
-							result = CheckpointStatus::merge(result, it->second.second);
-							}
+						result = CheckpointStatus::merge(result, it->second.second);
 						}
 					}
 				}
@@ -2020,14 +1471,12 @@ public:
 			valueStream.serialize(*mExecutionContext);
 			valueStream.serialize(mComputationStatus);
 
-			mOutsideEcValues.serialize(valueStream);
+			mOriginalComputationDefinition.serialize(valueStream);
 
-			valueStream.serialize(mBlockingComputationsInOrder);
 			valueStream.serialize(mTimesEverSplit);
 			valueStream.serialize(mInitialRuntimePredictionSignature);
 			valueStream.serialize(mIsTemporary);
 			valueStream.serialize(mComputationStatisticsOutsideOfEC);
-			valueStream.serialize(mIsRejoinedSplitThatHasNotComputed);
 
 			valueStream.serialize(mCurrentBlockingPages);
 			valueStream.serialize(mTimeElapsedAtLastCompute);
@@ -2058,7 +1507,7 @@ public:
 		{
 		//make sure nothing gets paged while we're in flight
 		mExecutionContext->disableVectorPaging();
-		mOutsideEcValues.disableVectorPaging();
+		mOriginalComputationDefinition.disableVectorPaging();
 
 		INoncontiguousByteBlockProtocol	protocol(object->getSerializedData());
 
@@ -2082,14 +1531,12 @@ public:
 		valueStream.deserialize(*mExecutionContext);
 		valueStream.deserialize(mComputationStatus);
 
-		mOutsideEcValues.deserialize(valueStream);
+		mOriginalComputationDefinition.deserialize(valueStream);
 
-		valueStream.deserialize(mBlockingComputationsInOrder);
 		valueStream.deserialize(mTimesEverSplit);
 		valueStream.deserialize(mInitialRuntimePredictionSignature);
 		valueStream.deserialize(mIsTemporary);
 		valueStream.deserialize(mComputationStatisticsOutsideOfEC);
-		valueStream.deserialize(mIsRejoinedSplitThatHasNotComputed);
 		valueStream.deserialize(mCurrentBlockingPages);
 		valueStream.deserialize(mTimeElapsedAtLastCompute);
 		valueStream.deserialize(mLastPersistedCheckpointTimestamp);
@@ -2103,12 +1550,12 @@ public:
 		if (mIsPagingDisabled)
 			{
 			mExecutionContext->disableVectorPaging();
-			mOutsideEcValues.disableVectorPaging();
+			mOriginalComputationDefinition.disableVectorPaging();
 			}
 		else
 			{
 			mExecutionContext->enableVectorPaging();
-			mOutsideEcValues.enableVectorPaging();
+			mOriginalComputationDefinition.enableVectorPaging();
 			}
 
 
@@ -2138,7 +1585,7 @@ public:
 	ImmutableTreeSet<Fora::BigVectorId> getReferencedBigVectors()
 		{
 		return mExecutionContext->getReferencedBigVectors() +
-			mOutsideEcValues.getReferencedBigVectors();
+			mOriginalComputationDefinition.getReferencedBigVectors();
 		}
 
 	ComputationStatistics currentComputationStatistics() const
@@ -2157,21 +1604,19 @@ public:
 		{
 		return ComputationStatistics(
 			mInitialRuntimePredictionSignature,
-			mTimeElapsedAtLastCompute.timeSpentInInterpreter(),
-			mTimeElapsedAtLastCompute.timeSpentInCompiledCode(),
-			mTimeElapsedAtLastCompute.timeSpentGarbageCollecting(),
+			mTimeElapsedAtLastCompute,
 			0,
 			0,
 			//min memory used is 4096, a single page, which is a crude proxy for the
 			//fact that we're allocating cumulus data structures etc.
 			std::max<int64_t>(
 				mExecutionContext->getMemoryUsageAtLastEvent().first +
-					mOutsideEcValues.getMemoryPool()->totalBytesAllocated(),
+					mOriginalComputationDefinition.getMemoryPool()->totalBytesAllocated(),
 				4096
 				),
 			std::max<int64_t>(
 				mExecutionContext->getMemoryUsageAtLastEvent().second +
-					mOutsideEcValues.getMemoryPool()->totalBytesAllocatedFromOS(),
+					mOriginalComputationDefinition.getMemoryPool()->totalBytesAllocatedFromOS(),
 				4096
 				),
 			0,
@@ -2203,14 +1648,14 @@ public:
 		{
 		mIsPagingDisabled = true;
 		mExecutionContext->disableVectorPaging();
-		mOutsideEcValues.disableVectorPaging();
+		mOriginalComputationDefinition.disableVectorPaging();
 		}
 
 	void enableVectorPaging()
 		{
 		mIsPagingDisabled = false;
 		mExecutionContext->enableVectorPaging();
-		mOutsideEcValues.enableVectorPaging();
+		mOriginalComputationDefinition.enableVectorPaging();
 		}
 
 	void resetStateForAddDrop()
@@ -2224,8 +1669,7 @@ public:
 
 		@match ComputationStatus(mComputationStatus)
 			-| BlockedOnExternalIoTask() ->> {
-				mOutsideEcValues.clearExternalIoTaskResult();
-				mComputationStatus = ComputationStatus::Computable();
+				mComputationStatus = ComputationStatus::ComputableWithSubcomputations(emptyTreeSet());
 				}
 			-| _ ->> {}
 			;
@@ -2247,8 +1691,6 @@ private:
 
 	long mTimesComputedButMadeNoProgress;
 
-	bool mIsRejoinedSplitThatHasNotComputed;
-
 	bool mInterruptTriggered;
 
 	bool mIsPagingDisabled;
@@ -2263,11 +1705,9 @@ private:
 
 	Nullable<RuntimePredictionSignature> mInitialRuntimePredictionSignature;
 
-	ComputationStateValuesOutsideOfExecutionContext mOutsideEcValues;
+	OriginalComputationDefinition mOriginalComputationDefinition;
 
 	PolymorphicSharedPtr<ExecutionContext> mExecutionContext;
-
-	std::vector<ComputationId> mBlockingComputationsInOrder;
 
 	bool mIsTemporary;
 
