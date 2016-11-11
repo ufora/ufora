@@ -125,6 +125,8 @@ class WithBlockExecutors_test(unittest.TestCase):
             while len(messages) < 4 and time.time() - t0 < 10:
                 time.sleep(1.0)
 
+        messages = sorted(messages)
+
         self.assertEqual(len(messages), 4)
         self.assertEqual(messages[0][:2], "1 ")
         self.assertEqual(messages[1][:2], "2 ")
