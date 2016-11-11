@@ -89,8 +89,7 @@ def loadExternalDatasetAsForaValue(datasetDescriptor, vdm):
         return normalComputationResult(ForaNative.ImplValContainer(time.time()))
     elif datasetDescriptor.isExceptionThrowingDataset():
         return ForaNative.ComputationResult.Exception(
-            ForaNative.ImplValContainer("ExceptionThrowingDataset"),
-            ForaNative.ImplValContainer()
+            ForaNative.ImplValContainer("ExceptionThrowingDataset")
             )
     elif datasetDescriptor.isFailureInducingDataset():
         raise DatasetLoadException("FailureInducingDataset")
@@ -720,8 +719,7 @@ def loadHttpRequestDataset(httpRequest):
 
 def normalComputationResult(result):
     return ForaNative.ComputationResult.Result(
-        result,
-        ForaNative.ImplValContainer()
+        result
         )
 
 

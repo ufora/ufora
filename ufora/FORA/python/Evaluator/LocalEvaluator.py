@@ -229,8 +229,7 @@ class ComputationCache(Stoppable.Stoppable):
                                                     ("cyclic cachecall detected",
                                                         FORANative.emptyStackTrace
                                                         )
-                                                    ),
-                                                ImplValContainer_()
+                                                    )
                                                 ),
                                             FORANative.TimeElapsed()
                                             )
@@ -371,8 +370,7 @@ class ComputationCache(Stoppable.Stoppable):
                         context.resetInterruptState()
                         context.addCachecallResult(
                             ComputationResult_.Result(
-                                ImplValContainer_(tuple(res)),
-                                ImplValContainer_()
+                                ImplValContainer_(tuple(res))
                                 )
                             )
                         context.compute()

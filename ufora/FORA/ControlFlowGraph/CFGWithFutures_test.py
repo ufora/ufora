@@ -24,14 +24,12 @@ emptyCodeDefinitionPoint = ForaNative.CodeDefinitionPoint.ExternalFromStringList
 
 def normalComputationResult(result):
     return ForaNative.ComputationResult.Result(
-            result,
-            ForaNative.ImplValContainer()
+            result
             )
 
 def exceptionComputationResult(result):
     return ForaNative.ComputationResult.Exception(
-            result,
-            ForaNative.ImplValContainer()
+            result
             )
 
 def evalSubmittableArgs(submittableArgs):

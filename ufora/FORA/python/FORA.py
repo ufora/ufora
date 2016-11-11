@@ -276,31 +276,20 @@ class LocalExpressionEvaluator(ExpressionEvaluator):
         res = Evaluator.evaluator().evaluate(*args)
         # res is a ComputationResult instance, defined in ufora/FORA/Core/ComputationResult.hppml
         #@type ComputationResult =
-        #       Exception of ImplValContainer exception, ImplValContainer computationLog
-        #    -| Result of ImplValContainer result, ImplValContainer computationLog
+        #       Exception of ImplValContainer exception
+        #    -| Result of ImplValContainer result
         #    -| Failure of ErrorState error
 
         resVal = None
-        logs = None
         if res.isResult():
             resVal = res.asResult.result
-            logs = res.asResult.computationLog
         elif res.isException():
             resVal = res.asException.exception
-            logs = res.asException.computationLog
         elif res.isFailure():
             raise ForaValue.FORAFailure(res.asFailure.error)
 
-        # At this point, resVal and logs are both ImplValContainers.
+        # At this point, resVal is an ImplValContainer
         resVal = ForaValue.FORAValue(resVal).implVal_
-
-        if logs is not None and logs.isVector() and logs.getVectorSize() > 0:
-            if logs.getVectorSize() > 50:
-                for ix in range(50):
-                    print "log> " + ForaValue.FORAValue(logs)[ix]
-                print " and", logs.getVectorSize() - 50, "additional log messages..."
-            else:
-                print "log> " + ForaValue.FORAValue("\nlog> ").join(ForaValue.FORAValue(logs))
 
         boundValues = {}
 

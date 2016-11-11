@@ -155,7 +155,7 @@ def getCacheRequestComputationResult(cacheCallElement):
 
             wholeVectorIVC = ForaNative.concatenateVectors(wholeVectorIVC, vectorIVC)
 
-    return ForaNative.ComputationResult.Result(wholeVectorIVC, ForaNative.ImplValContainer())
+    return ForaNative.ComputationResult.Result(wholeVectorIVC)
 
 
 
