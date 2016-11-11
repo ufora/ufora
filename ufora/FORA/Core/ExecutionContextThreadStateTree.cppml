@@ -26,7 +26,8 @@ typedef ExecutionContextThreadStateTree::child_map_type child_map_type;
 
 ExecutionContextThreadStateTree::ExecutionContextThreadStateTree(ExecutionContextImpl* inContext) : 
 		mExecutionContextImpl(inContext),
-		mPoorSplitsInARow(0)
+		mPoorSplitsInARow(0),
+		mChildMergeStyle(ChildMergeStyle::NoChildren())
 	{
 	}
 
@@ -35,7 +36,8 @@ ExecutionContextThreadStateTree::ExecutionContextThreadStateTree(
 					hash_type computationHash
 					) :
 		mExecutionContextImpl(inContext),
-		mPoorSplitsInARow(0)
+		mPoorSplitsInARow(0),
+		mChildMergeStyle(ChildMergeStyle::NoChildren())
 	{
 	mSplitHoleHash = computationHash;
 	}
@@ -124,7 +126,7 @@ void ExecutionContextThreadStateTree::splitThreadAtFrameIndex_(const PausedCompu
 
 	subtree->placeInEvaluationState(
 		PausedComputationTree::Thread(
-			emptyTreeMap(),
+			PausedComputationTreeThreadChildren::NoChildren(),
 			PausedComputation(
 				comp.frames().slice(ix),
 				comp.tail()
@@ -137,6 +139,7 @@ void ExecutionContextThreadStateTree::splitThreadAtFrameIndex_(const PausedCompu
 	
 	subtree->mTreeStats = mTreeStats;
 	subtree->mChildren = mChildren;
+	subtree->mChildMergeStyle = mChildMergeStyle;
 
 	mThread->placeInEvaluationState(
 		PausedComputation(
@@ -147,6 +150,7 @@ void ExecutionContextThreadStateTree::splitThreadAtFrameIndex_(const PausedCompu
 
 	mChildren.clear();
 	mChildren[0] = subtree;
+	mChildMergeStyle = ChildMergeStyle::SingleChildPassedBackToParent();
 
 	updateTreeStats_();
 	}
@@ -203,7 +207,7 @@ bool ExecutionContextThreadStateTree::tryToSplitSelf_(bool fromTop, PausedComput
 					if (index + 1 == comp.frames().size())
 						subtree->placeInEvaluationState(
 							PausedComputationTree::Thread(
-								emptyTreeMap(),
+								PausedComputationTreeThreadChildren::NoChildren(),
 								futures->asSubmittable(0)->toPausedComputation(),
 								TimeElapsed(),
 								PausedComputationTreeStats()
@@ -213,7 +217,7 @@ bool ExecutionContextThreadStateTree::tryToSplitSelf_(bool fromTop, PausedComput
 					else
 						subtree->placeInEvaluationState(
 							PausedComputationTree::Thread(
-								emptyTreeMap(),
+								PausedComputationTreeThreadChildren::NoChildren(),
 								PausedComputation(
 									comp.frames().slice(index+1),
 									comp.tail()
@@ -225,6 +229,7 @@ bool ExecutionContextThreadStateTree::tryToSplitSelf_(bool fromTop, PausedComput
 							);
 
 					subtree->mChildren = mChildren;
+					subtree->mChildMergeStyle = mChildMergeStyle;
 					subtree->mTreeStats = mTreeStats;
 
 					mChildren.clear();
@@ -256,6 +261,7 @@ bool ExecutionContextThreadStateTree::tryToSplitSelf_(bool fromTop, PausedComput
 							implValIdentityFunction
 							);
 						mChildren[0] = simulationFrame;
+						mChildMergeStyle = ChildMergeStyle::SingleChildPassedBackToParent();
 
 						simulationFrame->computeSimulation_(true);
 						simulationFrame->updateTreeStats_();
@@ -489,7 +495,7 @@ void ExecutionContextThreadStateTree::createChildComputationsForNewSubmittableFu
 			mChildren[i].reset(new ExecutionContextThreadStateTree(mExecutionContextImpl));
 			mChildren[i]->placeInEvaluationState(
 				PausedComputationTree::Thread(
-					emptyTreeMap(),
+					PausedComputationTreeThreadChildren::NoChildren(),
 					mSimulation->asSubmittable(i)->toPausedComputation(),
 					TimeElapsed(),
 					PausedComputationTreeStats()
@@ -573,7 +579,7 @@ void ExecutionContextThreadStateTree::tryToMergeChildren_()
 				-| Paused(frame) ->> {
 					placeInEvaluationState(
 						PausedComputationTree::Thread(
-							emptyTreeMap(),
+							PausedComputationTreeThreadChildren::NoChildren(),
 							PausedComputation(
 								emptyTreeVec() + frame
 								),
@@ -589,31 +595,73 @@ void ExecutionContextThreadStateTree::tryToMergeChildren_()
 		}
 	else
 		{
-		if (mThread && mChildren.size() == 1 && 
-				mChildren.begin()->second->getCurrentThread() && 
-				mChildren.begin()->second->getCurrentThread()->isFinished())
+		bool allChildrenFinished = true;
+		for (auto ixAndChild: mChildren)
+			if (!(ixAndChild.second->getCurrentThread() && ixAndChild.second->isFinished()))
+				allChildrenFinished = false;
+
+		if (mThread && allChildrenFinished && mChildren.size())
 			{
-			boost::shared_ptr<ExecutionContextThreadState> sub = mChildren[0]->mThread;
-			if (sub->isError())
-				{
-				setErrorState(sub->getErrorState());
-				updateTreeStats_();
-				return;
-				}
+			for (auto ixAndChild: mChildren)
+				if (ixAndChild.second->mThread->isError())
+					{
+					setErrorState(ixAndChild.second->mThread->getErrorState());
+					updateTreeStats_();
+					return;
+					}
 
 			PausedComputation comp = mThread->extractPausedComputation(implValIdentityFunction);
-
 			lassert(comp.tail().isNone());
 
-			comp.tail() = PausedComputationTail::PendingResult(
-				ImplValContainer(sub->getResult()),
-				sub->isExceptionResult()
-				);
+			ImmutableTreeVector<ImplValContainer> childVals;
 
-			mTimeElapsed += mChildren[0]->getTotalTimeElapsed();
+			bool wasException = false;
+			for (auto ixAndChild: mChildren)
+				if (ixAndChild.second->isExceptionResult())
+					{
+					comp.tail() = PausedComputationTail::PendingResult(
+						ImplValContainer(ixAndChild.second->getResult()),
+						true
+						);
+					wasException = true;
+					break;
+					}
+				else
+					childVals = childVals + ImplValContainer(ixAndChild.second->getResult());
+
+			if (!wasException)
+				{
+				@match ChildMergeStyle(mChildMergeStyle)
+					-| SingleChildPassedBackToParent() ->> {
+						comp.tail() = PausedComputationTail::PendingResult(childVals[0], false);
+						}
+					-| MultipleChildrenAsTuple(names) ->> {
+						comp.tail() = PausedComputationTail::PendingResult(
+								mapITVWithIndices(childVals, [&](ImplValContainer val, int index) {
+									return make_pair(val, names[index]);
+									}),
+								false
+								);
+						}
+					-| MultipleChildrenAsApply(names) ->> {
+						comp.frames() = comp.frames() + 
+							PausedComputationFrame(
+								childVals,
+								ControlFlowGraphUtil::canonicalApplyGraph(ApplySignature(names)),
+								null()
+								);
+						}
+					-| _ ->> {
+						lassert_dump(false, "unexpected mChildMergeStyle");
+						}
+				}
+
+			for (auto ixAndChild: mChildren)
+				mTimeElapsed += ixAndChild.second->getTotalTimeElapsed();
 
 			mThread->placeInEvaluationState(comp, implValIdentityFunction);
 			mChildren.clear();
+			mChildMergeStyle = ChildMergeStyle::NoChildren();
 			updateTreeStats_();
 			}
 		}
@@ -814,18 +862,39 @@ PausedComputationTree ExecutionContextThreadStateTree::extractPausedComputationT
 			boost::function1<ImplValContainer, ImplValContainer> inExportFunction
 			) const
 	{
-	ImmutableTreeMap<int64_t, PausedComputationTree> children;
-
-	for (auto& ixAndChild: mChildren)
-		children = children + 
-			ixAndChild.first + 
-			ixAndChild.second->extractPausedComputationTree(inExportFunction)
-			;
-	
 	if (mThread)
 		{
+		ImmutableTreeVector<PausedComputationTree> children;
+
+		for (auto& ixAndChild: mChildren)
+			children = children + 
+				ixAndChild.second->extractPausedComputationTree(inExportFunction)
+				;
+
+		PausedComputationTreeThreadChildren threadChildren;
+
+		@match ChildMergeStyle(mChildMergeStyle)
+			-| NoChildren() ->> {
+				threadChildren = PausedComputationTreeThreadChildren::NoChildren();
+				lassert(children.size() == 0);
+				}
+			-| SingleChildPassedBackToParent() ->> {
+				lassert(children.size() == 1);
+				threadChildren = PausedComputationTreeThreadChildren::SingleChildPassedBackToParent(children[0]);
+				}
+			-| MultipleChildrenAsTuple(names) ->> {
+				threadChildren = PausedComputationTreeThreadChildren::MultipleChildrenAsTuple(
+					mapITVWithIndices(children, [&](PausedComputationTree t, int ix) { return make_pair(t, names[ix]); })
+					);
+				}
+			-| MultipleChildrenAsApply(names) ->> {
+				threadChildren = PausedComputationTreeThreadChildren::MultipleChildrenAsApply(
+					mapITVWithIndices(children, [&](PausedComputationTree t, int ix) { return make_pair(t, names[ix]); })
+					);
+				}
+		
 		return PausedComputationTree::Thread(
-			children,
+			threadChildren,
 			mThread->extractPausedComputation(inExportFunction),
 			mTimeElapsed,
 			mTreeStats
@@ -834,6 +903,14 @@ PausedComputationTree ExecutionContextThreadStateTree::extractPausedComputationT
 		else
 	if (mSimulation)
 		{
+		ImmutableTreeMap<int64_t, PausedComputationTree> children;
+
+		for (auto& ixAndChild: mChildren)
+			children = children + 
+				ixAndChild.first + 
+				ixAndChild.second->extractPausedComputationTree(inExportFunction)
+				;
+
 		return PausedComputationTree::Simulation(
 			children,
 			mSimulation->deepcopy(inExportFunction),
@@ -861,7 +938,29 @@ void ExecutionContextThreadStateTree::placeInEvaluationState(
 
 	@match PausedComputationTree(computation)
 		-| Thread(c, thread, elapsed, treeStats) ->> {
-			children = c;
+			@match PausedComputationTreeThreadChildren(c)
+				-| NoChildren() ->> { 
+					mChildMergeStyle = ChildMergeStyle::NoChildren(); 
+					}
+				-| SingleChildPassedBackToParent(child) ->> { 
+					mChildMergeStyle = ChildMergeStyle::SingleChildPassedBackToParent(); 
+					children = children + (int64_t)0 + child;
+					}
+				-| MultipleChildrenAsApply(subs) ->> {
+					mChildMergeStyle = ChildMergeStyle::MultipleChildrenAsApply(
+						mapITV(subs, [&](pair<PausedComputationTree, Nullable<Symbol> > p) { return p.second; })
+						);
+					for (auto s: subs)
+						children = children + (int64_t)children.size() + s.first;
+					}
+				-| MultipleChildrenAsTuple(subs) ->> { 
+					mChildMergeStyle = ChildMergeStyle::MultipleChildrenAsTuple(
+						mapITV(subs, [&](pair<PausedComputationTree, Nullable<Symbol> > p) { return p.second; })
+						);
+					for (auto s: subs)
+						children = children + (int64_t)children.size() + s.first;
+					}
+
 			mThread.reset(new ExecutionContextThreadState(mExecutionContextImpl));
 			mThread->placeInEvaluationState(thread, valueImportFunction);
 			mSimulation.reset();
