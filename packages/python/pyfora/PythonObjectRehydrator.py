@@ -12,6 +12,16 @@
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
 
+import ast
+import copy
+import logging
+import os
+import sys
+import struct
+import traceback
+
+import numpy
+
 import pyfora.pyAst.PyAstUtil as PyAstUtil
 import pyfora.PyforaInspect as PyforaInspect
 import pyfora.Exceptions as Exceptions
@@ -23,14 +33,6 @@ import pyfora.TypeDescription as TypeDescription
 import pyfora.ObjectRegistry as ObjectRegistry
 import pyfora.BinaryObjectRegistryDeserializer as BinaryObjectRegistryDeserializer
 import pyfora
-import cPickle as pickle
-import sys
-import struct
-import os
-import ast
-import traceback
-import logging
-import numpy
 
 
 def sanitizeModulePath(pathToModule):
@@ -52,15 +54,13 @@ def updatePyAstMemberChains(pyAst, variablesInScope, isClassContext):
         if '.' in possible_replacement:
             replacements[tuple(possible_replacement.split('.'))] = possible_replacement
 
-    #we need to deepcopy the AST since the collapser modifies the AST, and this is just a 
+    #we need to deepcopy the AST since the collapser modifies the AST, and this is just a
     #slice of a cached tree.
-    pyAst = pickle.loads(pickle.dumps(pyAst))
+    pyAst = ast.fix_missing_locations(copy.deepcopy(pyAst))
 
     pyAst = PyAstFreeVariableAnalyses.collapseFreeVariableMemberAccessChains(pyAst, replacements, isClassContext=isClassContext)
 
-    ast.fix_missing_locations(pyAst)
-
-    return pyAst
+    return ast.fix_missing_locations(pyAst)
 
 class PythonObjectRehydrator(object):
     """PythonObjectRehydrator - responsible for building local copies of objects
@@ -85,7 +85,7 @@ class PythonObjectRehydrator(object):
 
         if lineNumber in self.moduleClassesAndFunctionsByPath[path]:
             return self.moduleClassesAndFunctionsByPath[path][lineNumber]
- 
+
         return None
 
     def canPopulateForPath(self, path):
@@ -131,7 +131,7 @@ class PythonObjectRehydrator(object):
                                 res[lineNumberToUse] = leafItemValue
                             else:
                                 self.populateModuleMembers(sourcePath)
-                        
+
                     except Exceptions.ForaToPythonConversionError:
                         raise
                     except PyforaInspect.PyforaInspectError:
@@ -146,7 +146,7 @@ class PythonObjectRehydrator(object):
 
     def moduleForFile(self, path):
         path = sanitizeModulePath(path)
-        
+
         if path not in self.pathsToModules:
             self.loadPathsToModules()
 
@@ -173,7 +173,7 @@ class PythonObjectRehydrator(object):
         root_id = struct.unpack("<q", os.read(fd, 8))[0]
 
         return self.convertObjectDefinitionsToPythonObject(registry.objectIdToObjectDefinition, root_id)
-        
+
     def convertEncodedStringToPythonObject(self, binarydata, root_id):
         registry = ObjectRegistry.ObjectRegistry()
 
@@ -183,7 +183,7 @@ class PythonObjectRehydrator(object):
         BinaryObjectRegistryDeserializer.deserializeFromString(binarydata, registry, noConversion)
 
         return self.convertObjectDefinitionsToPythonObject(registry.objectIdToObjectDefinition, root_id)
-        
+
     def convertObjectDefinitionsToPythonObject(self, definitions, root_id):
         converted = {}
 
@@ -336,7 +336,9 @@ class PythonObjectRehydrator(object):
         self.importModuleMagicVariables(globalScope, filename)
 
         try:
-            moduleAst = updatePyAstMemberChains(ast.Module([classAst]), tuple(globalScope.keys()), isClassContext=False)
+            moduleAst = updatePyAstMemberChains(ast.Module([withBlockAst]),
+                                                tuple(globalScope.keys()),
+                                                isClassContext=False)
 
             code = compile(moduleAst, filename, 'exec')
 
@@ -360,7 +362,7 @@ class PythonObjectRehydrator(object):
         assert fileText is not None
 
         objectOrNone = self.moduleLevelObject(filename, lineNumber)
-        
+
         if objectOrNone is not None:
             return objectOrNone
 
@@ -374,7 +376,9 @@ class PythonObjectRehydrator(object):
         self.importModuleMagicVariables(globalScope, filename)
 
         try:
-            moduleAst = updatePyAstMemberChains(ast.Module([classAst]), tuple(globalScope.keys()), isClassContext=False)
+            moduleAst = updatePyAstMemberChains(ast.Module([classAst]),
+                                                tuple(globalScope.keys()),
+                                                isClassContext=False)
 
             code = compile(moduleAst, filename, 'exec')
 
@@ -459,7 +463,7 @@ class PythonObjectRehydrator(object):
             expr.args.kwarg = None
 
             expr.decorator_list = []
-            
+
             #make sure we copy the list - if we use the existing one, we will mess up the
             #cached copy!
             expr.body = list(functionAst.body)
@@ -520,8 +524,6 @@ class PythonObjectRehydrator(object):
                     expr.body = [var_copy_expr] + expr.body
 
             expr = updatePyAstMemberChains(expr, tuple(globalScope.keys()), isClassContext=True)
-
-            ast.fix_missing_locations(expr)
 
             def extractTrace():
                 return sys.exc_info()[2]
