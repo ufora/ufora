@@ -30,7 +30,8 @@ import pyfora.PythonObjectRehydrator as PythonObjectRehydrator
 class PythonBinaryStreamToImplvalTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.vdm = ForaNative.VectorDataManager(CallbackScheduler.singletonForTesting(), 10000000)
+        cls.vdm = ForaNative.VectorDataManager(
+            CallbackScheduler.singletonForTesting(), 10000000)
 
     @classmethod
     def tearDownClass(cls):
@@ -165,16 +166,19 @@ class PythonBinaryStreamToImplvalTest(unittest.TestCase):
 
         data = binaryObjectRegistry.str()
 
-        streamReader = PythonBinaryStreamToImplval.constructConverter(Converter.canonicalPurePythonModule(), self.vdm)
+        streamReader = PythonBinaryStreamToImplval.constructConverter(
+            Converter.canonicalPurePythonModule(), self.vdm)
 
         streamReader.read(data)
         anObjAsImplval = streamReader.getObjectById(root_id)
     
-        converter = PythonBinaryStreamFromImplval.constructConverter(Converter.canonicalPurePythonModule(), self.vdm)
+        converter = PythonBinaryStreamFromImplval.constructConverter(
+            Converter.canonicalPurePythonModule(), self.vdm)
 
         root_id, data = converter.write(anObjAsImplval)
 
-        rehydrator = PythonObjectRehydrator.PythonObjectRehydrator(mappings, allowUserCodeModuleLevelLookups=False)
+        rehydrator = PythonObjectRehydrator(
+            mappings, allowUserCodeModuleLevelLookups=False)
 
         return rehydrator.convertEncodedStringToPythonObject(data, root_id)
 
@@ -193,7 +197,8 @@ class PythonBinaryStreamToImplvalTest(unittest.TestCase):
 
         data = binaryObjectRegistry.str()
 
-        streamReader = PythonBinaryStreamToImplval.constructConverter(Converter.canonicalPurePythonModule(), self.vdm)
+        streamReader = PythonBinaryStreamToImplval.constructConverter(
+            Converter.canonicalPurePythonModule(), self.vdm)
 
         streamReader.read(data)
 
@@ -213,11 +218,13 @@ class PythonBinaryStreamToImplvalTest(unittest.TestCase):
 
         result = result.asResult.result
 
-        converter = PythonBinaryStreamFromImplval.constructConverter(Converter.canonicalPurePythonModule(), self.vdm)
+        converter = PythonBinaryStreamFromImplval.constructConverter(
+            Converter.canonicalPurePythonModule(), self.vdm)
     
         root_id, data = converter.write(result)
 
-        rehydrator = PythonObjectRehydrator.PythonObjectRehydrator(mappings, allowUserCodeModuleLevelLookups=False)
+        rehydrator = PythonObjectRehydrator(
+            mappings, allowUserCodeModuleLevelLookups=False)
 
         return rehydrator.convertEncodedStringToPythonObject(data, root_id)
 
