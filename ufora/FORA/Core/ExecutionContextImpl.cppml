@@ -20,8 +20,6 @@
 #include "ExecutionContextConfiguration.hppml"
 #include "../TypedFora/ABI/BigVectorHandleArraySlotManager.hppml"
 #include "../ControlFlowGraph/ControlFlowGraphUtil.hppml"
-#include <boost/uuid/uuid_generators.hpp>
-#include <boost/uuid/uuid_io.hpp>
 #include "../../core/math/RandomHashGenerator.hpp"
 
 #include "../Serialization/SerializedObject.hpp"
@@ -381,10 +379,9 @@ void ExecutionContextImpl::addCachecallResult(const ComputationResult& val)
 		-| Exception(inner) ->> { 
 			innerVal = inner;
 			}
-		-| Failure() ->> {
-			throwLogicErrorWithStacktrace("Can't resume a computation with a failure: " + 
-				prettyPrintString(val)
-				);
+		-| Failure(error) ->> {
+			mThreadState->setErrorState(error);
+			return;
 			}
 
 	ValueDeepcopierState state;
@@ -1087,7 +1084,8 @@ bool ExecutionContextImpl::isVectorLoad(void) const
 	if (!mThreadState)
 		return false;
 
-	lassert(!mThreadState->isEmpty());
+	if (mThreadState->isEmpty())
+		return false;
 
 	auto leftmost = mThreadState->getLeftmostThread();
 	if (!leftmost)
@@ -1305,10 +1303,8 @@ boost::shared_ptr<ExecutionContextMemoryPool> ExecutionContextImpl::getExecution
 
 void ExecutionContextImpl::memoryAllocationFailed(size_t desiredBytes, size_t allocatedBytes)
 	{
-	boost::uuids::uuid uuid = boost::uuids::random_generator()();
-
 	LOG_ERROR << "ExecutionContextImpl " << (void*)this << " ran out of memory "
-		<< uuid << ", failed allocating " << desiredBytes / 1024 / 1024.0
+		<< ", failed allocating " << desiredBytes / 1024 / 1024.0
 		<< " MB on top of "
 		<< allocatedBytes / 1024 / 1024.0
 		<< ". ECMP holding "
@@ -1331,7 +1327,6 @@ void ExecutionContextImpl::memoryAllocationFailed(size_t desiredBytes, size_t al
 
 	mCurrentlyExecutingThread->setErrorState(
 		ErrorState::MemoryQuotaExceeded(
-			uuid,
 			desiredBytes,
 			allocatedBytes
 			)
@@ -1762,27 +1757,41 @@ void ExecutionContextImpl::pageTouched(Fora::PageId inPage)
 	mPagesTouched.insert(inPage);
 	}
 
-ImmutableTreeVector<PausedComputationTreeSplit> 
-			ExecutionContextImpl::splitComputation(bool disableVectorPagingIfSplit, double minSecondsElapsed)
+bool ExecutionContextImpl::splitComputation(
+				boost::function<hash_type (PausedComputationTree)> inCreateSplit, 
+				double minSecondsElapsed
+				)
 	{
 	ExecutionContextInterruptAndLockScope scope(mExecutionState);
 
 	ValueDeepcopierState state;
 
-	auto res = mThreadState->splitComputation(
+	return mThreadState->splitComputation(
 				[&](ImplValContainer ivc) {
 					return exportFromExecutionContext_(ivc, state);
 					},
+				inCreateSplit,
 				minSecondsElapsed
 				);
-
-	if (res.size() && disableVectorPagingIfSplit)
-		disableVectorPaging();
-
-	return res;
 	}
 
-void ExecutionContextImpl::absorbSplitResult(
+bool ExecutionContextImpl::splitCachecallFrames(
+				boost::function<hash_type (PausedComputationTree)> inCreateSplit
+				)
+	{
+	ExecutionContextInterruptAndLockScope scope(mExecutionState);
+
+	ValueDeepcopierState state;
+
+	return mThreadState->splitCachecallFrames(
+				[&](ImplValContainer ivc) {
+					return exportFromExecutionContext_(ivc, state);
+					},
+				inCreateSplit
+				);
+	}
+
+bool ExecutionContextImpl::absorbSplitResult(
 		hash_type computationHash,
 		const ComputationResult& result,
 		TimeElapsed totalTimeElapsed
@@ -1796,15 +1805,16 @@ void ExecutionContextImpl::absorbSplitResult(
 		-| Result(ivc) ->> {
 			ImplValContainer imported = importIntoExecutionContext_(ivc, state);
 
-			mThreadState->absorbSplitResult(computationHash, imported, false, totalTimeElapsed);
+			return mThreadState->absorbSplitResult(computationHash, imported, false, totalTimeElapsed);
 			}
 		-| Exception(ivc) ->> {
 			ImplValContainer imported = importIntoExecutionContext_(ivc, state);
 
-			mThreadState->absorbSplitResult(computationHash, imported, true, totalTimeElapsed);
+			return mThreadState->absorbSplitResult(computationHash, imported, true, totalTimeElapsed);
 			}
 		-| Failure(errorState) ->> {
 			mThreadState->setErrorState(errorState);
+			return true;
 			}
 	}
 

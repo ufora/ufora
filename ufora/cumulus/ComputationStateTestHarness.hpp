@@ -171,7 +171,7 @@ public:
 		state->initialize(def);
 
 		lassert_dump(
-			state->currentComputationStatus().isComputable(),
+			state->currentComputationStatus().isComputableWithSubcomputations(),
 			prettyPrintString(state->currentComputationStatus())
 			);
 

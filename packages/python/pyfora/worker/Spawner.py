@@ -31,7 +31,7 @@ class WorkerConnectionBase:
         self.socket_name = socket_name
         self.socket_dir = socket_dir
 
-    def answers_self_test(self):
+    def answers_self_test(self, logErrors = False):
         sock = None
         try:
             sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -41,6 +41,8 @@ class WorkerConnectionBase:
             Common.writeString(sock.fileno(), "msg")
             return Common.readString(sock.fileno()) == "msg"
         except:
+            if logErrors:
+                logging.error("Failed to answer self-test: %s", traceback.format_exc())
             return False
         finally:
             try:
@@ -178,8 +180,6 @@ class Spawner:
 
         newWorker = self.workerType(worker_name, self.socket_dir)
 
-        self.waiting_workers.append(newWorker)
-
         t0 = time.time()
         TIMEOUT = 10
         delay = 0.001
@@ -187,9 +187,11 @@ class Spawner:
             time.sleep(delay)
             delay *= 2
 
-        if not newWorker.answers_self_test():
-            raise UserWarning("Couldn't start another worker.")
+        if not newWorker.answers_self_test(True):
+            raise UserWarning("Couldn't start another worker after " + str(time.time() - t0))
         else:
+            self.waiting_workers.append(newWorker)
+
             logging.info(
                 "Started worker %s/%s with %s busy and %s idle", 
                 self.socket_dir, 

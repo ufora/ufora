@@ -499,6 +499,9 @@ void ActiveComputationsKernel::handleComputationStatusOnMachineChanged(const Com
 	if (nStatus)
 		{
 		@match ComputationStatus(*nStatus)
+			-| ComputableWithSubcomputations(computations) ->> {
+				setComputationDependenciesForRemote(change.computation(), computations);
+				}
 			-| BlockedOnComputations(computations) ->> {
 				setComputationDependenciesForRemote(change.computation(), computations);
 				}
@@ -530,7 +533,7 @@ void ActiveComputationsKernel::addComputationResultToComputation(
 										ComputationResultFromMachine inResult
 										)
 	{
-	if (isCurrentlyHandlingActionInBackgroundThread(computation))
+	if (isCurrentlyHandlingActionInBackgroundThread(computation) || isCurrentlyComputing(computation))
 		{
 		scheduleComputationPendingAction(
 			computation,
@@ -538,8 +541,6 @@ void ActiveComputationsKernel::addComputationResultToComputation(
 			);
 		return;
 		}
-
-	lassert(!isCurrentlyComputing(computation));
 
 	lassert(mExternalInterface->hasComputation(computation));
 
@@ -602,7 +603,7 @@ void ActiveComputationsKernel::addInterpreterResultToComputation(
 										ComputationStatistics stats
 										)
 	{
-	if (isCurrentlyHandlingActionInBackgroundThread(computation))
+	if (isCurrentlyHandlingActionInBackgroundThread(computation) || isCurrentlyComputing(computation))
 		{
 		scheduleComputationPendingAction(
 			computation,
@@ -620,8 +621,6 @@ void ActiveComputationsKernel::addInterpreterResultToComputation(
 		LOG_WARN << "Not adding for local computation " << computation;
 		return;
 		}
-
-	lassert(!isCurrentlyComputing(computation));
 
 	lassert(mExternalInterface->hasComputation(computation));
 
@@ -705,7 +704,7 @@ void ActiveComputationsKernel::handleSchedulerToComputationMessage(const Schedul
 		-| Split(threshold) ->> {
 			auto status = mExternalInterface->currentComputationStatusForId(computation);
 
-			if (status.isComputable() || status.isBlockedOnResources())
+			if (status.isComputableWithSubcomputations() || status.isBlockedOnResources())
 				{
 				mComputationsCurrentlyHandlingBackgroundActions.insert(computation);
 
@@ -980,8 +979,15 @@ void ActiveComputationsKernel::handleComputationStatusChange(ComputationId compu
 				setComputationDependenciesForLocal(computation, ImmutableTreeSet<ComputationId>());
 				handleComputationFinished(computation);
 				}
-		-|	Computable() ->> {
-				setComputationDependenciesForLocal(computation, ImmutableTreeSet<ComputationId>());
+		-|	ComputableWithSubcomputations(subthreads) ->> {
+				for (auto subthread: subthreads)
+					if (subthread.isRoot())
+						registerRootToRootDependency(computation.rootComputation(), subthread);
+
+				setComputationDependenciesForLocal(computation, subthreads);
+
+				if (mExternalInterface->currentComputationStatusForId(computation).isFinished())
+					handleComputationFinished(computation);
 				}
 		-|	BlockedOnComputations(subthreads) ->> {
 				for (auto subthread: subthreads)
@@ -1418,11 +1424,7 @@ void ActiveComputationsKernel::moveComputationToMachine(
 			}
 		}
 
-	if (!computationIsLocalAndUnfinished(inId) ||
-				mExternalInterface->currentComputationStatusForId(inId)
-													.isBlockedOnExternalIoTask()
-			||	mExternalInterface->currentComputationStatusForId(inId)
-													.isBlockedOnComputations())
+	if (!computationIsLocalAndUnfinished(inId) || computationCannotMove(inId))
 		{
 		sendInitiateComputationMoveResponse(inId, false);
 
@@ -1441,7 +1443,6 @@ void ActiveComputationsKernel::moveComputationToMachine(
 
 	LOG_DEBUG << prettyPrintString(mOwnMachineId) << " Moving computation "
 			<< prettyPrintString(inId) << " to " << prettyPrintString(inOtherMachine);
-
 
 	hash_type moveGuid = mExternalInterface->generateGuid();
 
@@ -1473,6 +1474,14 @@ void ActiveComputationsKernel::moveComputationToMachine(
 
 	//executing a deferred action is no longer meaningful
 	clearPendingActionsForComputation(inId);
+	}
+
+bool ActiveComputationsKernel::computationCannotMove(ComputationId computation)
+	{
+	@match ComputationStatus(mExternalInterface->currentComputationStatusForId(computation))
+		-| BlockedOnResources() ->> { return false; }
+		-| ComputableWithSubcomputations(c) ->> { return c.size() > 0; }
+		-| _ ->> { return true; }
 	}
 
 void ActiveComputationsKernel::sendInitiateComputationMoveResponse(ComputationId computation, bool success)
@@ -1561,8 +1570,6 @@ void ActiveComputationsKernel::resubmitThreadsForComputation(ComputationId comp)
 
 	ComputationStatus oldStatus = mExternalInterface->currentComputationStatusForId(comp);
 
-	lassert(mExternalInterface->canResubmitBlockingThreads(comp));
-
 	CreatedComputations result = mExternalInterface->resubmitBlockingThreads(comp, mExternalInterface->generateGuid());
 
 		{
@@ -1581,6 +1588,9 @@ void ActiveComputationsKernel::resubmitThreadsForComputation(ComputationId comp)
 		createExternalIoTaskGivenId(comp, idAndTask.second, idAndTask.first);
 
 	handleComputationStatusChange(comp);
+
+	if (result.bigvecsReferenced().size())
+		mExternalInterface->decrementBigVectors(result.bigvecsReferenced());
 	}
 
 void ActiveComputationsKernel::dropComputation(const ComputationId& computation)
@@ -1921,7 +1931,7 @@ bool ActiveComputationsKernel::checkInternalState()
 							isValid = false;
 							}
 						}
-				-|	Computable() ->> {
+				-|	ComputableWithSubcomputations(subthreads) ->> {
 						computable++;
 						}
 				-|	BlockedOnComputations(subthreads) ->> {
@@ -2047,6 +2057,9 @@ bool ActiveComputationsKernel::checkInternalStateRemoteLoadsMatchCurrentDependen
 
 		@match ComputationStatus(mExternalInterface->currentComputationStatusForId(id))
 			-| BlockedOnComputations(computations) ->> {
+				deps = computations;
+				}
+			-| ComputableWithSubcomputations(computations) ->> {
 				deps = computations;
 				}
 			-| _ ->> {
@@ -2427,6 +2440,19 @@ void ActiveComputationsKernel::handleComputationMoveRequest(
 
 	bool anyAreMissing = false;
 	@match ComputationStatus(status)
+		-| ComputableWithSubcomputations(computations) ->> {
+			lassert_dump(
+				!computations.size() || inRequest.sourceComponent().isLiveCheckpointLoader(),
+				"received a Blocked computation from someone other than the LiveCheckpointLoader"
+				);
+			for (auto c: computations)
+				if (c.isRoot() && !mMachineRootComputationMap.exists(c))
+					{
+					lassert(inRequest.sourceComponent().isLiveCheckpointLoader());
+					LOG_INFO << "Missing " << c << " in " << inRequest.computation() << ", so we'll resubmit";
+					anyAreMissing = true;
+					}
+			}
 		-| BlockedOnComputations(computations) ->> {
 			lassert_dump(
 				inRequest.sourceComponent().isLiveCheckpointLoader(),
@@ -2734,6 +2760,9 @@ void ActiveComputationsKernel::stopComputation(ComputationId computation, Create
 	checkAndAssertInternalStateIfNecessary();
 
 	cleanupAfterStateChange();
+
+	if (result.bigvecsReferenced().size())
+		mExternalInterface->decrementBigVectors(result.bigvecsReferenced());
 	}
 
 bool ActiveComputationsKernel::startComputation(ComputationId computation)
@@ -2747,7 +2776,7 @@ bool ActiveComputationsKernel::startComputation(ComputationId computation)
 	if (isCurrentlyComputing(computation))
 		return false;
 
-	if (!mExternalInterface->currentComputationStatusForId(computation).isComputable())
+	if (!mExternalInterface->currentComputationStatusForId(computation).isComputableWithSubcomputations())
 		return false;
 
 	mCurrentlyComputing.insert(computation);

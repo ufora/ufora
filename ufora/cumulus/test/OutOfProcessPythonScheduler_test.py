@@ -21,25 +21,41 @@ import logging
 import unittest
 import numpy
 import sys
+import threading
 
 class TestEventQueue:
     def __init__(self):
         self.events = []
         self.completed = 0
+        self.blocking = 0
+        self.event = threading.Event()
 
     def runTest(self, index, timeout):
         self.events.append(('start',index, time.time()))
-        time.sleep(timeout)
+        
+        self.blocking += 1
+        print self.blocking
+
+        if timeout is not None:
+            time.sleep(timeout)
+        else:
+            self.event.wait()
+
         self.events.append(('end',index, time.time()))
+        self.blocking -= 1
 
         self.completed += 1
-        
-
         
     def resetQueue(self):
         events = self.events
         self.events = []
+        self.event = threading.Event()
         return events
+
+    def blockUntilCount(self, ct):
+        while self.blocking < ct:
+            time.sleep(0.001)
+        self.event.set()
 
     def max_simultaneous_workers(self):
         count = 0
@@ -115,3 +131,22 @@ class OutOfProcessPythonSchedulerTests(unittest.TestCase):
                 results = [runTest(ix, 0.1) for ix in xrange(80)]
 
         self.assertTrue(testEventQueue.max_simultaneous_workers() > 1)
+
+    def test_python_tasks_looup_unroll(self):
+        testEventQueue.resetQueue()
+
+        blockUntilThread = threading.Thread(target=testEventQueue.blockUntilCount, args=(8,))
+        blockUntilThread.start()
+
+        with self.create_executor(threadsPerWorker=8, workerCount=1, maxMBPerOutOfProcessPythonTask=1, memoryPerWorkerMB=500) as fora:
+            with fora.remotely.downloadAll():
+                ix = 0
+                results = []
+                sums = 0
+                while ix < 8:
+                    results = results + [runTest(ix, None)]
+                    ix = ix + 1
+
+        blockUntilThread.join()
+
+        self.assertEqual(testEventQueue.max_simultaneous_workers(), 8)

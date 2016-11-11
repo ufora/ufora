@@ -236,7 +236,7 @@ public:
         {
         boost::mutex::scoped_lock lock(mMutex);
 
-        return (mIsComputed ? ComputationStatus::Finished() : ComputationStatus::Computable());
+        return (mIsComputed ? ComputationStatus::Finished() : ComputationStatus::ComputableWithSubcomputations(emptyTreeSet()));
         }
 
     void waitUntilComputed() const
@@ -449,7 +449,7 @@ LocalComputationPriorityAndStatusChanged create_computation(uint64_t priority)
             RandomHashGenerator::singleton().generateRandomHash()
             ),
         ComputationPriority(null() << priority),
-        ComputationStatus::Computable(),
+        ComputationStatus::ComputableWithSubcomputations(emptyTreeSet()),
         ComputationStatistics()
         );
     }

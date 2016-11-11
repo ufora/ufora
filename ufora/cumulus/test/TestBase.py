@@ -193,7 +193,7 @@ class CumulusTestCases(object):
 
             stats = response[2]
 
-            return (stats.timeSpentInInterpreter, stats.timeSpentInCompiler, time.time() - t0)
+            return (stats.timeElapsed.timeSpentInInterpreter, stats.timeElapsed.timeSpentInCompiledCode, time.time() - t0)
 
 
         perSecondValues = []
@@ -365,9 +365,17 @@ class CumulusTestCases(object):
         expr = FORA.extractImplValContainer(
             FORA.eval(
                 """fun() {
-                    Vector.range(20).papply(fun(x) {
-                        x + cached(sum(0,10**11))[0]
-                        })
+                    let sumf = fun(a,b) { 
+                        if (a + 1 >= b) {
+                            return [a + cached(sum(0,10**11))[0]]
+                            }
+
+                        let mid = (a+b)/2
+
+                        return sumf(a,mid) + sumf(mid,b)
+                        }
+    
+                    sumf(0,20)
                     }"""
                     )
             )

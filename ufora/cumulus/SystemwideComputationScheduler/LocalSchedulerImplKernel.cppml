@@ -217,7 +217,7 @@ void LocalSchedulerImplKernel::computationStatusChanged(
 					}
 				-| _ ->> {}
 
-			if (!priority.isNull() && status.isComputable())
+			if (!priority.isNull() && status.isComputableWithSubcomputations())
 				computationIsComputable_(computation, priority);
 			else
 				computationNotComputable_(computation);
@@ -716,7 +716,9 @@ void LocalSchedulerImplKernel::moveIncorrectlyScheduledTasks_()
 		return;
 
 	for (auto compAndPri: mCurrentlyComputableComputationsByPriority.getKeyToValue())
-		if (computationBelongsOnAnotherMachine_(compAndPri.first) && !mMachineLoads.computationsMoving().hasKey(compAndPri.first))
+		if (computationBelongsOnAnotherMachine_(compAndPri.first) 
+				&& !mMachineLoads.computationsMoving().hasKey(compAndPri.first) 
+				&& canMoveComputation(compAndPri.first))
 			{
 			const auto& machines = validMachinesForComputation_(compAndPri.first);
 
@@ -728,7 +730,7 @@ void LocalSchedulerImplKernel::moveIncorrectlyScheduledTasks_()
 
 	for (auto comp: mComputationsBlockedOnVectorsLocally)
 		{
-		if (computationBelongsOnAnotherMachine_(comp) && !mMachineLoads.computationsMoving().hasKey(comp))
+		if (computationBelongsOnAnotherMachine_(comp) && !mMachineLoads.computationsMoving().hasKey(comp) && canMoveComputation(comp))
 			{
 			const auto& machines = validMachinesForComputation_(comp);
 
@@ -807,7 +809,8 @@ bool LocalSchedulerImplKernel::tryToMoveSomething_()
 
 		if (mCurrentlyComputableComputations.hasKey(comp) &&
 					mTryingToSplit.find(comp) == mTryingToSplit.end() &&
-									!mMachineLoads.computationsMoving().hasKey(comp))
+									!mMachineLoads.computationsMoving().hasKey(comp) && 
+									canMoveComputation(comp))
 			{
 			Nullable<ThreadGroup> owningGroup = mAllThreadGroups.containingThread(ThreadGroup::groupFor(comp));
 
@@ -825,6 +828,23 @@ bool LocalSchedulerImplKernel::tryToMoveSomething_()
 		LOG_WARN << "Spent " << curClock() - t0 << " trying to split";
 
 	return false;
+	}
+
+bool LocalSchedulerImplKernel::canMoveComputation(ComputationId computation)
+	{
+	if (mLocalComputationStatuses.find(computation) == mLocalComputationStatuses.end())
+		return false;
+
+	@match ComputationStatus(mLocalComputationStatuses[computation])
+		-| ComputableWithSubcomputations(c) ->> {
+			return c.size() == 0;
+			}
+		-| BlockedOnResources() ->> {
+			return true;
+			}
+		-| _ ->> {}
+
+	return false; 
 	}
 
 void LocalSchedulerImplKernel::tryToSplitSomething_()
