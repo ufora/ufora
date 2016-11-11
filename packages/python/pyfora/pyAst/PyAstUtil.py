@@ -353,7 +353,7 @@ def getRootInContext(pyAstNode, isClassContext):
     return pyAstNode
 
 
-class _OuterScopeCountingVisitor(NodeVisitorBases.GenericInScopeVisitor):
+class _OuterScopeCountingVisitor(NodeVisitorBases.GenericInScopeTransvisitor):
     """Scan the current scope and count various types of statements and expressions"""
     def __init__(self, root):
         super(_OuterScopeCountingVisitor, self).__init__(root)
@@ -383,10 +383,12 @@ class _OuterScopeCountingVisitor(NodeVisitorBases.GenericInScopeVisitor):
     def visit_Return(self, node):
         self._returnCount += 1
         self._returnLocs.append(node.lineno)
+        return node
 
     def visit_Yield(self, node):
         self._yieldCount += 1
         self._yieldLocs.append(node.lineno)
+        return node
 
 
 @CachedByArgs

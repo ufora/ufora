@@ -46,7 +46,7 @@ import pyfora.pyAst.PyAstUtil as PyAstUtil
 
 VarWithPosition = collections.namedtuple('VarWithPosition', ['var', 'pos'])
 
-class _CollectBoundValuesInScopeVisitor(NodeVisitorBases.GenericInScopeVisitor):
+class _CollectBoundValuesInScopeTransvisitor(NodeVisitorBases.GenericInScopeTransvisitor):
     """
     Collect the variables and names that are bound in the current scope.
 
@@ -55,7 +55,7 @@ class _CollectBoundValuesInScopeVisitor(NodeVisitorBases.GenericInScopeVisitor):
     """
 
     def __init__(self, node):
-        super(_CollectBoundValuesInScopeVisitor, self).__init__(node)
+        super(_CollectBoundValuesInScopeTransvisitor, self).__init__(node)
         self._boundVarsWithPos = set()
         self._boundNamesWithPos = set()
 
@@ -90,6 +90,7 @@ class _CollectBoundValuesInScopeVisitor(NodeVisitorBases.GenericInScopeVisitor):
                         )
                     )
                 )
+        return node
 
     def visit_ClassDef(self, node):
         self._boundNamesWithPos.add(
@@ -101,9 +102,10 @@ class _CollectBoundValuesInScopeVisitor(NodeVisitorBases.GenericInScopeVisitor):
                     )
                 )
             )
+        return node
 
-    def visit_Lambda(self, _):
-        return
+    def visit_Lambda(self, node):
+        return node
 
     def visit_Name(self, node):
         if self._isInDefinition:
@@ -116,9 +118,10 @@ class _CollectBoundValuesInScopeVisitor(NodeVisitorBases.GenericInScopeVisitor):
                         )
                     )
                 )
+        return node
 
-    def visit_Attribute(self, _):
-        return  # do not visit sub-tree
+    def visit_Attribute(self, node):
+        return node # do not visit sub-tree
 
     def visit_Global(self, node):
         raise Exceptions.PythonToForaConversionError(
@@ -149,20 +152,21 @@ class _CollectBoundValuesInScopeVisitor(NodeVisitorBases.GenericInScopeVisitor):
                         )
                     )
                 )
+        return node
 
 
 def collectBoundValuesInScope(pyAstNode, getPositions=False):
-    vis = _CollectBoundValuesInScopeVisitor(pyAstNode)
+    vis = _CollectBoundValuesInScopeTransvisitor(pyAstNode)
     return vis.getBoundValues(getPositions)
 
 
 def collectBoundVariablesInScope(pyAstNode):
-    vis = _CollectBoundValuesInScopeVisitor(pyAstNode)
+    vis = _CollectBoundValuesInScopeTransvisitor(pyAstNode)
     return vis.getBoundVariables()
 
 
 def collectBoundNamesInScope(pyAstNode):
-    vis = _CollectBoundValuesInScopeVisitor(pyAstNode)
+    vis = _CollectBoundValuesInScopeTransvisitor(pyAstNode)
     return vis.getBoundNames()
 
 class _FreeVariableMemberAccessChainsTransvisitor(NodeVisitorBases.GenericScopedTransvisitor):
@@ -281,10 +285,12 @@ class _FreeVariableMemberAccessChainsCollapsingTransformer(_FreeVariableMemberAc
             chain = tuple(chainOrNone)
             identifier = chain[0]
             if chain in self.chain_to_new_name and self.isFree(identifier):
-                return ast.copy_location(
-                    ast.Name(self.chain_to_new_name[chain], node.ctx),
-                    node
-                    )
+                return ast.fix_missing_locations(
+                            ast.copy_location(
+                                ast.Name(self.chain_to_new_name[chain], node.ctx),
+                                node
+                                )
+                            )
         return self.generic_visit(node)
 
 
