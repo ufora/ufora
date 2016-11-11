@@ -45,7 +45,7 @@ def ThisFunctionIsImpure():
     return multiprocessing.cpu_count()
 
 
-def roundtripConvert(toConvert, vdm, allowUserCodeModuleLevelLookups = False, verbose=False):
+def roundtripConvert(toConvert, vdm, allowUserCodeModuleLevelLookups = False):
     t0 = time.time()
 
     mappings = PureImplementationMappings.PureImplementationMappings()
@@ -60,19 +60,21 @@ def roundtripConvert(toConvert, vdm, allowUserCodeModuleLevelLookups = False, ve
 
     binaryObjectRegistry.defineEndOfStream()
 
+    t1 = time.time()
+
     registry = ObjectRegistry.ObjectRegistry()
     BinaryObjectRegistryDeserializer.deserializeFromString(binaryObjectRegistry.str(), registry, lambda x:x)
 
-    t1 = time.time()
+    t2 = time.time()
 
     objId, registry.objectIdToObjectDefinition = pickle.loads(pickle.dumps((objId,registry.objectIdToObjectDefinition),2))
 
-    t2 = time.time()
+    t3 = time.time()
 
     converter = Converter.constructConverter(Converter.canonicalPurePythonModule(), vdm)
     anObjAsImplval = converter.convertDirectly(objId, registry)
 
-    t3 = time.time()
+    t4 = time.time()
 
     outputStream = BinaryObjectRegistry.BinaryObjectRegistry()
 
@@ -85,7 +87,7 @@ def roundtripConvert(toConvert, vdm, allowUserCodeModuleLevelLookups = False, ve
     needsLoad = False
     result = {'data': outputStream.str(), 'root_id': root_id}
 
-    t4 = time.time()
+    t5 = time.time()
 
     rehydrator = PythonObjectRehydrator.PythonObjectRehydrator(
         mappings, 
@@ -94,13 +96,13 @@ def roundtripConvert(toConvert, vdm, allowUserCodeModuleLevelLookups = False, ve
 
     finalResult = rehydrator.convertEncodedStringToPythonObject(outputStream.str(), root_id)
 
-    t5 = time.time()
+    t6 = time.time()
 
-    return finalResult, {'0: walking': t1-t0,
-                         '1: serialize/deserialize': t2 - t1,
-                         '2: toImplval': t3-t2,
-                         '3: toJson': t4-t3,
-                         '4: toPython': t5-t4}
+    return finalResult, {'0: walking': t1 - t0,
+                         '1: deserializeFromString': t2 - t1,
+                         '2: toImplval': t4 - t3,
+                         '3: serialze implVal': t5 - t4,
+                         '4: toPython': t6 - t5}
 
 
 class ConverterTest(unittest.TestCase):
@@ -221,33 +223,4 @@ class ConverterTest(unittest.TestCase):
             dt = array.dtype
             dt2 = TypeDescription.primitiveToDtype(TypeDescription.dtypeToPrimitive(array.dtype))
             self.assertEqual(str(dt.descr), str(dt2.descr))
-
-    @PerformanceTestReporter.PerfTest("pyfora.ConvertionSpeed.strings_100k")
-    def test_conversion_performance_strings(self):
-        anArray = [str(ix) for ix in xrange(100000)]
-        self.conversionTest(anArray)
-
-    @PerformanceTestReporter.PerfTest("pyfora.ConvertionSpeed.ints_100k")
-    def test_conversion_performance_ints(self):
-        anArray = [ix for ix in xrange(100000)]
-        self.conversionTest(anArray)
-
-    @PerformanceTestReporter.PerfTest("pyfora.ConvertionSpeed.numpy_array_10mm")
-    def test_conversion_performance_numpy(self):
-        anArray = numpy.zeros(10000000)
-        self.conversionTest(anArray)
-
-    def conversionTest(self, toCheck):
-        try:
-            vdm = FORANative.VectorDataManager(CallbackScheduler.singletonForTesting(), 10000000)
-
-            t0 = time.time()
-            aNewArray,timings = roundtripConvert(toCheck, vdm)
-
-            for k in sorted(timings):
-                print k, timings[k]
-        except:
-            import traceback
-            traceback.print_exc()
-            self.assertTrue(False)
 
