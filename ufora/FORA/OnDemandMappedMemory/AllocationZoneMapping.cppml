@@ -1,12 +1,12 @@
 /***************************************************************************
     Copyright 2016 Ufora Inc.
- 
+
     Licensed under the Apache License, Version 2.0 (the "License");
     you may not use this file except in compliance with the License.
     You may obtain a copy of the License at
- 
+
         http://www.apache.org/licenses/LICENSE-2.0
- 
+
     Unless required by applicable law or agreed to in writing, software
     distributed under the License is distributed on an "AS IS" BASIS,
     WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -15,233 +15,226 @@
 ****************************************************************************/
 
 #include "AllocationZoneMapping.hppml"
+#include "MemoryViewDefinition.hppml"
 
 AllocationZoneMapping::AllocationZoneMapping(int64_t pageSize) : mPageSize(pageSize)
     {
     }
 
-void AllocationZoneMapping::discardBigvec(const Fora::BigVectorId& id)
+void AllocationZoneMapping::discardMemoryView(const MemoryViewId& id)
     {
     lassert_dump(false, "not implemented");
     }
 
-void AllocationZoneMapping::addBigvec(const TypedFora::Abi::BigVectorPageLayout& layout)
+void AllocationZoneMapping::addMemoryView(const MemoryViewDefinition& layout)
     {
-    int64_t elementSize = layout.identity().jor()[0].type()->size();
-
-    map<int64_t, TypedFora::Abi::VectorDataIDSlice>& slices(mBigvecSliceMapping[layout.identity()]);
-
-    IntegerRanges<false>& ranges(mBigvecPageBoundaries[layout.identity()]);
-
+    map<int64_t, MemoryBlockByteRange>& slices(mMemoryViewBlockRangeMapping[layout.viewId()]);
+    
+    IntegerRanges<false>& ranges(mMemoryViewBlockBoundaries[layout.viewId()]);
+    
     int64_t lastByteRange = 0;
 
     long cumulative = 0;
-    for (auto slice: layout.vectorIdentities())
+    for (auto term: layout.terms())
         {
-        IntegerRange byterange = 
-            IntegerRange(cumulative, cumulative + slice.slice().size()) * elementSize;
+        lassert_dump(term.isViewOfBlock(), "not");
 
-        //we can map a portion of the Page zone into this one
+        IntegerRange byterange =
+            IntegerRange(cumulative, cumulative + term.bytecount());
+
+        //we can map a portion of the Block zone into this one
         //round the low byterange up to pagesize. AllocationZone mappings are always
         //aligned on the page
 
-        uint64_t pageBoundary = roundUpToPageSize(byterange.low());
-        uint64_t pageBoundaryTop = roundDownToPageSize(byterange.high());
+        uint64_t blockBoundary = roundUpToPageSize(byterange.low());
+        uint64_t blockBoundaryTop = roundDownToPageSize(byterange.high());
 
-        if (pageBoundary < pageBoundaryTop)
+        if (blockBoundary < blockBoundaryTop)
             {
-            if (pageBoundary > lastByteRange)
+            if (blockBoundary > lastByteRange)
                 {
-                addBigvecZone(
-                    layout.identity(),
+                addMemoryViewZone(
+                    layout.viewId(),
                     RangeToZoneMapping(
-                        IntegerRange(lastByteRange, pageBoundary),
-                        AllocationZone::Bigvec(layout.identity()),
-                        IntegerRange(lastByteRange, pageBoundary)
+                        IntegerRange(lastByteRange, blockBoundary),
+                        AllocationZone::View(layout.viewId()),
+                        IntegerRange(lastByteRange, blockBoundary)
                         )
                     );
                 }
 
-            uint64_t firstValueOfMappingByteOffsetInPage = slice.slice().low() * elementSize;
-            
-            uint64_t pageBoundaryByteOffsetInPage = 
-                firstValueOfMappingByteOffsetInPage + (pageBoundary - byterange.low());
+            uint64_t firstValueOfMappingByteOffsetInBlock = term.byterange().low();
 
-            //we need to pick a byte offset for the first byte in the page so that
-            //    pageBoundaryByteOffsetInPage + pageByteOffset 
+            uint64_t blockBoundaryByteOffsetInBlock =
+                firstValueOfMappingByteOffsetInBlock + (blockBoundary - byterange.low());
+
+            //we need to pick a byte offset for the first byte in the block so that
+            //    blockBoundaryByteOffsetInBlock + blockByteOffset
             //is page aligned
 
-            //this is the 'byte' that the first piece of page data will have to 
-            //reside in in the AllocationZone if we're going to use this page.
-            uint64_t pageByteOffset = roundUpToPageSize(pageBoundaryByteOffsetInPage) - pageBoundaryByteOffsetInPage;
+            //this is the 'byte' that the first piece of block data will have to
+            //reside in in the AllocationZone if we're going to use this block.
+            uint64_t blockByteOffset = roundUpToPageSize(blockBoundaryByteOffsetInBlock) - blockBoundaryByteOffsetInBlock;
 
-            lassert(pageByteOffset >= 0 && pageByteOffset < mPageSize);
+            lassert(blockByteOffset >= 0 && blockByteOffset < mPageSize);
 
-            //this is the first byte of page data that 'pageBoundary' will represent
-            uint64_t firstByteOfPageDataReferencedByRange = 
-                pageByteOffset + pageBoundaryByteOffsetInPage;
+            //this is the first byte of block data that 'blockBoundary' will represent
+            uint64_t firstByteOfBlockDataReferencedByRange =
+                blockByteOffset + blockBoundaryByteOffsetInBlock;
 
-            lassert(firstByteOfPageDataReferencedByRange % mPageSize == 0);
+            lassert(firstByteOfBlockDataReferencedByRange % mPageSize == 0);
 
-            addBigvecZone(
-                layout.identity(),
+            addMemoryViewZone(
+                layout.viewId(),
                 RangeToZoneMapping(
-                    IntegerRange(pageBoundary, pageBoundaryTop),
-                    AllocationZone::Page(slice.vector().getPage(), pageByteOffset),
+                    IntegerRange(blockBoundary, blockBoundaryTop),
+                    AllocationZone::Block(term.getViewOfBlock().block(), blockByteOffset), 
                     IntegerRange(
-                        firstByteOfPageDataReferencedByRange,
-                        firstByteOfPageDataReferencedByRange + 
-                            pageBoundaryTop - pageBoundary
+                        firstByteOfBlockDataReferencedByRange,
+                        firstByteOfBlockDataReferencedByRange +
+                            blockBoundaryTop - blockBoundary
                         )
                     )
                 );
 
-            lastByteRange = pageBoundaryTop;
+            lastByteRange = blockBoundaryTop;
             }
-
         ranges.addRange(byterange);
 
-        slices[cumulative * elementSize] = slice;
-        cumulative += slice.slice().size();
+        slices[cumulative] = MemoryBlockByteRange(term.getViewOfBlock().block(), term.byterange());
+        cumulative += term.bytecount();
         }
 
     if (cumulative > lastByteRange)
         {
         int64_t roundedUp = roundUpToPageSize(cumulative);
 
-        addBigvecZone(
-            layout.identity(),
+        addMemoryViewZone(
+            layout.viewId(),
             RangeToZoneMapping(
                 IntegerRange(lastByteRange, roundedUp),
-                AllocationZone::Bigvec(layout.identity()),
+                AllocationZone::View(layout.viewId()),
                 IntegerRange(lastByteRange, roundedUp)
                 )
             );
         }
+    // FIXME: should we be updating cumulative after the preceding addMemoryViewZone
+    mMemoryViewBytecountMapping[layout.viewId()] = cumulative;
     }
 
 IntegerRange AllocationZoneMapping::zeroPaddingBytesFor(PhysicalMemoryAllocation alloc)
     {
-    if (alloc.zone().isPage())
-        return IntegerRange();
-
-    auto bigvec = alloc.zone().getBigvec().bigvec();
-
-    int64_t elementSize = bigvec.jor()[0].type()->size();
-
-    int64_t bytecount = bigvec.size() * elementSize;
-
-    IntegerRange byteRange = alloc.byteRange();
-
-    if (byteRange.high() > bytecount)
-        {
-        byteRange.low() = bytecount;
-        byteRange = byteRange - alloc.byteRange().low();
+    @match AllocationZone(alloc.zone())
+        -| Block(blockId, byteOffset) ->> {
+            return IntegerRange();
         }
-    else
-        byteRange = IntegerRange();
+        -| View(view) ->> {
+            lassert(mMemoryViewBytecountMapping.count(view) != 0);
+            int64_t bytecount = mMemoryViewBytecountMapping[view]; 
 
-    return byteRange;
+            IntegerRange byteRange = alloc.byteRange();
+
+            if (alloc.byteRange().high() > bytecount)
+                {
+                byteRange.low() = bytecount; 
+                return byteRange - alloc.byteRange().low();
+                }
+            else
+                return IntegerRange();
+        }
+
     }
 
-RangeToZoneMapping AllocationZoneMapping::zoneMappingFor(const BigvecOrPageId& object, IntegerRange page) const
+RangeToZoneMapping AllocationZoneMapping::zoneMappingFor(const BlockOrViewId& object, IntegerRange byterange) const
     {
-    lassert_dump(page == clipToPageSize(page), "range argument is intended to be a single page");
+    lassert_dump(byterange == clipToPageSize(byterange), "range argument is intended to be a single page");
 
-    @match BigvecOrPageId(object)
-        -| Bigvec(id) ->> {
-            auto it = mBigvecZoneBoundaries.find(id);
-            lassert(it != mBigvecZoneBoundaries.end());
+    @match BlockOrViewId(object)
+        -| View(id) ->> {
+            auto it = mMemoryViewZoneBoundaries.find(id);
+            lassert(it != mMemoryViewZoneBoundaries.end());
 
-            Nullable<IntegerRange> nRng = it->second.rangeContaining(page.low());
+            Nullable<IntegerRange> nRng = it->second.rangeContaining(byterange.low());
 
-            lassert_dump(nRng, "can't find " << page.low() << " for bigvec " 
+            lassert_dump(nRng, "can't find " << byterange.low() << " for memory view "
                 << prettyPrintString(id) << " which has slices "
-                << prettyPrintString(mBigvecSliceMapping.find(id)->second)
-                << " and page ranges " << prettyPrintString(it->second.getRangeStartsAndEnds())
+                << prettyPrintString(mMemoryViewBlockRangeMapping.find(id)->second)
+                << " and block ranges " << prettyPrintString(it->second.getRangeStartsAndEnds())
                 );
 
 
-            IntegerRange rng = *nRng;
+            IntegerRange range = *nRng;
 
-            auto it2 = mBigvecZoneMappings.find(make_pair(id, rng));
+            auto it2 = mMemoryViewZoneMappings.find(make_pair(id, range));
 
-            lassert(it2 != mBigvecZoneMappings.end());
+            lassert(it2 != mMemoryViewZoneMappings.end());
 
-            return it2->second.restrictedToObjectRange(page);
+            return it2->second.restrictedToObjectRange(byterange);
             }
-        -| Page(p) ->> {
-            return RangeToZoneMapping(page, AllocationZone::Page(p,0), page);
+        -| Block(id) ->> {
+            return RangeToZoneMapping(byterange, AllocationZone::Block(id, 0), byterange);
             }
     }
 
-const std::map<AllocationZone, long>& AllocationZoneMapping::zonesActiveForPage(const Fora::PageId& page)
+const std::map<AllocationZone, long>& AllocationZoneMapping::zonesActiveForBlock(const MemoryBlockId& block)
     {
     //ensure the base zone is populated
-    mPageZoneRefcounts[page][AllocationZone::Page(page, 0)];
+    mMemoryBlockZoneRefcounts[block][AllocationZone::Block(block, 0)];
 
-    return mPageZoneRefcounts[page];
+    return mMemoryBlockZoneRefcounts[block];
     }
 
-void AllocationZoneMapping::mapZoneRangeToPageRanges(
-            AllocationZone zone, 
-            IntegerRange byteRange, 
-            std::vector<ZoneToPageMapping>& outRanges,
+void AllocationZoneMapping::mapZoneRangeToBlockRanges(
+            AllocationZone zone,
+            IntegerRange byteRange,
+            std::vector<ZoneToBlockMapping>& outRanges,
             IntegerRange& outBytesOfPaddingZeros
             )
     {
     outBytesOfPaddingZeros = IntegerRange();
 
     @match AllocationZone(zone)
-        -| Page(p, byteOffset) ->> {
-            outRanges.push_back(ZoneToPageMapping(byteRange, p, byteRange - byteOffset));
+        -| Block(id, byteOffset) ->> {
+            outRanges.push_back(ZoneToBlockMapping(byteRange, id, byteRange - byteOffset));
             }
-        -| Bigvec(bigvec) ->> {
-            int64_t elementSize = bigvec.jor()[0].type()->size();
-
+        -| View(view) ->> {
             std::vector<IntegerRange> ranges;
-            
-            mBigvecPageBoundaries[bigvec].rangesIntersecting(byteRange, ranges);
 
-            for (auto rng: ranges)
+            mMemoryViewBlockBoundaries[view].rangesIntersecting(byteRange, ranges);
+
+            for (auto range: ranges)
                 {
-                TypedFora::Abi::VectorDataIDSlice slice = mBigvecSliceMapping[bigvec][rng.low()];
+                MemoryBlockByteRange blockRange = mMemoryViewBlockRangeMapping[view][range.low()];
 
-                //this particular slice is this byte offset within the page
-                IntegerRange rangeOfSliceWithinPage = 
-                    IntegerRange(0, elementSize * slice.slice().size()) + 
-                        elementSize * slice.slice().low()
-                        ;
+                //this is the active range within the blockRange
+                IntegerRange rangeWithinSlice = range.intersect(byteRange) - range.low();
 
-                //this is the active range within the slice
-                IntegerRange rangeWithinSlice = rng.intersect(byteRange) - rng.low();
+                lassert(rangeWithinSlice.size() <= blockRange.byterange().size());
 
-                lassert(rangeWithinSlice.size() <= rangeOfSliceWithinPage.size());
+                IntegerRange valuesWithinBlock = rangeWithinSlice + blockRange.byterange().low();
 
-                IntegerRange valuesWithinPage = rangeWithinSlice + rangeOfSliceWithinPage.low();
-
-                lassert(valuesWithinPage.low() >= 0);
+                lassert(valuesWithinBlock.low() >= 0);
 
                 outRanges.push_back(
-                    ZoneToPageMapping(
-                        rng.intersect(byteRange), 
-                        slice.vector().getPage(), 
-                        valuesWithinPage
+                    ZoneToBlockMapping(
+                        range.intersect(byteRange),
+                        blockRange.blockId(),
+                        valuesWithinBlock
                         )
                     );
                 }
 
-            if (byteRange.high() > bigvec.size() * elementSize)
-                outBytesOfPaddingZeros = IntegerRange(
-                    bigvec.size() * elementSize,
-                    byteRange.high()
-                    );
+            lassert(mMemoryViewBytecountMapping.count(view) != 0);
+            int64_t bytecount = mMemoryViewBytecountMapping[view]; 
+
+            if (byteRange.high() > bytecount)
+                outBytesOfPaddingZeros = IntegerRange(bytecount, byteRange.high());
             }
 
     int64_t totalBytes = outBytesOfPaddingZeros.size();
-    
+
     for (auto mapping: outRanges)
-        totalBytes += mapping.byteRangeInPage().size();
+        totalBytes += mapping.byteRangeInBlock().size();
 
     lassert(totalBytes == byteRange.size());
     }
@@ -271,14 +264,14 @@ int64_t AllocationZoneMapping::pageSize() const
     return mPageSize;
     }
 
-void AllocationZoneMapping::addBigvecZone(Fora::BigVectorId id, RangeToZoneMapping mapping)
+void AllocationZoneMapping::addMemoryViewZone(MemoryViewId id, RangeToZoneMapping mapping)
     {
-    mBigvecZoneBoundaries[id].addRange(mapping.byteRangeInObject());
-    mBigvecZoneMappings[make_pair(id,mapping.byteRangeInObject())] = mapping;
+    mMemoryViewZoneBoundaries[id].addRange(mapping.byteRangeInObject());
+    mMemoryViewZoneMappings[make_pair(id, mapping.byteRangeInObject())] = mapping;
 
     @match AllocationZone(mapping.zoneContainingData())
-        -| Page(p) ->> {
-            mPageZoneRefcounts[p][mapping.zoneContainingData()]++;
+        -| Block(bId) ->> {
+            mMemoryBlockZoneRefcounts[bId][mapping.zoneContainingData()]++;
             }
         -| _ ->> {}
     }

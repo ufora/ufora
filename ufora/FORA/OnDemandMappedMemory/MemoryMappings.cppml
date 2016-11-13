@@ -1,12 +1,12 @@
 /***************************************************************************
     Copyright 2016 Ufora Inc.
- 
+
     Licensed under the Apache License, Version 2.0 (the "License");
     you may not use this file except in compliance with the License.
     You may obtain a copy of the License at
- 
+
         http://www.apache.org/licenses/LICENSE-2.0
- 
+
     Unless required by applicable law or agreed to in writing, software
     distributed under the License is distributed on an "AS IS" BASIS,
     WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -34,7 +34,7 @@ void MemoryMappings::removeAllMappingsFor(PhysicalMemoryAllocation alloc)
     for (auto objectAndRange: mMappings[alloc])
         {
         LOG_DEBUG << "Unmapping " << objectAndRange.first << " and " << objectAndRange.second;
-        
+
         mUnmapper(
             mPhysicalAllocations.getMappableAddress(objectAndRange.first),
             objectAndRange.second.low(),
@@ -47,13 +47,13 @@ void MemoryMappings::removeAllMappingsFor(PhysicalMemoryAllocation alloc)
     }
 
 void MemoryMappings::blockedThreadExists(
-            BigvecOrPageId object, 
+            BlockOrViewId object,
             RangeToZoneMapping zoneMapping
             )
     {
     lassert(zoneMapping.byteRangeInObject().size() == mZoneMappings.pageSize());
 
-    //see if this page is new or not
+    //see if this block is new or not
     if (mZoneMappableRegions[zoneMapping.zoneContainingData()].rangeContaining(zoneMapping.byteRangeInZone().low()))
         {
         LOG_DEBUG << zoneMapping << " looks immediately mappable.";
@@ -63,42 +63,42 @@ void MemoryMappings::blockedThreadExists(
         }
     else
         {
-        LOG_DEBUG << zoneMapping << " not mappable: " << 
+        LOG_DEBUG << zoneMapping << " not mappable: " <<
             mZoneMappableRegions[zoneMapping.zoneContainingData()].getRangeStartsAndEnds();
 
         mPendingMappings[zoneMapping.zoneContainingData()].push_back(make_pair(object, zoneMapping));
         }
     }
 
-void MemoryMappings::zoneNeeds(AllocationZone zone, IntegerRange byteRangeInZone, const std::vector<pair<Fora::PageId, IntegerRange> >& inNeededPageData)
-    {  
-    lassert(inNeededPageData.size());
-    
-    for (auto pageAndRange: inNeededPageData)
+void MemoryMappings::zoneNeeds(AllocationZone zone, IntegerRange byteRangeInZone, const std::vector<pair<MemoryBlockId, IntegerRange> >& inNeededBlockData)
+    {
+    lassert(inNeededBlockData.size());
+
+    for (auto blockAndRange: inNeededBlockData)
         {
-        mZonesAwaitingPageData[make_pair(zone,byteRangeInZone)][pageAndRange.first].addRange(pageAndRange.second);
-        mZonesAwaitingPageDataPages.insert(make_pair(zone,byteRangeInZone), pageAndRange.first);
+        mZonesAwaitingBlockData[make_pair(zone,byteRangeInZone)][blockAndRange.first].addRange(blockAndRange.second);
+        mZonesAwaitingBlockDataBlocks.insert(make_pair(zone,byteRangeInZone), blockAndRange.first);
         }
     }
 
-void MemoryMappings::pageDataProvided(Fora::PageId page, IntegerRange range)
+void MemoryMappings::blockDataProvided(MemoryBlockId block, IntegerRange range)
     {
-    std::set<pair<AllocationZone, IntegerRange> > toCheck = mZonesAwaitingPageDataPages.getKeys(page);
+    std::set<pair<AllocationZone, IntegerRange> > toCheck = mZonesAwaitingBlockDataBlocks.getKeys(block);
 
     for (auto& zoneAndRange: toCheck)
         {
-        mZonesAwaitingPageData[zoneAndRange][page].removeRange(range);
-        
-        if (mZonesAwaitingPageData[zoneAndRange][page].isEmpty())
+        mZonesAwaitingBlockData[zoneAndRange][block].removeRange(range);
+
+        if (mZonesAwaitingBlockData[zoneAndRange][block].isEmpty())
             {
-            mZonesAwaitingPageData[zoneAndRange].erase(page);
-            mZonesAwaitingPageDataPages.drop(zoneAndRange, page);
+            mZonesAwaitingBlockData[zoneAndRange].erase(block);
+            mZonesAwaitingBlockDataBlocks.drop(zoneAndRange, block);
             }
 
-        if (mZonesAwaitingPageData[zoneAndRange].size() == 0)
+        if (mZonesAwaitingBlockData[zoneAndRange].size() == 0)
             {
             mZonesToTryToMap.push_back(zoneAndRange);
-            mZonesAwaitingPageData.erase(zoneAndRange);   
+            mZonesAwaitingBlockData.erase(zoneAndRange);
             }
         }
     }
@@ -107,7 +107,7 @@ void MemoryMappings::deallocatePhysicalMemory(PhysicalMemoryAllocation alloc)
     {
     lassert(mMappings.find(alloc) == mMappings.end());
     lassert(mPendingMappings.find(alloc.zone()) == mPendingMappings.end());
-    
+
     mZoneMappableRegions[alloc.zone()].removeRange(alloc.byteRange());
     }
 
@@ -115,10 +115,10 @@ void MemoryMappings::zoneIsNowMappable(AllocationZone zone, IntegerRange range)
     {
     mZoneMappableRegions[zone].addRange(range);
 
-    LOG_DEBUG << zone << " added " 
+    LOG_DEBUG << zone << " added "
         << range << ": " << mZoneMappableRegions[zone].getRangeStartsAndEnds();
 
-    std::vector<pair<BigvecOrPageId, RangeToZoneMapping> >& mappings = mPendingMappings[zone];
+    std::vector<pair<BlockOrViewId, RangeToZoneMapping> >& mappings = mPendingMappings[zone];
 
     for (long k = 0; k < mappings.size(); k++)
         if (mZoneMappableRegions[zone].completelyContainsRange(mappings[k].second.byteRangeInZone()))
@@ -137,7 +137,7 @@ void MemoryMappings::extractZonesToTryToMap(std::vector<pair<AllocationZone, Int
     outZones.clear();
     std::swap(outZones, mZonesToTryToMap);
 
-    LOG_DEBUG << "Have " << mPendingMappings.size() << " pending mappings and " << mZonesAwaitingPageData.size() << " awaiting page data.";
+    LOG_DEBUG << "Have " << mPendingMappings.size() << " pending mappings and " << mZonesAwaitingBlockData.size() << " awaiting block data.";
     }
 
 bool MemoryMappings::hasZonesToTryToMap() const
@@ -145,12 +145,12 @@ bool MemoryMappings::hasZonesToTryToMap() const
     return mZonesToTryToMap.size();
     }
 
-bool MemoryMappings::byteIsMapped(BigvecOrPageId object, int64_t byteOffset)
+bool MemoryMappings::byteIsMapped(BlockOrViewId object, int64_t byteOffset)
     {
     return mBytesMapped[object].contains(byteOffset);
     }
 
-void MemoryMappings::ensureRangeMapped(BigvecOrPageId object, RangeToZoneMapping mapping)
+void MemoryMappings::ensureRangeMapped(BlockOrViewId object, RangeToZoneMapping mapping)
     {
     IntegerRange zoneInObject = mapping.byteRangeInObject();
 
@@ -168,7 +168,7 @@ void MemoryMappings::ensureRangeMapped(BigvecOrPageId object, RangeToZoneMapping
         }
     }
 
-void MemoryMappings::mapByteRange(BigvecOrPageId object, RangeToZoneMapping mapping)
+void MemoryMappings::mapByteRange(BlockOrViewId object, RangeToZoneMapping mapping)
     {
     std::vector<IntegerRange> physicalRanges;
 
@@ -180,7 +180,7 @@ void MemoryMappings::mapByteRange(BigvecOrPageId object, RangeToZoneMapping mapp
         auto restricted = mapping.restrictedToZoneRange(range.intersect(mapping.byteRangeInZone()));
 
         mapByteRange(
-            object, 
+            object,
             restricted.byteRangeInObject(),
             PhysicalMemoryAllocation(mapping.zoneContainingData(), range),
             restricted.byteRangeInZone() - range.low()
@@ -188,7 +188,7 @@ void MemoryMappings::mapByteRange(BigvecOrPageId object, RangeToZoneMapping mapp
         }
     }
 
-void MemoryMappings::mapByteRange(BigvecOrPageId object, IntegerRange rangeInObject, PhysicalMemoryAllocation alloc, IntegerRange rangeInAlloc)
+void MemoryMappings::mapByteRange(BlockOrViewId object, IntegerRange rangeInObject, PhysicalMemoryAllocation alloc, IntegerRange rangeInAlloc)
     {
     lassert(rangeInObject.size() == rangeInAlloc.size());
 
@@ -210,7 +210,7 @@ bool MemoryMappings::zoneHasPendingMappings(AllocationZone zone) const
     if (mPendingMappings.find(zone) != mPendingMappings.end())
         return true;
 
-    for (auto& zoneAndRangePair: mZonesAwaitingPageData)
+    for (auto& zoneAndRangePair: mZonesAwaitingBlockData)
         if (zoneAndRangePair.first.first == zone)
             return true;
 

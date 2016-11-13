@@ -1,12 +1,12 @@
 /***************************************************************************
     Copyright 2016 Ufora Inc.
- 
+
     Licensed under the Apache License, Version 2.0 (the "License");
     you may not use this file except in compliance with the License.
     You may obtain a copy of the License at
- 
+
         http://www.apache.org/licenses/LICENSE-2.0
- 
+
     Unless required by applicable law or agreed to in writing, software
     distributed under the License is distributed on an "AS IS" BASIS,
     WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -26,9 +26,9 @@ This class provides a single-threaded implementation of a memory storage
 and mapping services.
 
 Clients are expected to provide data in the form of byte ranges associated with
-Fora::PageIds, and then to access that data via pointers. The PageDataPlacements
+MemoryBlockId, and then to access that data via pointers. The PageDataPlacements
 infrastructure is responsible for populating that data while maintaining some invariants,
-which include 
+which include
     a limit on the number of physical bytes above the actual bytes given to the object
     a limit on the number of memory mappings. (not implemented yet)
     a limit on the number of physical allocations. (not implemented yet)
@@ -41,13 +41,13 @@ with the object. Tasks (which are just memory copies) can be executed in paralle
 
 ***************/
 
-@type AllocationToPageMapping = 
+@type AllocationToBlockMapping =
     IntegerRange byteRangeInAlloc,
-    Fora::PageId page,
-    IntegerRange byteRangeInPage
+    MemoryBlockId block,
+    IntegerRange byteRangeInBlock
     ;
 
-@type DataCopyTask = 
+@type DataCopyTask =
     uint8_t* dest,
     uint8_t* source,
     Nullable<PhysicalMemoryAllocation> destAlloc,
@@ -71,40 +71,40 @@ public:
                 boost::function<void (PhysicalMemoryAllocation alloc, uint8_t*)> inDeallocator,
                 boost::function<bool (uint8_t* sharedBase, uint64_t sharedOffset, uint8_t* mapBase, uint64_t mapOffset, uint64_t bytecount)> inMapper,
                 boost::function<bool (uint8_t* mapBase, uint64_t mapOffset, uint64_t bytecount)> inUnmapper,
-                boost::function<void (Fora::PageId page, IntegerRange bytecountRange)> inRequestPageDataFromExternal,
+                boost::function<void (MemoryBlockId block, IntegerRange bytecountRange)> inRequestPageDataFromExternal,
                 //maximum number of physical memory bytes to allocate above actual byte storage given to us
                 int64_t maxExcessBytes,
                 //this is a crappy proxy for limiting the number of allocations that really just
                 //ensures that we don't have too many one-os-page allocs used to back bigvecs.
-                int64_t maxBigvecAllocations
+                int64_t maxMemoryViewAllocations
                 );
 
     //is this object/element offset validly mapped?
-    bool byteIsMapped(BigvecOrPageId mapping, int64_t byteOffset);
+    bool byteIsMapped(BlockOrViewId mapping, int64_t byteOffset);
 
     //indicate that a thread is blocked reading this data. If the value is already mapped,
     //we disregard it.
-    void markThreadBlockedOn(BigvecOrPageId mapping, int64_t byteOffset);
+    void markThreadBlockedOn(BlockOrViewId mapping, int64_t byteOffset);
 
     void tryToConstructZone(AllocationZone zone, IntegerRange byteRangeInZone);
 
     //given a mapping and a byte offset in the mapping, what is the object and relative byte-offset it corresponds to?
-    Nullable<pair<BigvecOrPageId, int64_t> > translateMappingAddress(uint8_t* mappingBase, uint64_t offsetInMapping);
+    Nullable<pair<BlockOrViewId, int64_t> > translateMappingAddress(uint8_t* mappingBase, uint64_t offsetInMapping);
 
     //describe a bigvec to us. This must be called before 'setMappableAddress' for the associated
     //bigvec can be called.
-    void addBigVecPageLayout(const TypedFora::Abi::BigVectorPageLayout& layout);
+    void addBigVecPageLayout(const MemoryViewDefinition& layout);
 
     //we've produced a memory-mapping to 'target'
     void setMappableAddress(
-                BigvecOrPageId target, 
-                uint8_t* address, 
+                BlockOrViewId target,
+                uint8_t* address,
                 uint64_t bytecount
                 );
 
-    //get the base address for a given target, or nullptr if none exists. 
+    //get the base address for a given target, or nullptr if none exists.
     //this must have been provided by calling 'setMappableAddress'
-    uint8_t* getMappableAddress(BigvecOrPageId target);
+    uint8_t* getMappableAddress(BlockOrViewId target);
 
     //get the base address for a physical allocation. This address can be directly
     //written to.
@@ -112,11 +112,11 @@ public:
 
     //drop the mapping target and clear all mappings. If this is a bigvec mapping,
     //then we drop the bigvec page layout as well.
-    void dropMappingTarget(BigvecOrPageId target);
+    void dropMappingTarget(BlockOrViewId target);
 
     //mark all the data associated with this page for deletion.
     //data will be released by the time the task queue is flushed.
-    void dropAllDataForPage(const Fora::PageId& inPage);
+    void dropAllDataForPage(const MemoryBlockId& inBlock);
 
     //get a memory copy task from the queue. Clients are expected
     //to flush this queue after calling 'markThreadBlockedOn',
@@ -126,20 +126,22 @@ public:
     //indicates that some requested data was copied
     void taskComplete(DataCopyTask task);
 
-    //add some new data from the outside. Clients are expected to 
-    //flush all outstanding memory copy tasks from the system before 
+    //add some new data from the outside. Clients are expected to
+    //flush all outstanding memory copy tasks from the system before
     //'addr' may be released.
     bool allocatePageData(
-                    const Fora::PageId& inPage, 
+                    const MemoryBlockId& inBlock,
                     IntegerRange byteRange,
                     uint8_t* addr
                     );
 
     int64_t bytesOfPageDataHeld() const;
 
-    int64_t bytesOfPageDataHeld(Fora::PageId page) const;
+    int64_t bytesOfPageDataHeld(MemoryBlockId block) const;
 
     int64_t totalBytesOfPhysicalMemoryAllocated() const;
+
+    void getPageDataDefinedFor(MemoryBlockId block, IntegerRanges<true>& ranges);
 
 private:
     //deallocate all memory associated with this allocation zone and clear
@@ -151,14 +153,14 @@ private:
 
     //drop all data in all page-related allocation zones. No copies may be pending
     //on any of these zones.
-    void completelyRemovePage(Fora::PageId page);
+    void completelyRemovePage(MemoryBlockId block);
 
     //after all copy and block operations, we call this function, which synchronously schedules any data
     //rebalancing operations
     void releaseMemoryIfNecessary();
 
     //release any bigvec mappings we have too many.
-    void releaseBigvecsIfNecessary();
+    void releaseMemoryViewsIfNecessary();
 
     //release any pages that are marked for deletion
     void releasePagesIfNecessary();
@@ -170,15 +172,15 @@ private:
     //create PhysicalMemoryAllocations to back this data, making sure not to
     //double allocate any ranges.
     void ensurePhysicalBackingFor(
-                const AllocationZone& inZone, 
+                const AllocationZone& inZone,
                 IntegerRange bytes
                 );
-    
+
 
     //the data required to populate 'byteRangeInZone' is present in the class, so now
     //schedule whatever is necessary to actually do the mapping.
     void scheduleNecessaryTasksForMapping(AllocationZone zone, IntegerRange byteRangeInZone);
-    
+
     //schedule this data copy task, and add refcounts to the relevant zones.
     void scheduleTask(DataCopyTask task);
 
@@ -188,11 +190,11 @@ private:
 
     //populate the data for 'alloc' from some data somewhere. We assume that the data for the
     //relevant page mapping exists in the system and that we just need to find it.
-    void scheduleCopyTask(PhysicalMemoryAllocation alloc, AllocationToPageMapping zonePageMapping);
+    void scheduleCopyTask(PhysicalMemoryAllocation alloc, AllocationToBlockMapping zonePageMapping);
 
     //populate the data for 'zone' from some data somewhere. We assume that the relevant page data
     //exists somewhere in some zone and that we just need to find it.
-    void scheduleCopyTask(AllocationZone zone, ZoneToPageMapping zonePageMapping);
+    void scheduleCopyTask(AllocationZone zone, ZoneToBlockMapping zoneBlockMapping);
 
     //ensure that all data in 'sourceZone' that's not in 'destZone' gets there. When these
     //copy operations are complete, we will be able to completely remove 'sourceZone'
@@ -200,18 +202,18 @@ private:
 
     int64_t mMaxExcessBytes;
 
-    int64_t mMaxBigvecAllocations;
+    int64_t mMaxMemoryViewAllocations;
 
     int64_t mPageSize;
 
     //for each page, what values do we have actual definitions for somewhere
     int64_t mTotalBytesOfPageDataHeld;
 
-    map<Fora::PageId, int64_t> mPerPageBytesHeld;
+    map<MemoryBlockId, int64_t> mPerPageBytesHeld;
 
-    map<Fora::PageId, IntegerRanges<true> > mPageDataBytecountRangesDefined;
+    map<MemoryBlockId, IntegerRanges<true> > mPageDataBytecountRangesDefined;
 
-    map<Fora::PageId, IntegerRanges<true> > mPageDataBytecountRangesDefinedOrRequested;
+    map<MemoryBlockId, IntegerRanges<true> > mPageDataBytecountRangesDefinedOrRequested;
 
     //for each allocation, which ranges actually have values copied in?
     map<PhysicalMemoryAllocation, IntegerRanges<true> > mPhysicalMemoryBytecountRangesPopulated;
@@ -220,11 +222,11 @@ private:
 
     map<AllocationZone, IntegerRanges<true> > mZoneBytecountRangesPopulatedOrPending;
 
-    std::set<Fora::PageId> mPagesToDeallocate;
+    std::set<MemoryBlockId> mPagesToDeallocate;
 
     std::deque<DataCopyTask> mTasks;
 
-    boost::function<void (Fora::PageId page, IntegerRange bytecountRange)> mBroadcastFunc;
+    boost::function<void (MemoryBlockId block, IntegerRange bytecountRange)> mBroadcastFunc;
 
     AllocationZoneMapping mAllocationZoneMapping;
 

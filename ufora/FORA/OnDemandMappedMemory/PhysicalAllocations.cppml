@@ -1,12 +1,12 @@
 /***************************************************************************
     Copyright 2016 Ufora Inc.
- 
+
     Licensed under the Apache License, Version 2.0 (the "License");
     you may not use this file except in compliance with the License.
     You may obtain a copy of the License at
- 
+
         http://www.apache.org/licenses/LICENSE-2.0
- 
+
     Unless required by applicable law or agreed to in writing, software
     distributed under the License is distributed on an "AS IS" BASIS,
     WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -19,7 +19,7 @@
 PhysicalAllocations::PhysicalAllocations(
             boost::function<uint8_t* (PhysicalMemoryAllocation alloc)> inAllocator,
             boost::function<void (PhysicalMemoryAllocation alloc, uint8_t*)> inDeallocator
-            ) : 
+            ) :
         mAllocateFunc(inAllocator),
         mDeallocateFunc(inDeallocator),
         mTotalBytesMapped(0),
@@ -49,36 +49,36 @@ uint8_t* PhysicalAllocations::addressForAllocation(PhysicalMemoryAllocation allo
     return mPhysicalMemoryAddresses.getValue(alloc);
     }
 
-int64_t PhysicalAllocations::countOfBigvecAllocs() const
+int64_t PhysicalAllocations::countOfMemoryViewAllocs() const
     {
-    return mBigvecAllocationOrder.size();
+    return mMemoryViewAllocationOrder.size();
     }
 
-Nullable<PhysicalMemoryAllocation> PhysicalAllocations::oldestBigvecAlloc()
+Nullable<PhysicalMemoryAllocation> PhysicalAllocations::oldestMemoryViewAlloc()
     {
-    if (!mBigvecAllocationOrder.size())
+    if (!mMemoryViewAllocationOrder.size())
         return null();
 
-    const auto& keys = mBigvecAllocationOrder.getKeys(mBigvecAllocationOrder.lowestValue());
+    const auto& keys = mMemoryViewAllocationOrder.getKeys(mMemoryViewAllocationOrder.lowestValue());
     lassert(keys.size() == 1);
 
     return null() << *keys.begin();
     }
 
-Nullable<Fora::PageId> PhysicalAllocations::getOldestPage()
+Nullable<MemoryBlockId> PhysicalAllocations::getOldestBlock()
     {
-    if (!mPageZoneAllocations.size())
+    if (!mBlockZoneAllocations.size())
         return null();
 
-    const auto& keys = mPageZoneAllocations.getKeys(mPageZoneAllocations.lowestValue());
+    const auto& keys = mBlockZoneAllocations.getKeys(mBlockZoneAllocations.lowestValue());
     lassert(keys.size() == 1);
 
     return null() << *keys.begin();
     }
 
-void PhysicalAllocations::removePageFromReplacementQueue(Fora::PageId page)
+void PhysicalAllocations::removeBlockFromReplacementQueue(MemoryBlockId block)
     {
-    mPageZoneAllocations.discard(page);
+    mBlockZoneAllocations.discard(block);
     }
 
 pair<PhysicalMemoryAllocation, int64_t> PhysicalAllocations::allocContaining(uint8_t* addr)
@@ -92,11 +92,11 @@ pair<PhysicalMemoryAllocation, int64_t> PhysicalAllocations::allocContaining(uin
 
 void PhysicalAllocations::allocatePhysicalMemory(PhysicalMemoryAllocation allocation)
     {
-    if (allocation.zone().isBigvec())
-        mBigvecAllocationOrder.set(allocation, mIncreasingIndex++);
+    if (allocation.zone().isView())
+        mMemoryViewAllocationOrder.set(allocation, mIncreasingIndex++);
     else
-        mPageZoneAllocations.set(allocation.zone().getPage().page(), mIncreasingIndex++);
-    
+        mBlockZoneAllocations.set(allocation.zone().getBlock().block(), mIncreasingIndex++);
+
     mTotalBytesMapped += allocation.byteRange().size();
 
     uint8_t* actualAddress = mAllocateFunc(allocation);
@@ -106,7 +106,8 @@ void PhysicalAllocations::allocatePhysicalMemory(PhysicalMemoryAllocation alloca
     mPhysicalMemoryAddresses.set(allocation, actualAddress);
 
     mPhysicalMemoryAddressesAsRanges.addRange(
-        IntegerRange((int64_t)actualAddress, (int64_t)actualAddress + allocation.byteRange().size())
+        IntegerRange((int64_t)actualAddress, 
+                     (int64_t)actualAddress + allocation.byteRange().size())
         );
 
     mZoneBytecountRangesPhysicallyAllocated[allocation.zone()].addRange(allocation.byteRange());
@@ -115,12 +116,12 @@ void PhysicalAllocations::allocatePhysicalMemory(PhysicalMemoryAllocation alloca
 void PhysicalAllocations::deallocatePhysicalMemory(PhysicalMemoryAllocation allocation)
     {
     lassert(!allocHasCopyTasks(allocation));
-    
-    if (allocation.zone().isBigvec())
-        mBigvecAllocationOrder.discard(allocation);
+
+    if (allocation.zone().isView())
+        mMemoryViewAllocationOrder.discard(allocation);
 
     mTotalBytesMapped -= allocation.byteRange().size();
-    
+
     uint8_t* actualAddress = mPhysicalMemoryAddresses.getValue(allocation);
 
     mDeallocateFunc(allocation, actualAddress);
@@ -135,15 +136,15 @@ void PhysicalAllocations::deallocatePhysicalMemory(PhysicalMemoryAllocation allo
     }
 
 void PhysicalAllocations::setMappableAddress(
-            BigvecOrPageId target, 
-            uint8_t* address, 
+            BlockOrViewId target,
+            uint8_t* address,
             uint64_t bytecount
             )
     {
     mMappingAddresses.set(target, address);
     }
 
-uint8_t* PhysicalAllocations::getMappableAddress(BigvecOrPageId target)
+uint8_t* PhysicalAllocations::getMappableAddress(BlockOrViewId target)
     {
     if (mMappingAddresses.hasKey(target))
         return mMappingAddresses.getValue(target);
@@ -151,12 +152,12 @@ uint8_t* PhysicalAllocations::getMappableAddress(BigvecOrPageId target)
     return nullptr;
     }
 
-void PhysicalAllocations::dropMappingTarget(BigvecOrPageId target)
+void PhysicalAllocations::dropMappingTarget(BlockOrViewId target)
     {
     mMappingAddresses.discard(target);
     }
 
-Nullable<pair<BigvecOrPageId, int64_t> > 
+Nullable<pair<BlockOrViewId, int64_t> >
         PhysicalAllocations::translateMappingAddress(uint8_t* mappingBase, uint64_t offsetInMapping)
     {
     if (mMappingAddresses.size() == 0)
@@ -180,9 +181,9 @@ bool PhysicalAllocations::allocHasCopyTasks(PhysicalMemoryAllocation alloc) cons
     return mPhysicalAllocCopyTaskCount.find(alloc) != mPhysicalAllocCopyTaskCount.end();
     }
 
-bool PhysicalAllocations::pageHasCopyTasks(Fora::PageId page) const
+bool PhysicalAllocations::blockHasCopyTasks(MemoryBlockId block) const
     {
-    return mPageAllocZoneCopyTaskCount.find(page) != mPageAllocZoneCopyTaskCount.end();
+    return mBlockAllocZoneCopyTaskCount.find(block) != mBlockAllocZoneCopyTaskCount.end();
     }
 
 void PhysicalAllocations::copyAddressRefcountChange(uint8_t* addr, Nullable<PhysicalMemoryAllocation> givenAlloc, int64_t direction)
@@ -190,7 +191,7 @@ void PhysicalAllocations::copyAddressRefcountChange(uint8_t* addr, Nullable<Phys
     Nullable<PhysicalMemoryAllocation> alloc = allocForAddress(addr);
 
     lassert(givenAlloc == alloc);
-    
+
     if (alloc)
         {
         mPhysicalAllocCopyTaskCount[*alloc] += direction;
@@ -199,14 +200,14 @@ void PhysicalAllocations::copyAddressRefcountChange(uint8_t* addr, Nullable<Phys
         if (mPhysicalAllocCopyTaskCount[*alloc] == 0)
             mPhysicalAllocCopyTaskCount.erase(*alloc);
 
-        if (alloc->zone().isPage())
+        if (alloc->zone().isBlock())
             {
-            Fora::PageId page = alloc->zone().getPage().page();
-            mPageAllocZoneCopyTaskCount[page] += direction;
-            lassert(mPageAllocZoneCopyTaskCount[page] >= 0);
+            MemoryBlockId block = alloc->zone().getBlock().block();
+            mBlockAllocZoneCopyTaskCount[block] += direction;
+            lassert(mBlockAllocZoneCopyTaskCount[block] >= 0);
 
-            if (mPageAllocZoneCopyTaskCount[page] <= 0)
-                mPageAllocZoneCopyTaskCount.erase(page);
+            if (mBlockAllocZoneCopyTaskCount[block] <= 0)
+                mBlockAllocZoneCopyTaskCount.erase(block);
             }
         }
     }

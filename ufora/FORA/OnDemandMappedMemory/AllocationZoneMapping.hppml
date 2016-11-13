@@ -1,12 +1,12 @@
 /***************************************************************************
     Copyright 2016 Ufora Inc.
- 
+
     Licensed under the Apache License, Version 2.0 (the "License");
     you may not use this file except in compliance with the License.
     You may obtain a copy of the License at
- 
+
         http://www.apache.org/licenses/LICENSE-2.0
- 
+
     Unless required by applicable law or agreed to in writing, software
     distributed under the License is distributed on an "AS IS" BASIS,
     WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -16,43 +16,43 @@
 
 #pragma once
 
-#include "../VectorDataManager/BigVectorId.hppml"
-#include "../TypedFora/ABI/BigVectorPageLayout.hppml"
-#include "../VectorDataManager/PageId.hppml"
+#include "MemoryBlockId.hppml"
+#include "MemoryViewId.hppml"
+
 #include "../../core/containers/MapWithIndex.hpp"
 #include "../../core/containers/TwoWaySetMap.hpp"
 #include "../../core/math/IntegerRange.hppml"
 #include "../../core/math/RangeToIntegerSequence.hppml"
 #include "../../core/math/IntegerRanges.hppml"
 
+class MemoryViewDefinition;
 
-@type BigvecOrPageId = 
-    -| Bigvec of Fora::BigVectorId bigvec
-    -| Page of Fora::PageId page
+@type BlockOrViewId =
+    -| View of MemoryViewId view
+    -| Block of MemoryBlockId block
     ;
+macro_defineCppmlComparisonOperators(BlockOrViewId);
 
 //describes a single allocation zone. Zone memory is always page aligned
-@type AllocationZone = 
-    //raw page data, with first byte of the page starting at 'byteOffset' inside the zone
-    -| Page of Fora::PageId page, int64_t byteOffset
+@type AllocationZone =
+    //raw block data, with first byte of the block starting at 'byteOffset' inside the zone
+    -| Block of MemoryBlockId block, int64_t byteOffset
     //a bigvec zone.
-    -| Bigvec of Fora::BigVectorId bigvec
+    -| View of MemoryViewId view
     ;
+macro_defineCppmlComparisonOperators(AllocationZone);
 
 //describes how a visible region of memory is mapped to an AllocationZone
-@type RangeToZoneMapping = 
-    IntegerRange byteRangeInObject,
-    AllocationZone zoneContainingData,
-    IntegerRange byteRangeInZone
+@type RangeToZoneMapping =
+    IntegerRange    byteRangeInObject,
+    AllocationZone  zoneContainingData,
+    IntegerRange    byteRangeInZone
 {
 public:
-    uint64_t objectByteOffsetToZone(uint64_t o) const
-        {
-        return o - byteRangeInObject().low() + byteRangeInZone().low();
-        }
-
     RangeToZoneMapping expandedToZoneRange(IntegerRange rangeInZone) const
         {
+        lassert(rangeInZone.contains(byteRangeInZone()));
+
         RangeToZoneMapping res = *this;
 
         res.byteRangeInObject().low() += rangeInZone.low() - res.byteRangeInZone().low();
@@ -68,8 +68,8 @@ public:
         lassert(byteRangeInObject().contains(rangeInObject));
 
         return RangeToZoneMapping(
-            rangeInObject, 
-            zoneContainingData(), 
+            rangeInObject,
+            zoneContainingData(),
             byteRangeInZone().slice(rangeInObject - byteRangeInObject().low())
             );
         }
@@ -83,58 +83,56 @@ public:
             );
 
         return RangeToZoneMapping(
-            byteRangeInObject().slice(rangeInZone - byteRangeInZone().low()), 
-            zoneContainingData(), 
+            byteRangeInObject().slice(rangeInZone - byteRangeInZone().low()),
+            zoneContainingData(),
             rangeInZone
             );
         }
 };
 
 //describes how a part of an object is mapped into its original pages
-@type ZoneToPageMapping = 
+@type ZoneToBlockMapping =
     IntegerRange byteRangeInZone,
-    Fora::PageId page,
-    IntegerRange byteRangeInPage
+    MemoryBlockId block,
+    IntegerRange byteRangeInBlock
 {
 public:
-    IntegerRange mapZoneSubrangeToPage(IntegerRange zoneSubrange) const
+    IntegerRange mapZoneSubrangeToBlock(IntegerRange zoneSubrange) const
         {
         lassert(byteRangeInZone().contains(zoneSubrange));
-        return zoneSubrange - byteRangeInZone().low() + byteRangeInPage().low();
+        return zoneSubrange - byteRangeInZone().low() + byteRangeInBlock().low();
         }
 };
 
 //represents a group of pages allocated to be the physical backing
 //of a bigvec or a page
-@type PhysicalMemoryAllocation = 
+@type PhysicalMemoryAllocation =
     AllocationZone zone,
     IntegerRange byteRange
     ;
 
-macro_defineCppmlComparisonOperators(BigvecOrPageId);
 macro_defineCppmlComparisonOperators(PhysicalMemoryAllocation);
-macro_defineCppmlComparisonOperators(AllocationZone);
 
 
-//decides how we map bigvecs to allocation zones
+//decides how we map memory views to allocation zones
 class AllocationZoneMapping {
 public:
     AllocationZoneMapping(int64_t pageSize);
 
-    void discardBigvec(const Fora::BigVectorId& id);
+    void discardMemoryView(const MemoryViewId& id);
 
-    void addBigvec(const TypedFora::Abi::BigVectorPageLayout& layout);
+    void addMemoryView(const MemoryViewDefinition& layout);
 
     IntegerRange zeroPaddingBytesFor(PhysicalMemoryAllocation alloc);
 
-    RangeToZoneMapping zoneMappingFor(const BigvecOrPageId& object, IntegerRange page) const;
+    RangeToZoneMapping zoneMappingFor(const BlockOrViewId& object, IntegerRange byterange) const;
 
-    const std::map<AllocationZone, long>& zonesActiveForPage(const Fora::PageId& page);
+    const std::map<AllocationZone, long>& zonesActiveForBlock(const MemoryBlockId& block);
 
-    void mapZoneRangeToPageRanges(
-                AllocationZone zone, 
-                IntegerRange byteRange, 
-                std::vector<ZoneToPageMapping>& outRanges,
+    void mapZoneRangeToBlockRanges(
+                AllocationZone zone,
+                IntegerRange byteRange,
+                std::vector<ZoneToBlockMapping>& outRanges,
                 IntegerRange& outBytesOfPaddingZeros
                 );
 
@@ -147,18 +145,20 @@ public:
     int64_t pageSize() const;
 
 private:
-    void addBigvecZone(Fora::BigVectorId id, RangeToZoneMapping mapping);
+    void addMemoryViewZone(MemoryViewId id, RangeToZoneMapping mapping);
 
     int64_t mPageSize;
 
     //these are all in bytecounts
-    map<Fora::BigVectorId, map<int64_t, TypedFora::Abi::VectorDataIDSlice> > mBigvecSliceMapping;
+    map<MemoryViewId, uint64_t> mMemoryViewBytecountMapping;
 
-    map<Fora::BigVectorId, IntegerRanges<false> > mBigvecPageBoundaries;
+    map<MemoryViewId, map<int64_t, MemoryBlockByteRange> > mMemoryViewBlockRangeMapping; // Useful for mapZoneRangeToBlockRanges
 
-    map<Fora::BigVectorId, IntegerRanges<false> > mBigvecZoneBoundaries;
+    map<MemoryViewId, IntegerRanges<false> > mMemoryViewBlockBoundaries; // Useful for mapZoneRangeToBlockRanges
 
-    map<pair<Fora::BigVectorId, IntegerRange>, RangeToZoneMapping> mBigvecZoneMappings;
+    map<MemoryViewId, IntegerRanges<false> > mMemoryViewZoneBoundaries; // Useful for zoneMappingFor
 
-    std::map<Fora::PageId, std::map<AllocationZone, long> > mPageZoneRefcounts; 
+    map<pair<MemoryViewId, IntegerRange>, RangeToZoneMapping> mMemoryViewZoneMappings; // Useful for zoneMappingFor
+
+    std::map<MemoryBlockId, std::map<AllocationZone, long> > mMemoryBlockZoneRefcounts;
 };

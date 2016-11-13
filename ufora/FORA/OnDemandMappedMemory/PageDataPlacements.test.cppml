@@ -1,12 +1,12 @@
 /***************************************************************************
     Copyright 2016 Ufora Inc.
- 
+
     Licensed under the Apache License, Version 2.0 (the "License");
     you may not use this file except in compliance with the License.
     You may obtain a copy of the License at
- 
+
         http://www.apache.org/licenses/LICENSE-2.0
- 
+
     Unless required by applicable law or agreed to in writing, software
     distributed under the License is distributed on an "AS IS" BASIS,
     WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -14,6 +14,7 @@
     limitations under the License.
 ****************************************************************************/
 
+#include "MemoryViewDefinition.hppml"
 #include "PageDataPlacements.hppml"
 #include "OnDemandMemoryRegions.hppml"
 
@@ -22,14 +23,13 @@
 #include "../../core/Logging.hpp"
 #include "../../core/threading/Queue.hpp"
 #include "../../core/math/Random.hpp"
-
-using namespace TypedFora::Abi;
+#include "../../core/containers/ImmutableTreeVector.hppml"
 
 class PageDataPlacementsTest {
 public:
     PageDataPlacementsTest() :
             mMemoryRegions(
-                [&](OnDemandMemoryRegions::BlockingThread t) { 
+                [&](OnDemandMemoryRegions::BlockingThread t) {
                     LOG_CRITICAL << "this should never happen.";
                     fflush(stdout);
                     fflush(stderr);
@@ -56,14 +56,14 @@ public:
                     mMapOps++;
                     return mMemoryRegions.unmap(mapBase, mapOffset, bytecount);
                     },
-                [&](Fora::PageId page, IntegerRange range) {
+                [&](MemoryBlockId page, IntegerRange range) {
                     mNeededPageRegions.write(make_pair(page, range));
                     mPageUploadOps++;
                     },
                 1024 * 1024,
                 32
                 ),
-            mBytesPerPage(1024 * 128),
+            mBytesPerBlock(1024 * 128),
             mRandom(1),
             mCopyBytes(0),
             mCopyOps(0),
@@ -71,38 +71,40 @@ public:
             mAllocOps(0),
             mPageUploadOps(0)
         {
-        allocatePages(10);
+        allocateBlocks(10);
         allocateBigvecs(20);
         }
 
-    Fora::PageId testPage(int i)
+    MemoryBlockId testBlock(int i)
         {
-        return Fora::PageId(hash_type(i), mBytesPerPage, mBytesPerPage);
+        return MemoryBlockId(hash_type(i));
         }
 
-    void allocatePages(int64_t count)
+    void allocateBlocks(int64_t count)
         {
         int64_t value = 0;
 
         for (int64_t k = 0; k < count;k++)
             {
-            mPages.push_back(testPage(k));
-            for (int64_t k = 0; k < mBytesPerPage / sizeof(int64_t)+1;k++)
-                mPageDatas[mPages.back()].push_back(value++);
+            mBlocks.push_back(testBlock(k));
+            for (int64_t k = 0; k < mBytesPerBlock / sizeof(int64_t)+1;k++)
+                mBlockDatas[mBlocks.back()].push_back(value++);
             }
         }
 
-    void allocateBigvecs(int64_t bigvecs)
+    void allocateBigvecs(int64_t viewCount)
         {
-        for (long k = 0; k < bigvecs; k++)
+        for (long k = 0; k < viewCount; k++)
             {
-            ImmutableTreeVector<VectorDataIDSlice> slices;
+            ImmutableTreeVector<MemoryViewDefinitionTerm> terms;
 
-            long pages = 2 + mRandom() * 10;
+            long pageCount = 2 + mRandom() * 10;
 
             ImmutableTreeVector<pair<int64_t, IntegerRange> > counts;
 
-            for (long p = 0; p < pages; p++)
+            uint64_t bytecount = 0;
+
+            for (long p = 0; p < pageCount; p++)
                 {
                 int64_t width = mPageSize * (1 + int(mRandom() * 14));
                 int64_t offset = mPageSize * int(mRandom() * 14);
@@ -121,22 +123,24 @@ public:
                 if (mRandom() < .5)
                     offset += mRandom() * 512;
 
-                lassert(offset+width < mBytesPerPage);
+                lassert(offset+width < mBytesPerBlock);
 
-                slices = slices + VectorDataIDSlice(
-                    VectorDataID::Internal(mPages[mRandom() * mPages.size()], 0), 
-                    IntegerRange(offset, offset+width)
-                    );
+                terms = terms + 
+                    MemoryViewDefinitionTerm::ViewOfBlock(
+                        pickRandomBlock(),
+                        IntegerRange(offset, offset+width)
+                        );
+
+                bytecount += width;
                 }
 
-            BigVectorPageLayout layout(
-                slices, 
-                JudgmentOnResult(JOV::OfType(Type::Integer(8, false))), 
-                hashValue(slices)
-                );
-                
-            mBigVectorLayouts[layout.identity()] = layout;
-            mBigVectorIds.push_back(layout.identity());
+            MemoryViewId viewId = hashValue(terms);
+
+            MemoryViewDefinition viewDefinition(viewId, terms);
+
+            mViewDefinitions[viewId] = viewDefinition;
+            mViewBytecountMapping[viewId] = bytecount;
+            mViews.push_back(viewId);
             }
         }
 
@@ -145,13 +149,13 @@ public:
         for (long k = 0; k < count; k++)
             {
             if (mRandom() < 0.0001)
-                dropARandomPage();
+                dropARandomBlock();
 
-            touchARandomPage();
+            touchARandomBlock();
             }
 
         int64_t totalBytes = 0;
-        for (auto& pageAndData: mPageDatas)
+        for (auto& pageAndData: mBlockDatas)
             totalBytes += pageAndData.second.size() * sizeof(int64_t);
 
         LOG_INFO << "after " << count << " value touches:\n"
@@ -165,28 +169,28 @@ public:
             ;
         }
 
-    void dropARandomPage()
+    void dropARandomBlock()
         {
-        Fora::PageId page = mPages[mPages.size() * mRandom()];
+        MemoryBlockId block = pickRandomBlock();
 
-        int64_t bytesHeldForPage = mPlacements.bytesOfPageDataHeld(page);
+        int64_t bytesHeldForPage = mPlacements.bytesOfPageDataHeld(block);
         int64_t bytesHeldTotal = mPlacements.bytesOfPageDataHeld();
 
-        mPlacements.dropAllDataForPage(page);
+        mPlacements.dropAllDataForPage(block);
 
-        lassert(mPlacements.bytesOfPageDataHeld(page) == 0);
+        lassert(mPlacements.bytesOfPageDataHeld(block) == 0);
         lassert(bytesHeldTotal - mPlacements.bytesOfPageDataHeld() == bytesHeldForPage);
         }
 
-    void touchARandomPage()
+    void touchARandomBlock()
         {
-        BigvecOrPageId ent = pickRandomEntity();
+        BlockOrViewId ent = pickRandomEntity();
         int64_t bytecount;
 
-        if (ent.isPage())
-            bytecount = mBytesPerPage;
+        if (ent.isBlock())
+            bytecount = mBytesPerBlock;
         else
-            bytecount = ent.getBigvec().bigvec().size();
+            bytecount = mViewBytecountMapping[ent.getView().view()];
 
         int64_t aRandomByte = mRandom() * bytecount;
 
@@ -196,14 +200,14 @@ public:
 
         if (!mPlacements.getMappableAddress(ent))
             {
-            if (ent.isBigvec())
-                mPlacements.addBigVecPageLayout(mBigVectorLayouts[ent.getBigvec().bigvec()]);
+            if (ent.isView())
+                mPlacements.addBigVecPageLayout(mViewDefinitions[ent.getView().view()]);
 
             mPlacements.setMappableAddress(ent, mMemoryRegions.allocateMappableRegion(bytecount), bytecount);
             }
 
         bool everCured = false;
-        
+
         //we are not guaranteed that the byte is still mapped after we run all the update tasks,
         //since we could GC in the middle. Instead, we are only guaranteed that if the data
         //is available, that at some point after calling 'markThreadBlockedOn' we will eventually
@@ -220,8 +224,8 @@ public:
 
                 uint8_t byte = mPlacements.getMappableAddress(ent)[aRandomByte];
 
-                lassert_dump(byte == computeByteForEntity(ent, aRandomByte), 
-                    "expected " << prettyPrintString(ent) << " byte " << aRandomByte 
+                lassert_dump(byte == computeByteForEntity(ent, aRandomByte),
+                    "expected " << prettyPrintString(ent) << " byte " << aRandomByte
                         << " to be " << (long)computeByteForEntity(ent, aRandomByte) << " but got " << (long)byte
                         << "\n"
                         );
@@ -234,33 +238,42 @@ public:
             );
         }
 
-    uint8_t computeByteForEntity(BigvecOrPageId ent, int64_t byte)
+    uint8_t computeByteForEntity(BlockOrViewId ent, int64_t byte)
         {
-        @match BigvecOrPageId(ent)
-            -| Page(p) ->> {
+        @match BlockOrViewId(ent)
+            -| Block(id) ->> {
                 lassert_dump(
-                    mPageDatas[p].size() * sizeof(int64_t) > byte, 
-                    "byte " << byte << " greater than size " << mPageDatas[p].size() * sizeof(int64_t)
+                    mBlockDatas[id].size() * sizeof(int64_t) > byte,
+                    "byte " << byte << " greater than size " << mBlockDatas[id].size() * sizeof(int64_t)
                     );
-                return ((uint8_t*)&mPageDatas[p][0])[byte];
+                return ((uint8_t*)&mBlockDatas[id][0])[byte];
                 }
-            -| Bigvec(b) ->> {
-                auto sliceAndOffset = mBigVectorLayouts[b].sliceAndOffsetContainingIndex(byte);
+            -| View(id) ->> {
+                auto blockTermAndOffset = mViewDefinitions[id].blockTermAndOffsetContainingIndex(byte);
 
-                int64_t offsetInSlice = byte - sliceAndOffset.second;
+                int64_t offsetInBlock = byte - blockTermAndOffset.second;
 
                 return computeByteForEntity(
-                    BigvecOrPageId::Page(sliceAndOffset.first.vector().getPage()),
-                    sliceAndOffset.first.slice().low() + offsetInSlice
+                    BlockOrViewId::Block(blockTermAndOffset.first.getViewOfBlock().block()),
+                    blockTermAndOffset.first.byterange().low() + offsetInBlock
                     );
                 }
         }
 
-    BigvecOrPageId pickRandomEntity()
+    MemoryBlockId pickRandomBlock()
         {
-        if (mRandom() < .5)
-            return BigvecOrPageId::Page(mPages[mRandom() * mPages.size()]);
-        return BigvecOrPageId::Bigvec(mBigVectorIds[mRandom() * mBigVectorIds.size()]);
+        return mBlocks[mRandom() * mBlocks.size()];
+        }
+
+    MemoryViewId pickRandomView()
+        {
+        return mViews[mRandom() * mViews.size()];
+        }
+    BlockOrViewId pickRandomEntity()
+        {
+        return (mRandom() < .5) ?
+            BlockOrViewId::Block(pickRandomBlock()) :
+            BlockOrViewId::View(pickRandomView());
         }
 
     bool updateStep()
@@ -288,10 +301,10 @@ public:
             {
             int64_t index = 0;
 
-            int64_t pageBytes = mPageDatas[needed->first].size() * sizeof(int64_t);
-            
+            int64_t pageBytes = mBlockDatas[needed->first].size() * sizeof(int64_t);
+
             lassert_dump(
-                needed->second.high() <= mPageDatas[needed->first].size() * sizeof(int64_t),
+                needed->second.high() <= mBlockDatas[needed->first].size() * sizeof(int64_t),
                 "Asked for " << prettyPrintString(needed) << " but we only have " << pageBytes
                 );
 
@@ -310,9 +323,9 @@ public:
             LOG_DEBUG << "Handing in " << needed;
 
             mPlacements.allocatePageData(
-                needed->first, 
-                needed->second, 
-                (uint8_t*)&mPageDatas[needed->first][0] + needed->second.low()
+                needed->first,
+                needed->second,
+                (uint8_t*)&mBlockDatas[needed->first][0] + needed->second.low()
                 );
 
             return true;
@@ -325,18 +338,18 @@ private:
     int64_t mCopyBytes;
 
     int64_t mCopyOps;
-    
+
     int64_t mMapOps;
-    
+
     int64_t mAllocOps;
-    
+
     int64_t mPageUploadOps;
 
     Ufora::math::Random::Uniform<double> mRandom;
 
-    int64_t mBytesPerPage;
+    int64_t mBytesPerBlock;
 
-    Queue<pair<Fora::PageId, IntegerRange> > mNeededPageRegions;
+    Queue<pair<MemoryBlockId, IntegerRange> > mNeededPageRegions;
 
     OnDemandMemoryRegions mMemoryRegions;
 
@@ -344,13 +357,15 @@ private:
 
     PageDataPlacements mPlacements;
 
-    std::vector<Fora::PageId> mPages;
+    std::vector<MemoryBlockId> mBlocks;
 
-    std::map<Fora::PageId, std::vector<int64_t> > mPageDatas;
+    std::map<MemoryBlockId, std::vector<int64_t> > mBlockDatas;
 
-    std::map<Fora::BigVectorId, BigVectorPageLayout> mBigVectorLayouts;
+    std::map<MemoryViewId, MemoryViewDefinition> mViewDefinitions;
 
-    std::vector<Fora::BigVectorId> mBigVectorIds;
+    std::vector<MemoryViewId> mViews;
+
+    std::map<MemoryViewId, uint64_t> mViewBytecountMapping;
 };
 
 
@@ -363,21 +378,21 @@ BOOST_AUTO_TEST_CASE( test_PageDataPlacements_random )
 
 namespace {
 
-Fora::PageId testPage(int i)
+MemoryBlockId testBlock(int i)
     {
-    return Fora::PageId(hash_type(i), 50 * 1024, 50 * 1024);
+    return MemoryBlockId(hash_type(i));
     }
 
-BigVectorPageLayout testLayout(ImmutableTreeVector<pair<int64_t, IntegerRange> > elts)
+MemoryViewDefinition testLayout(ImmutableTreeVector<pair<int64_t, IntegerRange> > elts)
     {
-    ImmutableTreeVector<VectorDataIDSlice> slices;
-    
-    for (auto kv: elts)
-        slices = slices + 
-            VectorDataIDSlice(VectorDataID::Internal(testPage(kv.first), 0), kv.second);
+    ImmutableTreeVector<MemoryViewDefinitionTerm> terms;
+
+    for (auto kv: elts) 
+        terms = terms +
+            MemoryViewDefinitionTerm::ViewOfBlock(testBlock(kv.first), kv.second);
 
 
-    return BigVectorPageLayout(slices, JudgmentOnResult(JOV::OfType(Type::Integer(8, false))), hashValue(slices));
+    return MemoryViewDefinition(hashValue(terms), terms);
     }
 
 }
@@ -385,13 +400,13 @@ BigVectorPageLayout testLayout(ImmutableTreeVector<pair<int64_t, IntegerRange> >
 //walk through a sequence of very basic operations, just to make sure its working correctly.
 BOOST_AUTO_TEST_CASE( test_PageDataPlacements_basic )
     {
-    Queue<pair<Fora::PageId, IntegerRange> > needed;
+    Queue<pair<MemoryBlockId, IntegerRange> > needed;
 
     OnDemandMemoryRegions memoryRegions(
         //we designed the test suite so that we never actually trigger a page fault - we're trying to call
         //the functions on the PDP directly so that it doesn't happen. If this does happen, it means
         //that a mapping we expected to happen has not occurred.
-        [&](OnDemandMemoryRegions::BlockingThread t) { 
+        [&](OnDemandMemoryRegions::BlockingThread t) {
             LOG_CRITICAL << "this should never happen.";
             fflush(stdout);
             fflush(stderr);
@@ -402,7 +417,7 @@ BOOST_AUTO_TEST_CASE( test_PageDataPlacements_basic )
         );
 
     int64_t pageSize = memoryRegions.pageSize();
-    
+
     PageDataPlacements placements(
         pageSize,
         [&](PhysicalMemoryAllocation alloc) {
@@ -419,37 +434,37 @@ BOOST_AUTO_TEST_CASE( test_PageDataPlacements_basic )
         [&](uint8_t* mapBase, uint64_t mapOffset, uint64_t bytecount) {
             return memoryRegions.unmap(mapBase, mapOffset, bytecount);
             },
-        [&](Fora::PageId page, IntegerRange range) {
+        [&](MemoryBlockId page, IntegerRange range) {
             needed.write(make_pair(page, range));
             },
         1024 * 1024 * 1024,
         1024
         );
 
-    BigvecOrPageId pageId = BigvecOrPageId::Page(testPage(0));
+    BlockOrViewId blockId = BlockOrViewId::Block(testBlock(0));
 
-    placements.setMappableAddress(pageId, memoryRegions.allocateMappableRegion(pageSize), pageSize);
-        
-    uint8_t* pageAddress = placements.getMappableAddress(pageId);
+    placements.setMappableAddress(blockId, memoryRegions.allocateMappableRegion(pageSize), pageSize);
+
+    uint8_t* pageAddress = placements.getMappableAddress(blockId);
 
     BOOST_CHECK(pageAddress != 0);
 
-    BOOST_CHECK(!placements.byteIsMapped(pageId, 0));
+    BOOST_CHECK(!placements.byteIsMapped(blockId, 0));
 
     auto res = placements.translateMappingAddress(pageAddress, 1);
 
     BOOST_CHECK(res);
-    BOOST_CHECK_EQUAL_CPPML(res->first, pageId);
+    BOOST_CHECK_EQUAL_CPPML(res->first, blockId);
     BOOST_CHECK_EQUAL(res->second, 1);
-    
 
-    placements.markThreadBlockedOn(pageId, 0);
+
+    placements.markThreadBlockedOn(blockId, 0);
 
     std::vector<uint8_t> someData;
     someData.resize(pageSize);
     someData[1] = 123;
 
-    placements.allocatePageData(pageId.getPage().page(), IntegerRange(0, someData.size()), &someData[0]);
+    placements.allocatePageData(blockId.getBlock().block(), IntegerRange(0, someData.size()), &someData[0]);
 
     auto task = placements.extractTask();
     BOOST_CHECK(task);
@@ -460,17 +475,17 @@ BOOST_AUTO_TEST_CASE( test_PageDataPlacements_basic )
 
     placements.taskComplete(*task);
     BOOST_CHECK(!placements.extractTask());
-    BOOST_CHECK(placements.byteIsMapped(pageId, 1));
+    BOOST_CHECK(placements.byteIsMapped(blockId, 1));
     BOOST_CHECK(pageAddress[1] == 123);
 
-    BigVectorPageLayout layout = testLayout(emptyTreeVec() + make_pair(int64_t(0), IntegerRange(0, pageSize)) + make_pair(int64_t(1), IntegerRange(1,pageSize+1)));
+    auto layout = testLayout(emptyTreeVec() + make_pair(int64_t(0), IntegerRange(0, pageSize)) + make_pair(int64_t(1), IntegerRange(1,pageSize+1)));
 
-    BigvecOrPageId vecId(BigvecOrPageId::Bigvec(layout.identity()));
+    BlockOrViewId vecId(BlockOrViewId::View(layout.viewId()));
 
     placements.addBigVecPageLayout(layout);
 
     placements.setMappableAddress(vecId, memoryRegions.allocateMappableRegion(pageSize * 2), pageSize * 2);
-    
+
     uint8_t* bvAddr = placements.getMappableAddress(vecId);
 
     placements.markThreadBlockedOn(vecId, 1);
@@ -482,10 +497,10 @@ BOOST_AUTO_TEST_CASE( test_PageDataPlacements_basic )
     //define the next block
     someData.resize(pageSize * 2);
     someData[1] = 23;
-    placements.allocatePageData(testPage(1), IntegerRange(0, someData.size() * 2), &someData[0]);
+    placements.allocatePageData(testBlock(1), IntegerRange(0, someData.size() * 2), &someData[0]);
 
     placements.markThreadBlockedOn(vecId, pageSize);
-    
+
     while (auto task = placements.extractTask())
         {
         task->copy();

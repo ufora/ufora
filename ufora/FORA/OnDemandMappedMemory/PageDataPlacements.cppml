@@ -1,12 +1,12 @@
 /***************************************************************************
     Copyright 2016 Ufora Inc.
- 
+
     Licensed under the Apache License, Version 2.0 (the "License");
     you may not use this file except in compliance with the License.
     You may obtain a copy of the License at
- 
+
         http://www.apache.org/licenses/LICENSE-2.0
- 
+
     Unless required by applicable law or agreed to in writing, software
     distributed under the License is distributed on an "AS IS" BASIS,
     WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -17,30 +17,28 @@
 #include "PageDataPlacements.hppml"
 #include "../../core/math/Largest.hpp"
 
-using namespace TypedFora::Abi;
-
 PageDataPlacements::PageDataPlacements(
                         int64_t pageSize,
                         boost::function<uint8_t* (PhysicalMemoryAllocation alloc)> inAllocator,
                         boost::function<void (PhysicalMemoryAllocation alloc, uint8_t*)> inDeallocator,
                         boost::function<bool (uint8_t* sharedBase, uint64_t sharedOffset, uint8_t* mapBase, uint64_t mapOffset, uint64_t bytecount)> inMapper,
                         boost::function<bool (uint8_t* mapBase, uint64_t mapOffset, uint64_t bytecount)> inUnmapper,
-                        boost::function<void (Fora::PageId page, IntegerRange bytecountRange)> inBroadcaster,
+                        boost::function<void (MemoryBlockId block, IntegerRange bytecountRange)> inBroadcaster,
                         int64_t maxExcessBytes,
-                        int64_t maxBigvecAllocations
-                        ) : 
+                        int64_t maxMemoryViewAllocations
+                        ) :
                     mBroadcastFunc(inBroadcaster),
                     mPageSize(pageSize),
                     mAllocationZoneMapping(pageSize),
                     mPhysicalAllocations(inAllocator, inDeallocator),
                     mMemoryMappings(mAllocationZoneMapping, mPhysicalAllocations, inMapper, inUnmapper),
                     mMaxExcessBytes(maxExcessBytes),
-                    mMaxBigvecAllocations(maxBigvecAllocations),
+                    mMaxMemoryViewAllocations(maxMemoryViewAllocations),
                     mTotalBytesOfPageDataHeld(0)
     {
     }
 
-bool PageDataPlacements::byteIsMapped(BigvecOrPageId mapping, int64_t byteOffset)
+bool PageDataPlacements::byteIsMapped(BlockOrViewId mapping, int64_t byteOffset)
     {
     return mMemoryMappings.byteIsMapped(mapping, byteOffset);
     }
@@ -52,12 +50,12 @@ uint8_t* PageDataPlacements::getWriteableAddress(PhysicalMemoryAllocation alloca
 
 IntegerRange PageDataPlacements::pageContainingByteOffset(int64_t byteOffset)
     {
-    int64_t page = int64_t(byteOffset / mPageSize);
+    int64_t block = int64_t(byteOffset / mPageSize);
 
-    return IntegerRange(page * mPageSize, (page+1) * mPageSize);
+    return IntegerRange(block * mPageSize, (block+1) * mPageSize);
     }
 
-void PageDataPlacements::markThreadBlockedOn(BigvecOrPageId object, int64_t byteOffset)
+void PageDataPlacements::markThreadBlockedOn(BlockOrViewId object, int64_t byteOffset)
     {
     if (byteIsMapped(object, byteOffset))
         return;
@@ -72,24 +70,24 @@ void PageDataPlacements::markThreadBlockedOn(BigvecOrPageId object, int64_t byte
     mMemoryMappings.blockedThreadExists(object, zoneMapping);
 
     @match AllocationZone(zoneMapping.zoneContainingData())
-        -| Page(p, offset) ->> {
+        -| Block(id, offset) ->> {
             IntegerRange bytesInZone = zoneMapping.byteRangeInZone();
 
             //what's the biggest range we could actually populate if we wanted to?
-            IntegerRange bytesInPage = bytesInZone - offset;
+            IntegerRange bytesInBlock = bytesInZone - offset;
 
-            Nullable<IntegerRange> containingRange = mPageDataBytecountRangesDefined[p].rangeContaining(bytesInPage.low());
+            Nullable<IntegerRange> containingRange = mPageDataBytecountRangesDefined[id].rangeContaining(bytesInBlock.low());
             if (containingRange)
                 {
-                //clip the range to align with the zone page boundary
+                //clip the range to align with the zone block boundary
                 containingRange = mAllocationZoneMapping.clipToPageSize(*containingRange + offset) - offset;
 
-                if (containingRange->contains(bytesInPage))
+                if (containingRange->contains(bytesInBlock))
                     {
                     bytesInZone = *containingRange + offset;
 
                     zoneMapping = zoneMapping.expandedToZoneRange(bytesInZone);
-                    
+
                     lassert(zoneMapping.byteRangeInZone().low() >= 0);
                     lassert(mAllocationZoneMapping.clipToPageSize(zoneMapping.byteRangeInZone()) == zoneMapping.byteRangeInZone());
                     }
@@ -104,28 +102,28 @@ void PageDataPlacements::markThreadBlockedOn(BigvecOrPageId object, int64_t byte
 
 void PageDataPlacements::tryToConstructZone(AllocationZone zone, IntegerRange byteRangeInZone)
     {
-    std::vector<ZoneToPageMapping> zoneMappings;
+    std::vector<ZoneToBlockMapping> zoneMappings;
 
     IntegerRange paddingZeros;
-    mAllocationZoneMapping.mapZoneRangeToPageRanges(zone, byteRangeInZone, zoneMappings, paddingZeros);
+    mAllocationZoneMapping.mapZoneRangeToBlockRanges(zone, byteRangeInZone, zoneMappings, paddingZeros);
 
-    std::vector<pair<Fora::PageId, IntegerRange> > missingPageBytecountRanges;
-    
+    std::vector<pair<MemoryBlockId, IntegerRange> > missingPageBytecountRanges;
+
     for (auto mapping: zoneMappings)
         {
         std::vector<IntegerRange> byteRangesOfThisPageNeeded;
 
-        mPageDataBytecountRangesDefined[mapping.page()].rangesNotCovered(mapping.byteRangeInPage(), byteRangesOfThisPageNeeded);
+        mPageDataBytecountRangesDefined[mapping.block()].rangesNotCovered(mapping.byteRangeInBlock(), byteRangesOfThisPageNeeded);
 
         for (auto range: byteRangesOfThisPageNeeded)
-            missingPageBytecountRanges.push_back(make_pair(mapping.page(), range));
-        
+            missingPageBytecountRanges.push_back(make_pair(mapping.block(), range));
+
         std::vector<IntegerRange> byteRangesOfThisPageToRequest;
 
-        mPageDataBytecountRangesDefinedOrRequested[mapping.page()].rangesNotCovered(mapping.byteRangeInPage(), byteRangesOfThisPageToRequest);
+        mPageDataBytecountRangesDefinedOrRequested[mapping.block()].rangesNotCovered(mapping.byteRangeInBlock(), byteRangesOfThisPageToRequest);
 
         for (auto range: byteRangesOfThisPageToRequest)
-            mBroadcastFunc(mapping.page(), range);
+            mBroadcastFunc(mapping.block(), range);
         }
 
     if (!missingPageBytecountRanges.size())
@@ -170,28 +168,28 @@ void PageDataPlacements::scheduleNecessaryTasksForMapping(AllocationZone zone, I
         IntegerRange paddingZeros;
 
         //these are regions we need to copy from somewhere else
-        std::vector<ZoneToPageMapping> neededPageRanges;
+        std::vector<ZoneToBlockMapping> neededPageRanges;
 
-        mAllocationZoneMapping.mapZoneRangeToPageRanges(
+        mAllocationZoneMapping.mapZoneRangeToBlockRanges(
             zone,
-            neededBytesInZone, 
+            neededBytesInZone,
             neededPageRanges,
             paddingZeros
             );
 
-        for (auto zonePageMapping: neededPageRanges)
-            scheduleCopyTask(zone, zonePageMapping);
+        for (auto zoneBlockMapping: neededPageRanges)
+            scheduleCopyTask(zone, zoneBlockMapping);
         }
     }
 
-void PageDataPlacements::scheduleCopyTask(AllocationZone zone, ZoneToPageMapping zonePageMapping)
+void PageDataPlacements::scheduleCopyTask(AllocationZone zone, ZoneToBlockMapping zoneBlockMapping)
     {
     //break the zone mappings into chunks
     std::vector<IntegerRange> allocatedRanges;
     std::vector<IntegerRange> notCovered;
 
     mPhysicalAllocations.allocationsForZone(zone).subdivide(
-        zonePageMapping.byteRangeInZone(), 
+        zoneBlockMapping.byteRangeInZone(),
         allocatedRanges,
         notCovered
         );
@@ -200,7 +198,7 @@ void PageDataPlacements::scheduleCopyTask(AllocationZone zone, ZoneToPageMapping
 
     for (auto physicalRange: allocatedRanges)
         {
-        IntegerRange bytesInZone = zonePageMapping.byteRangeInZone().intersect(physicalRange);
+        IntegerRange bytesInZone = zoneBlockMapping.byteRangeInZone().intersect(physicalRange);
 
         //now restrict to bytes that are not already populated
         std::vector<IntegerRange> bytesInZoneNotPopulated;
@@ -212,38 +210,38 @@ void PageDataPlacements::scheduleCopyTask(AllocationZone zone, ZoneToPageMapping
 
             IntegerRange bytesInPhysicalRange = notPopulated - physicalRange.low();
 
-            IntegerRange bytesInPage = zonePageMapping.mapZoneSubrangeToPage(notPopulated);
+            IntegerRange bytesInBlock = zoneBlockMapping.mapZoneSubrangeToBlock(notPopulated);
 
             scheduleCopyTask(
                 PhysicalMemoryAllocation(
                     zone,
                     physicalRange
                     ),
-                AllocationToPageMapping(
+                AllocationToBlockMapping(
                     bytesInPhysicalRange,
-                    zonePageMapping.page(),
-                    bytesInPage
+                    zoneBlockMapping.block(),
+                    bytesInBlock
                     )
                 );
             }
         }
     }
 
-void PageDataPlacements::scheduleCopyTask(PhysicalMemoryAllocation destAlloc, AllocationToPageMapping allocationPageMapping)
+void PageDataPlacements::scheduleCopyTask(PhysicalMemoryAllocation destAlloc, AllocationToBlockMapping allocationPageMapping)
     {
-    while (allocationPageMapping.byteRangeInPage().size())
+    while (allocationPageMapping.byteRangeInBlock().size())
         {
         bool foundAnything = false;
-        for (auto possibleZoneAndRefcount: mAllocationZoneMapping.zonesActiveForPage(allocationPageMapping.page()))
+        for (auto possibleZoneAndRefcount: mAllocationZoneMapping.zonesActiveForBlock(allocationPageMapping.block()))
             {
             AllocationZone possibleZone = possibleZoneAndRefcount.first;
 
-            lassert(possibleZone.isPage());
+            lassert(possibleZone.isBlock());
 
-            IntegerRange desiredPageBytesInThisZone = allocationPageMapping.byteRangeInPage() + possibleZone.getPage().byteOffset();
+            IntegerRange desiredPageBytesInThisZone = allocationPageMapping.byteRangeInBlock() + possibleZone.getBlock().byteOffset();
 
             //find the physical range containing this data if it exists
-            Nullable<IntegerRange> zoneRange = 
+            Nullable<IntegerRange> zoneRange =
                 mPhysicalAllocations.allocationsForZone(possibleZone).rangeContaining(desiredPageBytesInThisZone.low());
 
             if (zoneRange)
@@ -252,7 +250,7 @@ void PageDataPlacements::scheduleCopyTask(PhysicalMemoryAllocation destAlloc, Al
 
                 IntegerRange bytesInPhysicalAlloc = desiredPageBytesInThisZone.intersect(*zoneRange) - zoneRange->low();
 
-                Nullable<IntegerRange> definedBytesWithin = 
+                Nullable<IntegerRange> definedBytesWithin =
                     mPhysicalMemoryBytecountRangesPopulated[sourceAlloc].rangeContaining(bytesInPhysicalAlloc.low());
 
                 if (definedBytesWithin)
@@ -278,19 +276,19 @@ void PageDataPlacements::scheduleCopyTask(PhysicalMemoryAllocation destAlloc, Al
                             )
                         );
 
-                    allocationPageMapping.byteRangeInPage().low() += bytesToCopyTo.size();
+                    allocationPageMapping.byteRangeInBlock().low() += bytesToCopyTo.size();
                     allocationPageMapping.byteRangeInAlloc().low() += bytesToCopyTo.size();
 
-                    if (!allocationPageMapping.byteRangeInPage().size())
+                    if (!allocationPageMapping.byteRangeInBlock().size())
                         return;
-                    
+
                     foundAnything = true;
                     }
                 }
             }
 
-        lassert_dump(foundAnything, "couldn't find anything for " << allocationPageMapping.byteRangeInPage().low() << " within "
-                << prettyPrintString(allocationPageMapping.page()));
+        lassert_dump(foundAnything, "couldn't find anything for " << allocationPageMapping.byteRangeInBlock().low() << " within "
+                << prettyPrintString(allocationPageMapping.block()));
         }
     }
 
@@ -319,36 +317,36 @@ void PageDataPlacements::taskComplete(DataCopyTask task)
 
     LOG_DEBUG << "populated " << zoneBytesPopulated << " in " << alloc;
 
-    if (alloc.zone().isPage())
+    if (alloc.zone().isBlock())
         {
-        Fora::PageId page = alloc.zone().getPage().page();
+        MemoryBlockId block = alloc.zone().getBlock().block();
 
-        IntegerRange pageBytesAllocated = zoneBytesPopulated - alloc.zone().getPage().byteOffset();
+        IntegerRange pageBytesAllocated = zoneBytesPopulated - alloc.zone().getBlock().byteOffset();
 
-        mPageDataBytecountRangesDefined[page].addRange(pageBytesAllocated);
+        mPageDataBytecountRangesDefined[block].addRange(pageBytesAllocated);
 
-        mTotalBytesOfPageDataHeld += mPageDataBytecountRangesDefined[page].total() - mPerPageBytesHeld[page];
-        mPerPageBytesHeld[page] = mPageDataBytecountRangesDefined[page].total();
+        mTotalBytesOfPageDataHeld += mPageDataBytecountRangesDefined[block].total() - mPerPageBytesHeld[block];
+        mPerPageBytesHeld[block] = mPageDataBytecountRangesDefined[block].total();
 
-        mPageDataBytecountRangesDefinedOrRequested[page].addRange(pageBytesAllocated);
-        mMemoryMappings.pageDataProvided(page, pageBytesAllocated);
+        mPageDataBytecountRangesDefinedOrRequested[block].addRange(pageBytesAllocated);
+        mMemoryMappings.blockDataProvided(block, pageBytesAllocated);
         }
 
     mPhysicalMemoryBytecountRangesPopulated[alloc].addRange(allocBytesPopulated);
-    
+
     mZoneBytecountRangesPopulated[alloc.zone()].addRange(allocBytesPopulated + alloc.byteRange().low());
     mZoneBytecountRangesPopulatedOrPending[alloc.zone()].addRange(allocBytesPopulated + alloc.byteRange().low());
 
     //the range that bytesPopulated is contained in is now a candidate for mapping
     IntegerRange containingRange = *mPhysicalMemoryBytecountRangesPopulated[alloc].rangeContaining(allocBytesPopulated.low());
 
-    //limit this to page size
+    //limit this to block size
     containingRange = mAllocationZoneMapping.clipToPageSize(containingRange);
 
     if (containingRange.size())
         {
         LOG_DEBUG << alloc.zone() << " is now mappable: " << containingRange + alloc.byteRange().low();
-        
+
         mMemoryMappings.zoneIsNowMappable(alloc.zone(), containingRange + alloc.byteRange().low());
         }
 
@@ -363,61 +361,61 @@ void PageDataPlacements::taskComplete(DataCopyTask task)
 
 void PageDataPlacements::releaseMemoryIfNecessary()
     {
-    releaseBigvecsIfNecessary();
+    releaseMemoryViewsIfNecessary();
     consolidatePagesIfNecessary();
     releasePagesIfNecessary();
     }
 
 void PageDataPlacements::releasePagesIfNecessary()
     {
-    std::set<Fora::PageId> newPagesToDeallocate;
+    std::set<MemoryBlockId> newBlocksToDeallocate;
 
-    auto canDeallocatePage = [&](Fora::PageId p) {
-        if (mPhysicalAllocations.pageHasCopyTasks(p))
+    auto canDeallocatePage = [&](MemoryBlockId block) {
+        if (mPhysicalAllocations.blockHasCopyTasks(block))
             return false;
 
-        for (auto allocationZoneAndRefcount: mAllocationZoneMapping.zonesActiveForPage(p))
+        for (auto allocationZoneAndRefcount: mAllocationZoneMapping.zonesActiveForBlock(block))
             if (mMemoryMappings.zoneHasPendingMappings(allocationZoneAndRefcount.first))
                 return false;
 
         return true;
         };
 
-    for (auto p: mPagesToDeallocate)
-        if (canDeallocatePage(p))
-            completelyRemovePage(p);
+    for (auto id: mPagesToDeallocate)
+        if (canDeallocatePage(id))
+            completelyRemovePage(id);
         else
-            newPagesToDeallocate.insert(p);
+            newBlocksToDeallocate.insert(id);
 
-    std::swap(newPagesToDeallocate, mPagesToDeallocate);
+    std::swap(newBlocksToDeallocate, mPagesToDeallocate);
     }
 
 void PageDataPlacements::consolidatePagesIfNecessary()
     {
-    while (mPhysicalAllocations.totalBytesMapped() > 
+    while (mPhysicalAllocations.totalBytesMapped() >
                 mTotalBytesOfPageDataHeld + mMaxExcessBytes +
-                //don't count the bigvec pages in the memory count - we don't consider
+                //don't count the memory view blocks in the memory count - we don't consider
                 //them in the compression count.
-                mPhysicalAllocations.countOfBigvecAllocs() * mPageSize)
+                mPhysicalAllocations.countOfMemoryViewAllocs() * mPageSize)
         {
-        Nullable<Fora::PageId> page = mPhysicalAllocations.getOldestPage();
-        if (!page)
+        Nullable<MemoryBlockId> block = mPhysicalAllocations.getOldestBlock();
+        if (!block)
             return;
 
-        if (mPhysicalAllocations.pageHasCopyTasks(*page))
+        if (mPhysicalAllocations.blockHasCopyTasks(*block))
             return;
 
         Largest<AllocationZone, int64_t> zones;
 
-        //pick the allocation zone with the most data populated in it - that'll be our target page
+        //pick the allocation zone with the most data populated in it - that'll be our target block
         //if any of these zones have pending mappings, we can't consolidate
-        for (auto allocationZoneAndRefcount: mAllocationZoneMapping.zonesActiveForPage(*page))
+        for (auto allocationZoneAndRefcount: mAllocationZoneMapping.zonesActiveForBlock(*block))
             {
             if (mMemoryMappings.zoneHasPendingMappings(allocationZoneAndRefcount.first))
                 return;
 
             zones.observe(
-                allocationZoneAndRefcount.first, 
+                allocationZoneAndRefcount.first,
                 mZoneBytecountRangesPopulated[allocationZoneAndRefcount.first].total()
                 );
             }
@@ -426,8 +424,8 @@ void PageDataPlacements::consolidatePagesIfNecessary()
         //schedule copy tasks moving all populated data into the populated zone
         if (!zones.largest())
             {
-            //this page is dead
-            mPhysicalAllocations.removePageFromReplacementQueue(*page);
+            //this block is dead
+            mPhysicalAllocations.removeBlockFromReplacementQueue(*block);
             }
         else
             {
@@ -435,30 +433,30 @@ void PageDataPlacements::consolidatePagesIfNecessary()
 
             bool scheduledAnything = false;
 
-            for (auto allocationZoneAndRefcount: mAllocationZoneMapping.zonesActiveForPage(*page))
+            for (auto allocationZoneAndRefcount: mAllocationZoneMapping.zonesActiveForBlock(*block))
                 if (allocationZoneAndRefcount.first != targetZone)
                     if (scheduleCopyAllDataBetweenZones(allocationZoneAndRefcount.first, targetZone))
                         scheduledAnything = true;
 
             if (scheduledAnything)
                 return;
-            
+
             //we can remove all data for all zones other than the one we want
-            for (auto allocationZoneAndRefcount: mAllocationZoneMapping.zonesActiveForPage(*page))
+            for (auto allocationZoneAndRefcount: mAllocationZoneMapping.zonesActiveForBlock(*block))
                 if (allocationZoneAndRefcount.first != targetZone)
                     completelyRemoveZone(allocationZoneAndRefcount.first);
 
-            mPhysicalAllocations.removePageFromReplacementQueue(*page);
+            mPhysicalAllocations.removeBlockFromReplacementQueue(*block);
             }
         }
     }
 
 bool PageDataPlacements::scheduleCopyAllDataBetweenZones(AllocationZone sourceZone, AllocationZone destZone)
     {
-    lassert(sourceZone.isPage());
-    lassert(destZone.isPage());
+    lassert(sourceZone.isBlock());
+    lassert(destZone.isBlock());
 
-    int64_t sourceToDestOffset = destZone.getPage().byteOffset() - sourceZone.getPage().byteOffset();
+    int64_t sourceToDestOffset = destZone.getBlock().byteOffset() - sourceZone.getBlock().byteOffset();
 
     IntegerRanges<true> rangesToPopulate;
 
@@ -491,7 +489,7 @@ bool PageDataPlacements::scheduleCopyAllDataBetweenZones(AllocationZone sourceZo
         for (auto rng: notCoveredInDestPhysically)
             mPhysicalAllocations.allocatePhysicalMemory(
                 PhysicalMemoryAllocation(
-                    destZone, 
+                    destZone,
                     rng
                     )
                 );
@@ -511,13 +509,13 @@ bool PageDataPlacements::scheduleCopyAllDataBetweenZones(AllocationZone sourceZo
             {
             scheduledAnything = true;
             scheduleCopyTask(
-                destZone, 
-                ZoneToPageMapping(rng, sourceZone.getPage().page(), rng - destZone.getPage().byteOffset())
+                destZone,
+                ZoneToBlockMapping(rng, sourceZone.getBlock().block(), rng - destZone.getBlock().byteOffset())
                 );
 
             lassert_dump(
                 mZoneBytecountRangesPopulatedOrPending[destZone].completelyContainsRange(rng),
-                "Added " << prettyPrintString(rng) << " now having " 
+                "Added " << prettyPrintString(rng) << " now having "
                     << prettyPrintString(mZoneBytecountRangesPopulatedOrPending[destZone].getRangeStartsAndEnds())
                     << ". populated= " << prettyPrintString(mZoneBytecountRangesPopulated[destZone].getRangeStartsAndEnds())
                 );
@@ -527,18 +525,18 @@ bool PageDataPlacements::scheduleCopyAllDataBetweenZones(AllocationZone sourceZo
     return scheduledAnything;
     }
 
-void PageDataPlacements::releaseBigvecsIfNecessary()
+void PageDataPlacements::releaseMemoryViewsIfNecessary()
     {
-    while (mPhysicalAllocations.countOfBigvecAllocs() > mMaxBigvecAllocations)
+    while (mPhysicalAllocations.countOfMemoryViewAllocs() > mMaxMemoryViewAllocations)
         {
-        Nullable<PhysicalMemoryAllocation> alloc = mPhysicalAllocations.oldestBigvecAlloc();
+        Nullable<PhysicalMemoryAllocation> alloc = mPhysicalAllocations.oldestMemoryViewAlloc();
 
         lassert(alloc);
 
         //we have to stop and wait for the copy task to finish
         if (mPhysicalAllocations.allocHasCopyTasks(*alloc) || mMemoryMappings.zoneHasPendingMappings(alloc->zone()))
             return;
-            
+
         lassert(!mMemoryMappings.hasZonesToTryToMap());
 
         //we can safely delete this bigvec
@@ -546,16 +544,16 @@ void PageDataPlacements::releaseBigvecsIfNecessary()
         }
     }
 
-void PageDataPlacements::completelyRemovePage(Fora::PageId page)
+void PageDataPlacements::completelyRemovePage(MemoryBlockId block)
     {
-    for (auto allocationZoneAndRefcount: mAllocationZoneMapping.zonesActiveForPage(page))
+    for (auto allocationZoneAndRefcount: mAllocationZoneMapping.zonesActiveForBlock(block))
         completelyRemoveZone(allocationZoneAndRefcount.first);
 
-    mTotalBytesOfPageDataHeld -= mPerPageBytesHeld[page];
-    mPerPageBytesHeld[page] = 0;
+    mTotalBytesOfPageDataHeld -= mPerPageBytesHeld[block];
+    mPerPageBytesHeld[block] = 0;
 
-    mPageDataBytecountRangesDefined.erase(page);
-    mPageDataBytecountRangesDefinedOrRequested.erase(page);
+    mPageDataBytecountRangesDefined.erase(block);
+    mPageDataBytecountRangesDefinedOrRequested.erase(block);
     }
 
 void PageDataPlacements::completelyRemoveZone(AllocationZone zone)
@@ -580,7 +578,7 @@ void PageDataPlacements::completelyRemovePhysicalAlloc(PhysicalMemoryAllocation 
     mPhysicalMemoryBytecountRangesPopulated.erase(alloc);
     mZoneBytecountRangesPopulated[alloc.zone()].removeRange(alloc.byteRange());
     mZoneBytecountRangesPopulatedOrPending[alloc.zone()].removeRange(alloc.byteRange());
-    
+
     mMemoryMappings.deallocatePhysicalMemory(alloc);
     }
 
@@ -594,42 +592,42 @@ void PageDataPlacements::scheduleTask(DataCopyTask task)
     mTasks.push_back(task);
     }
 
-Nullable<pair<BigvecOrPageId, int64_t> > 
+Nullable<pair<BlockOrViewId, int64_t> >
         PageDataPlacements::translateMappingAddress(uint8_t* mappingBase, uint64_t offsetInMapping)
     {
     return mPhysicalAllocations.translateMappingAddress(mappingBase, offsetInMapping);
     }
 
-void PageDataPlacements::addBigVecPageLayout(const BigVectorPageLayout& layout)
+void PageDataPlacements::addBigVecPageLayout(const MemoryViewDefinition& layout)
     {
-    mAllocationZoneMapping.addBigvec(layout);
+    mAllocationZoneMapping.addMemoryView(layout);
     }
 
 void PageDataPlacements::setMappableAddress(
-            BigvecOrPageId target, 
-            uint8_t* address, 
+            BlockOrViewId target,
+            uint8_t* address,
             uint64_t bytecount
             )
     {
     mPhysicalAllocations.setMappableAddress(target, address, bytecount);
     }
 
-uint8_t* PageDataPlacements::getMappableAddress(BigvecOrPageId target)
+uint8_t* PageDataPlacements::getMappableAddress(BlockOrViewId target)
     {
     return mPhysicalAllocations.getMappableAddress(target);
     }
 
-void PageDataPlacements::dropMappingTarget(BigvecOrPageId target)
+void PageDataPlacements::dropMappingTarget(BlockOrViewId target)
     {
     mPhysicalAllocations.dropMappingTarget(target);
 
-    if (target.isBigvec())
-        mAllocationZoneMapping.discardBigvec(target.getBigvec().bigvec());
+    if (target.isView())
+        mAllocationZoneMapping.discardMemoryView(target.getView().view());
     }
 
 IntegerRange PageDataPlacements::expandRangeToPageSize(IntegerRange byteRange)
     {
-    //compute the page blocks we'll need to store this data. These are inclusive - we have to include the top byte
+    //compute the block blocks we'll need to store this data. These are inclusive - we have to include the top byte
     //of the topmost item
     int64_t lowPageBlock = byteRange.low() / mPageSize;
     int64_t highPageBlock = (byteRange.high() - 1) / mPageSize;
@@ -641,7 +639,7 @@ IntegerRange PageDataPlacements::expandRangeToPageSize(IntegerRange byteRange)
     }
 
 void PageDataPlacements::ensurePhysicalBackingFor(
-            const AllocationZone& zone, 
+            const AllocationZone& zone,
             IntegerRange byteRange
             )
     {
@@ -655,23 +653,23 @@ void PageDataPlacements::ensurePhysicalBackingFor(
     for (auto rng: subrangesNotDefined)
         mPhysicalAllocations.allocatePhysicalMemory(
             PhysicalMemoryAllocation(
-                zone, 
+                zone,
                 rng
                 )
             );
     }
 
 bool PageDataPlacements::allocatePageData(
-                const Fora::PageId& inPage, 
+                const MemoryBlockId& inPage,
                 IntegerRange incomingByteRange,
                 uint8_t* addr
                 )
     {
-    lassert_dump(incomingByteRange.size(), "makes no sense to allocate empty page data");
+    lassert_dump(incomingByteRange.size(), "makes no sense to allocate empty block data");
 
     IntegerRange hostingRange = expandRangeToPageSize(incomingByteRange);
 
-    AllocationZone zone = AllocationZone::Page(inPage, 0);
+    AllocationZone zone = AllocationZone::Block(inPage, 0);
 
     ensurePhysicalBackingFor(zone, hostingRange);
 
@@ -683,7 +681,7 @@ bool PageDataPlacements::allocatePageData(
         {
         std::vector<IntegerRange> subrangesCovering, partsNotCovered;
 
-        //each range here should be contained within one of the physical ranges we have defined for the page
+        //each range here should be contained within one of the physical ranges we have defined for the block
         IntegerRanges<false>& sequences = mPhysicalAllocations.allocationsForZone(zone);
 
         sequences.subdivide(byteRange, subrangesCovering, partsNotCovered);
@@ -702,7 +700,7 @@ bool PageDataPlacements::allocatePageData(
             uint8_t* allocAddr = mPhysicalAllocations.addressForAllocation(alloc);
 
             lassert_dump(
-                intersection.size() > 0, 
+                intersection.size() > 0,
                 prettyPrintString(physicalBytecountRange) << " within " << prettyPrintString(byteRange)
                 );
 
@@ -721,9 +719,9 @@ bool PageDataPlacements::allocatePageData(
     return true;
     }
 
-void PageDataPlacements::dropAllDataForPage(const Fora::PageId& inPage)
+void PageDataPlacements::dropAllDataForPage(const MemoryBlockId& inBlock)
     {
-    mPagesToDeallocate.insert(inPage);
+    mPagesToDeallocate.insert(inBlock);
     releaseMemoryIfNecessary();
     }
 
@@ -757,9 +755,9 @@ int64_t PageDataPlacements::bytesOfPageDataHeld() const
     return mTotalBytesOfPageDataHeld;
     }
 
-int64_t PageDataPlacements::bytesOfPageDataHeld(Fora::PageId page) const
+int64_t PageDataPlacements::bytesOfPageDataHeld(MemoryBlockId block) const
     {
-    auto it = mPerPageBytesHeld.find(page);
+    auto it = mPerPageBytesHeld.find(block);
 
     if (it == mPerPageBytesHeld.end())
         return 0;
@@ -770,4 +768,9 @@ int64_t PageDataPlacements::bytesOfPageDataHeld(Fora::PageId page) const
 int64_t PageDataPlacements::totalBytesOfPhysicalMemoryAllocated() const
     {
     return mPhysicalAllocations.totalBytesMapped();
+    }
+
+void PageDataPlacements::getPageDataDefinedFor(MemoryBlockId block, IntegerRanges<true>& outRanges)
+    {
+    outRanges = mPageDataBytecountRangesDefined[block];
     }
