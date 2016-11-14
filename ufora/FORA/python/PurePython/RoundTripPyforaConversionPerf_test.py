@@ -103,7 +103,7 @@ class RoundTripPyforaConversionTest(unittest.TestCase):
                    'binary_to_python': t4 - t3}
 
         return converted, timings
-
+        
     def test_conversion_performance_small_strings_100k(self):
         anArray = [str(ix) for ix in xrange(100000)]
         self.roundtripConvert(
