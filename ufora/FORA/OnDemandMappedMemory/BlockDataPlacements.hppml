@@ -26,14 +26,14 @@ This class provides a single-threaded implementation of a memory storage
 and mapping services.
 
 Clients are expected to provide data in the form of byte ranges associated with
-MemoryBlockId, and then to access that data via pointers. The PageDataPlacements
+MemoryBlockId, and then to access that data via pointers. The BlockDataPlacements
 infrastructure is responsible for populating that data while maintaining some invariants,
 which include
     a limit on the number of physical bytes above the actual bytes given to the object
     a limit on the number of memory mappings. (not implemented yet)
     a limit on the number of physical allocations. (not implemented yet)
 
-The PageDataPlacements class is single-threaded. Callbacks are executed on
+The BlockDataPlacements class is single-threaded. Callbacks are executed on
 the same thread as the caller. Memory copy operations (which are expensive)
 get queued in a task list. Clients are expected to call 'extractTask', execute
 the task, and call 'taskCompleted' to flush the task queue after interacting
@@ -61,9 +61,9 @@ public:
         }
 };
 
-class PageDataPlacements {
+class BlockDataPlacements {
 public:
-    PageDataPlacements(
+    BlockDataPlacements(
                 int64_t inOsPageSize,
                 //a set of callbacks that will be called synchronously during method invocation on
                 //this class.
@@ -71,7 +71,7 @@ public:
                 boost::function<void (PhysicalMemoryAllocation alloc, uint8_t*)> inDeallocator,
                 boost::function<bool (uint8_t* sharedBase, uint64_t sharedOffset, uint8_t* mapBase, uint64_t mapOffset, uint64_t bytecount)> inMapper,
                 boost::function<bool (uint8_t* mapBase, uint64_t mapOffset, uint64_t bytecount)> inUnmapper,
-                boost::function<void (MemoryBlockId block, IntegerRange bytecountRange)> inRequestPageDataFromExternal,
+                boost::function<void (MemoryBlockId block, IntegerRange bytecountRange)> inRequestBlockDataFromExternal,
                 //maximum number of physical memory bytes to allocate above actual byte storage given to us
                 int64_t maxExcessBytes,
                 //this is a crappy proxy for limiting the number of allocations that really just
@@ -93,7 +93,7 @@ public:
 
     //describe a bigvec to us. This must be called before 'setMappableAddress' for the associated
     //bigvec can be called.
-    void addBigVecPageLayout(const MemoryViewDefinition& layout);
+    void addMemoryViewDefinition(const MemoryViewDefinition& layout);
 
     //we've produced a memory-mapping to 'target'
     void setMappableAddress(
@@ -110,17 +110,17 @@ public:
     //written to.
     uint8_t* getWriteableAddress(PhysicalMemoryAllocation allocation);
 
-    //drop the mapping target and clear all mappings. If this is a bigvec mapping,
-    //then we drop the bigvec page layout as well.
+    //drop the mapping target and clear all mappings. If this is a memory view mapping,
+    //then we drop the memory view definition as well.
     void dropMappingTarget(BlockOrViewId target);
 
-    //mark all the data associated with this page for deletion.
+    //mark all the data associated with this block for deletion.
     //data will be released by the time the task queue is flushed.
-    void dropAllDataForPage(const MemoryBlockId& inBlock);
+    void dropAllDataForBlock(const MemoryBlockId& inBlock);
 
     //get a memory copy task from the queue. Clients are expected
     //to flush this queue after calling 'markThreadBlockedOn',
-    //allocatePageData, or dropAllDataForPage
+    //allocateBlockData, or dropAllDataForBlock
     Nullable<DataCopyTask> extractTask();
 
     //indicates that some requested data was copied
@@ -129,19 +129,19 @@ public:
     //add some new data from the outside. Clients are expected to
     //flush all outstanding memory copy tasks from the system before
     //'addr' may be released.
-    bool allocatePageData(
+    bool allocateBlockData(
                     const MemoryBlockId& inBlock,
                     IntegerRange byteRange,
                     uint8_t* addr
                     );
 
-    int64_t bytesOfPageDataHeld() const;
+    int64_t totalBytesOfBlockDataHeld() const;
 
-    int64_t bytesOfPageDataHeld(MemoryBlockId block) const;
+    int64_t bytesOfBlockDataHeld(MemoryBlockId block) const;
 
     int64_t totalBytesOfPhysicalMemoryAllocated() const;
 
-    void getPageDataDefinedFor(MemoryBlockId block, IntegerRanges<true>& ranges);
+    void getBlockDataDefinedFor(MemoryBlockId block, IntegerRanges<true>& outRanges);
 
 private:
     //deallocate all memory associated with this allocation zone and clear
@@ -151,23 +151,23 @@ private:
     //deallocate this physical allocation.
     void completelyRemovePhysicalAlloc(PhysicalMemoryAllocation alloc);
 
-    //drop all data in all page-related allocation zones. No copies may be pending
+    //drop all data in all block-related allocation zones. No copies may be pending
     //on any of these zones.
-    void completelyRemovePage(MemoryBlockId block);
+    void completelyRemoveBlock(MemoryBlockId block);
 
     //after all copy and block operations, we call this function, which synchronously schedules any data
     //rebalancing operations
     void releaseMemoryIfNecessary();
 
-    //release any bigvec mappings we have too many.
+    //release any memory views mappings we have too many.
     void releaseMemoryViewsIfNecessary();
 
-    //release any pages that are marked for deletion
-    void releasePagesIfNecessary();
+    //release any memory blocks that are marked for deletion
+    void releaseBlocksIfNecessary();
 
-    //if we have too much data allocated, loop over all pages and consolidate
+    //if we have too much data allocated, loop over all blocks and consolidate
     //all of their data into a single AllocationZone.
-    void consolidatePagesIfNecessary();
+    void consolidateBlocksIfNecessary();
 
     //create PhysicalMemoryAllocations to back this data, making sure not to
     //double allocate any ranges.
@@ -189,10 +189,10 @@ private:
     IntegerRange expandRangeToPageSize(IntegerRange byteRange);
 
     //populate the data for 'alloc' from some data somewhere. We assume that the data for the
-    //relevant page mapping exists in the system and that we just need to find it.
-    void scheduleCopyTask(PhysicalMemoryAllocation alloc, AllocationToBlockMapping zonePageMapping);
+    //relevant block mapping exists in the system and that we just need to find it.
+    void scheduleCopyTask(PhysicalMemoryAllocation alloc, AllocationToBlockMapping zoneBlockMapping);
 
-    //populate the data for 'zone' from some data somewhere. We assume that the relevant page data
+    //populate the data for 'zone' from some data somewhere. We assume that the relevant block data
     //exists somewhere in some zone and that we just need to find it.
     void scheduleCopyTask(AllocationZone zone, ZoneToBlockMapping zoneBlockMapping);
 
@@ -206,14 +206,14 @@ private:
 
     int64_t mPageSize;
 
-    //for each page, what values do we have actual definitions for somewhere
-    int64_t mTotalBytesOfPageDataHeld;
+    int64_t mTotalBytesOfBlockDataHeld;
 
-    map<MemoryBlockId, int64_t> mPerPageBytesHeld;
+    map<MemoryBlockId, int64_t> mPerBlockBytesHeld;
 
-    map<MemoryBlockId, IntegerRanges<true> > mPageDataBytecountRangesDefined;
+    //for each block, what values do we have actual definitions for somewhere
+    map<MemoryBlockId, IntegerRanges<true> > mBlockDataBytecountRangesDefined;
 
-    map<MemoryBlockId, IntegerRanges<true> > mPageDataBytecountRangesDefinedOrRequested;
+    map<MemoryBlockId, IntegerRanges<true> > mBlockDataBytecountRangesDefinedOrRequested;
 
     //for each allocation, which ranges actually have values copied in?
     map<PhysicalMemoryAllocation, IntegerRanges<true> > mPhysicalMemoryBytecountRangesPopulated;
@@ -222,7 +222,7 @@ private:
 
     map<AllocationZone, IntegerRanges<true> > mZoneBytecountRangesPopulatedOrPending;
 
-    std::set<MemoryBlockId> mPagesToDeallocate;
+    std::set<MemoryBlockId> mBlocksToDeallocate;
 
     std::deque<DataCopyTask> mTasks;
 

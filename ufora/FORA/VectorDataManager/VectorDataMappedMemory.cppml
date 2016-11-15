@@ -21,7 +21,7 @@
 #include "../Core/ExecutionContextImpl.hppml"
 #include "../OnDemandMappedMemory/MemoryViewDefinition.hppml"
 #include "../OnDemandMappedMemory/OnDemandMemoryRegions.hppml"
-#include "../OnDemandMappedMemory/PageDataPlacements.hppml"
+#include "../OnDemandMappedMemory/BlockDataPlacements.hppml"
 #include "../TypedFora/ABI/BigVectorLayouts.hppml"
 #include "../../core/Clock.hpp"
 #include "../../core/Logging.hpp"
@@ -47,8 +47,8 @@ public:
             mTotalTaskBytes(0),
             mLastLogMessage(0)
         {
-        mPageDataPlacement.reset(
-            new PageDataPlacements(
+        mBlockDataPlacement.reset(
+            new BlockDataPlacements(
                 mMemoryRegions.pageSize(),
                 [&](PhysicalMemoryAllocation alloc) {
                     return mMemoryRegions.allocateSharedRegion(
@@ -88,7 +88,7 @@ public:
         boost::mutex::scoped_lock lock(mMutex);
 
         Nullable<pair<BlockOrViewId, int64_t> > addr =
-            mPageDataPlacement->translateMappingAddress(
+            mBlockDataPlacement->translateMappingAddress(
                 thread.mappableRegion(),
                 thread.offsetInRegion()
                 );
@@ -106,11 +106,11 @@ public:
 
         context->getImpl()->touchedBigvecMemory(pageTouched);
 
-        mPageDataPlacement->markThreadBlockedOn(addr->first, addr->second);
+        mBlockDataPlacement->markThreadBlockedOn(addr->first, addr->second);
 
         performBackgroundCopyTasks_(lock);
 
-        if (!mPageDataPlacement->byteIsMapped(addr->first, addr->second))
+        if (!mBlockDataPlacement->byteIsMapped(addr->first, addr->second))
             context->interrupt();
         }
 
@@ -137,7 +137,7 @@ public:
         mPageAddressRefcounts[inPage]++;
 
         if (mPageAddressRefcounts[inPage] > 1)
-            return mPageDataPlacement->getMappableAddress(blockId);
+            return mBlockDataPlacement->getMappableAddress(blockId);
 
         uint64_t bytecount = mMemoryRegions.roundUpToPageSize(valueCount * valueStride);
 
@@ -145,7 +145,7 @@ public:
 
         lassert(ptr);
 
-        mPageDataPlacement->setMappableAddress(blockId, ptr, bytecount);
+        mBlockDataPlacement->setMappableAddress(blockId, ptr, bytecount);
 
         return ptr;
         }
@@ -160,11 +160,11 @@ public:
 
         if (mPageAddressRefcounts[inPage] == 0)
             {
-            uint8_t* addr = mPageDataPlacement->getMappableAddress(blockId);
+            uint8_t* addr = mBlockDataPlacement->getMappableAddress(blockId);
 
             mMemoryRegions.releaseMappableRegion(addr);
 
-            mPageDataPlacement->dropMappingTarget(blockId);
+            mBlockDataPlacement->dropMappingTarget(blockId);
             }
         }
 
@@ -176,14 +176,14 @@ public:
             return nullptr;
 
         auto viewId = makeBlockOrViewId(inBigVec);
-        uint8_t* ptr = mPageDataPlacement->getMappableAddress(viewId);
+        uint8_t* ptr = mBlockDataPlacement->getMappableAddress(viewId);
 
         if (ptr)
             return ptr;
 
         auto layout = mPageLayouts->getLayoutForId(inBigVec);
         auto viewDefinition = makeMemoryViewDefinition(layout);
-        mPageDataPlacement->addBigVecPageLayout(viewDefinition);
+        mBlockDataPlacement->addMemoryViewDefinition(viewDefinition);
 
         uint64_t bytecount = mMemoryRegions.roundUpToPageSize(inBigVec.size() * inBigVec.jor()[0].type()->size());
 
@@ -191,7 +191,7 @@ public:
         if (!ptr)
             return nullptr;
 
-        mPageDataPlacement->setMappableAddress(viewId, ptr, bytecount);
+        mBlockDataPlacement->setMappableAddress(viewId, ptr, bytecount);
 
         return ptr;
         }
@@ -201,13 +201,13 @@ public:
         boost::mutex::scoped_lock lock(mMutex);
 
         auto viewId = makeBlockOrViewId(inBigVec);
-        uint8_t* ptr = mPageDataPlacement->getMappableAddress(viewId);
+        uint8_t* ptr = mBlockDataPlacement->getMappableAddress(viewId);
         if (!ptr)
             return;
 
         mMemoryRegions.releaseMappableRegion(ptr);
 
-        mPageDataPlacement->dropMappingTarget(viewId);
+        mBlockDataPlacement->dropMappingTarget(viewId);
         }
 
     bool allocatePageData(
@@ -218,7 +218,7 @@ public:
         {
         boost::mutex::scoped_lock lock(mMutex);
 
-        mPageDataPlacement->allocatePageData(makeMemoryBlockId(inPage), byteRange, addr);
+        mBlockDataPlacement->allocateBlockData(makeMemoryBlockId(inPage), byteRange, addr);
 
         performBackgroundCopyTasks_(lock);
 
@@ -230,7 +230,7 @@ public:
         boost::mutex::scoped_lock lock(mMutex);
 
         //invalidate all references to 'inPage'
-        mPageDataPlacement->dropAllDataForPage(makeMemoryBlockId(inPage));
+        mBlockDataPlacement->dropAllDataForBlock(makeMemoryBlockId(inPage));
 
         //free any memory we happen to need in the background
         performBackgroundCopyTasks_(lock);
@@ -244,7 +244,7 @@ public:
 private:
     void performBackgroundCopyTasks_(boost::mutex::scoped_lock& ioLock)
         {
-        while (Nullable<DataCopyTask> p = mPageDataPlacement->extractTask())
+        while (Nullable<DataCopyTask> p = mBlockDataPlacement->extractTask())
             {
             mTotalTasks++;
             mTotalTaskBytes += p->bytecount();
@@ -255,7 +255,7 @@ private:
 
             ioLock.lock();
 
-            mPageDataPlacement->taskComplete(*p);
+            mBlockDataPlacement->taskComplete(*p);
             }
 
         if (curClock() - mLastLogMessage > 1.0)
@@ -321,7 +321,7 @@ private:
 
     double mLastLogMessage;
 
-    boost::shared_ptr<PageDataPlacements> mPageDataPlacement;
+    boost::shared_ptr<BlockDataPlacements> mBlockDataPlacement;
 
     map<Fora::PageId, int64_t> mPageAddressRefcounts;
 

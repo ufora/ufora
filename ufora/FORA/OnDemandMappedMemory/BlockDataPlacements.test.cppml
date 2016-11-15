@@ -15,7 +15,7 @@
 ****************************************************************************/
 
 #include "MemoryViewDefinition.hppml"
-#include "PageDataPlacements.hppml"
+#include "BlockDataPlacements.hppml"
 #include "OnDemandMemoryRegions.hppml"
 
 #include "../../core/UnitTest.hpp"
@@ -25,9 +25,9 @@
 #include "../../core/math/Random.hpp"
 #include "../../core/containers/ImmutableTreeVector.hppml"
 
-class PageDataPlacementsTest {
+class BlockDataPlacementsTest {
 public:
-    PageDataPlacementsTest() :
+    BlockDataPlacementsTest() :
             mMemoryRegions(
                 [&](OnDemandMemoryRegions::BlockingThread t) {
                     LOG_CRITICAL << "this should never happen.";
@@ -56,9 +56,9 @@ public:
                     mMapOps++;
                     return mMemoryRegions.unmap(mapBase, mapOffset, bytecount);
                     },
-                [&](MemoryBlockId page, IntegerRange range) {
-                    mNeededPageRegions.write(make_pair(page, range));
-                    mPageUploadOps++;
+                [&](MemoryBlockId block, IntegerRange range) {
+                    mNeededBlockRegions.write(make_pair(block, range));
+                    mBlockUploadOps++;
                     },
                 1024 * 1024,
                 32
@@ -69,7 +69,7 @@ public:
             mCopyOps(0),
             mMapOps(0),
             mAllocOps(0),
-            mPageUploadOps(0)
+            mBlockUploadOps(0)
         {
         allocateBlocks(10);
         allocateBigvecs(20);
@@ -98,20 +98,20 @@ public:
             {
             ImmutableTreeVector<MemoryViewDefinitionTerm> terms;
 
-            long pageCount = 2 + mRandom() * 10;
+            long blockCount = 2 + mRandom() * 10;
 
             ImmutableTreeVector<pair<int64_t, IntegerRange> > counts;
 
             uint64_t bytecount = 0;
 
-            for (long p = 0; p < pageCount; p++)
+            for (long b = 0; b < blockCount; b++)
                 {
                 int64_t width = mPageSize * (1 + int(mRandom() * 14));
                 int64_t offset = mPageSize * int(mRandom() * 14);
 
                 if (mRandom() < .25)
                     {
-                    //let's make the page width weird
+                    //let's make the block width weird
                     if (mRandom() < .1)
                         //really weird
                         width -= mRandom() * 125;
@@ -155,8 +155,8 @@ public:
             }
 
         int64_t totalBytes = 0;
-        for (auto& pageAndData: mBlockDatas)
-            totalBytes += pageAndData.second.size() * sizeof(int64_t);
+        for (auto& blockAndData: mBlockDatas)
+            totalBytes += blockAndData.second.size() * sizeof(int64_t);
 
         LOG_INFO << "after " << count << " value touches:\n"
             << "MB copied: " << mCopyBytes / 1024 / 1024.0 << "\n"
@@ -164,8 +164,8 @@ public:
             << "Bytes/copy operation: " << mCopyBytes / mCopyOps << "\n"
             << "Map ops: " << mMapOps << "\n"
             << "Alloc ops: " << mAllocOps << "\n"
-            << "page upload ops: " << mPageUploadOps << "\n"
-            << "Total mb of page data: " << totalBytes / 1024 / 1024.0
+            << "block upload ops: " << mBlockUploadOps << "\n"
+            << "Total mb of block data: " << totalBytes / 1024 / 1024.0
             ;
         }
 
@@ -173,13 +173,13 @@ public:
         {
         MemoryBlockId block = pickRandomBlock();
 
-        int64_t bytesHeldForPage = mPlacements.bytesOfPageDataHeld(block);
-        int64_t bytesHeldTotal = mPlacements.bytesOfPageDataHeld();
+        int64_t bytesHeldForBlock = mPlacements.bytesOfBlockDataHeld(block);
+        int64_t bytesHeldTotal = mPlacements.totalBytesOfBlockDataHeld();
 
-        mPlacements.dropAllDataForPage(block);
+        mPlacements.dropAllDataForBlock(block);
 
-        lassert(mPlacements.bytesOfPageDataHeld(block) == 0);
-        lassert(bytesHeldTotal - mPlacements.bytesOfPageDataHeld() == bytesHeldForPage);
+        lassert(mPlacements.bytesOfBlockDataHeld(block) == 0);
+        lassert(bytesHeldTotal - mPlacements.totalBytesOfBlockDataHeld() == bytesHeldForBlock);
         }
 
     void touchARandomBlock()
@@ -201,7 +201,7 @@ public:
         if (!mPlacements.getMappableAddress(ent))
             {
             if (ent.isView())
-                mPlacements.addBigVecPageLayout(mViewDefinitions[ent.getView().view()]);
+                mPlacements.addMemoryViewDefinition(mViewDefinitions[ent.getView().view()]);
 
             mPlacements.setMappableAddress(ent, mMemoryRegions.allocateMappableRegion(bytecount), bytecount);
             }
@@ -279,10 +279,10 @@ public:
     bool updateStep()
         {
         lassert_dump(
-            mPlacements.totalBytesOfPhysicalMemoryAllocated() - mPlacements.bytesOfPageDataHeld() < 1024 * 1024 * 2,
+            mPlacements.totalBytesOfPhysicalMemoryAllocated() - mPlacements.totalBytesOfBlockDataHeld() < 1024 * 1024 * 2,
             mPlacements.totalBytesOfPhysicalMemoryAllocated() / 1024 / 1024.0 << " MB of physical data. "
-                << mPlacements.bytesOfPageDataHeld() / 1024 / 1024.0 << " MB of page data. excess = "
-                << (mPlacements.totalBytesOfPhysicalMemoryAllocated() - mPlacements.bytesOfPageDataHeld()) / 1024 / 1024.0
+                << mPlacements.totalBytesOfBlockDataHeld() / 1024 / 1024.0 << " MB of block data. excess = "
+                << (mPlacements.totalBytesOfPhysicalMemoryAllocated() - mPlacements.totalBytesOfBlockDataHeld()) / 1024 / 1024.0
                 << " MB."
             );
 
@@ -297,32 +297,32 @@ public:
             return true;
             }
 
-        if (auto needed = mNeededPageRegions.getNonblock())
+        if (auto needed = mNeededBlockRegions.getNonblock())
             {
             int64_t index = 0;
 
-            int64_t pageBytes = mBlockDatas[needed->first].size() * sizeof(int64_t);
+            int64_t blockBytes = mBlockDatas[needed->first].size() * sizeof(int64_t);
 
             lassert_dump(
                 needed->second.high() <= mBlockDatas[needed->first].size() * sizeof(int64_t),
-                "Asked for " << prettyPrintString(needed) << " but we only have " << pageBytes
+                "Asked for " << prettyPrintString(needed) << " but we only have " << blockBytes
                 );
 
             //sometimes, we give more than we need
             if (mRandom() < .2)
                 {
                 if (mRandom() < .1)
-                    needed->second = IntegerRange(0, pageBytes);
+                    needed->second = IntegerRange(0, blockBytes);
                 else
                     {
                     needed->second.low() = std::max<int64_t>(0, needed->second.low() - mRandom() * mPageSize);
-                    needed->second.high() = std::min<int64_t>(pageBytes, needed->second.high() + mRandom() * mPageSize);
+                    needed->second.high() = std::min<int64_t>(blockBytes, needed->second.high() + mRandom() * mPageSize);
                     }
                 }
 
             LOG_DEBUG << "Handing in " << needed;
 
-            mPlacements.allocatePageData(
+            mPlacements.allocateBlockData(
                 needed->first,
                 needed->second,
                 (uint8_t*)&mBlockDatas[needed->first][0] + needed->second.low()
@@ -343,19 +343,19 @@ private:
 
     int64_t mAllocOps;
 
-    int64_t mPageUploadOps;
+    int64_t mBlockUploadOps;
 
     Ufora::math::Random::Uniform<double> mRandom;
 
     int64_t mBytesPerBlock;
 
-    Queue<pair<MemoryBlockId, IntegerRange> > mNeededPageRegions;
+    Queue<pair<MemoryBlockId, IntegerRange> > mNeededBlockRegions;
 
     OnDemandMemoryRegions mMemoryRegions;
 
     int64_t mPageSize;
 
-    PageDataPlacements mPlacements;
+    BlockDataPlacements mPlacements;
 
     std::vector<MemoryBlockId> mBlocks;
 
@@ -369,9 +369,9 @@ private:
 };
 
 
-BOOST_AUTO_TEST_CASE( test_PageDataPlacements_random )
+BOOST_AUTO_TEST_CASE( test_BlockDataPlacements_random )
 	{
-    PageDataPlacementsTest test;
+    BlockDataPlacementsTest test;
 
     test.touchRandomly(100000);
 	}
@@ -398,13 +398,13 @@ MemoryViewDefinition testLayout(ImmutableTreeVector<pair<int64_t, IntegerRange> 
 }
 
 //walk through a sequence of very basic operations, just to make sure its working correctly.
-BOOST_AUTO_TEST_CASE( test_PageDataPlacements_basic )
+BOOST_AUTO_TEST_CASE( test_BlockDataPlacements_basic )
     {
     Queue<pair<MemoryBlockId, IntegerRange> > needed;
 
     OnDemandMemoryRegions memoryRegions(
         //we designed the test suite so that we never actually trigger a page fault - we're trying to call
-        //the functions on the PDP directly so that it doesn't happen. If this does happen, it means
+        //the functions on the BlockDataPlacements directly so that it doesn't happen. If this does happen, it means
         //that a mapping we expected to happen has not occurred.
         [&](OnDemandMemoryRegions::BlockingThread t) {
             LOG_CRITICAL << "this should never happen.";
@@ -418,7 +418,7 @@ BOOST_AUTO_TEST_CASE( test_PageDataPlacements_basic )
 
     int64_t pageSize = memoryRegions.pageSize();
 
-    PageDataPlacements placements(
+    BlockDataPlacements placements(
         pageSize,
         [&](PhysicalMemoryAllocation alloc) {
             return memoryRegions.allocateSharedRegion(
@@ -434,8 +434,8 @@ BOOST_AUTO_TEST_CASE( test_PageDataPlacements_basic )
         [&](uint8_t* mapBase, uint64_t mapOffset, uint64_t bytecount) {
             return memoryRegions.unmap(mapBase, mapOffset, bytecount);
             },
-        [&](MemoryBlockId page, IntegerRange range) {
-            needed.write(make_pair(page, range));
+        [&](MemoryBlockId block, IntegerRange range) {
+            needed.write(make_pair(block, range));
             },
         1024 * 1024 * 1024,
         1024
@@ -464,7 +464,7 @@ BOOST_AUTO_TEST_CASE( test_PageDataPlacements_basic )
     someData.resize(pageSize);
     someData[1] = 123;
 
-    placements.allocatePageData(blockId.getBlock().block(), IntegerRange(0, someData.size()), &someData[0]);
+    placements.allocateBlockData(blockId.getBlock().block(), IntegerRange(0, someData.size()), &someData[0]);
 
     auto task = placements.extractTask();
     BOOST_CHECK(task);
@@ -482,7 +482,7 @@ BOOST_AUTO_TEST_CASE( test_PageDataPlacements_basic )
 
     BlockOrViewId vecId(BlockOrViewId::View(layout.viewId()));
 
-    placements.addBigVecPageLayout(layout);
+    placements.addMemoryViewDefinition(layout);
 
     placements.setMappableAddress(vecId, memoryRegions.allocateMappableRegion(pageSize * 2), pageSize * 2);
 
@@ -497,7 +497,7 @@ BOOST_AUTO_TEST_CASE( test_PageDataPlacements_basic )
     //define the next block
     someData.resize(pageSize * 2);
     someData[1] = 23;
-    placements.allocatePageData(testBlock(1), IntegerRange(0, someData.size() * 2), &someData[0]);
+    placements.allocateBlockData(testBlock(1), IntegerRange(0, someData.size() * 2), &someData[0]);
 
     placements.markThreadBlockedOn(vecId, pageSize);
 
