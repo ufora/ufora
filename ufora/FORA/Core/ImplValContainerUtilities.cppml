@@ -18,6 +18,7 @@
 #include "ExecutionContext.hppml"
 #include "Type.hppml"
 #include "ClassMediator.hppml"
+#include "TupleCategory.hppml"
 #include "../Primitives/ExternalFunctionDescription.hppml"
 #include "../TypedFora/ABI/PackedForaValues.hppml"
 #include "../TypedFora/ABI/ForaValueArray.hppml"
@@ -336,8 +337,17 @@ namespace ImplValContainerUtilities {
 				);
 		}
 
-
 	ImplValContainer classGetItem(const ImplValContainer& cls, uword_t index)
+		{
+		return ImplValContainer(classGetItemRaw(cls.getReference(), index));
+		}
+
+	ImplVal classGetItemRaw(const ImplValContainer& cls, uword_t index)
+		{
+		return classGetItemRaw(cls.getReference(), index);
+		}
+
+	ImplVal classGetItemRaw(const ImplVal& cls, uword_t index)
 		{
 		@match Type(cls.type())
 			-|	Class(types, (f, resump)) ->> {
@@ -358,7 +368,7 @@ namespace ImplValContainerUtilities {
 				else
 					tr = ImplVal(outType, dataPtr);
 
-				return ImplValContainer(tr);
+				return tr;
 				}
 			-|  _ ->> { lassert(false); }
 			;
@@ -367,8 +377,24 @@ namespace ImplValContainerUtilities {
 	//extract the named element 'val' as if it were referred to in 'object's inner closure
 	//if it's a calculated field (say, on itself or a bound member) then the second element of the
 	//pair will be populated.
-	Nullable<pair<ImplValContainer, Nullable<Symbol> > >
+	Nullable<pair<ImplValContainer, Nullable<Symbol>>>
 			objectGetMember(const ImplValContainer& object, Symbol val)
+		{
+		Nullable<pair<ImplVal, Nullable<Symbol>>> res =
+			objectGetMemberRaw(object, val);
+
+		if (res.isNull()) {
+			return null();
+			}
+
+		return null() << std::make_pair(
+			ImplValContainer(res->first),
+			res->second
+			);
+		}
+
+	Nullable<pair<ImplVal, Nullable<Symbol> > >
+			objectGetMemberRaw(const ImplValContainer& object, Symbol val)
 		{
 		if (!object.type().isClass())
 			return null();
@@ -382,28 +408,33 @@ namespace ImplValContainerUtilities {
 
 		LexicalBinding binding = *lexicalSurroundings[val];
 
-		ImplValContainer item = object;
+		ImplVal item = object.getReference();
 
 		@match LexicalBinding(binding)
 			-| Member(unbindIndexSequence, member) ->> {
 				for (auto index: unbindIndexSequence)
 					if (item.type().isTuple())
 						{
-						Nullable<ImplValContainer> child = item.tupleGetItem(index);
-						if (!child)
+						uword_t tupleSize = TupleCategory::tupleSize(item);
+						if (index >= tupleSize) {
 							return null();
-						item = *child;
+							}
+
+						item = TupleCategory::getItem(item, index);
 						}
 						else
-					if (item.type().isClass() && item.type().getClass().elements().size() > index)
-						item = classGetItem(item, index);
-					else
+					if (item.type().isClass() &&
+						item.type().getClass().elements().size() > index) {
+						item = classGetItemRaw(item, index);
+						}
+					else {
 						return null();
+						}
 
 				return null() << make_pair(item, member);
 				}
 			-| Constant(c) ->> {
-				return null() << make_pair(ImplValContainer(c), Nullable<Symbol>());
+				return null() << make_pair(c.getReference(), Nullable<Symbol>());
 				}
 		}
 
@@ -598,10 +629,10 @@ namespace ImplValContainerUtilities {
 			const ImmutableTreeMap<ImplValContainer, ImplValContainer>& keysAndValues
 			)
 		{
-        auto keys = keysAndValues.keys();
-        auto values = keysAndValues.values();
+		auto keys = keysAndValues.keys();
+		auto values = keysAndValues.values();
 
-        return createDict(keys, values);
+		return createDict(keys, values);
 		}
 
 	ImplValContainer createDict(
@@ -612,7 +643,7 @@ namespace ImplValContainerUtilities {
 		lassert(keys.size() == values.size());
 
 		ImplVal tr = ImplVal::introduce(Type::Dictionary(true));
-        Dictionary dict;
+		Dictionary dict;
 
 		for (long ix = 0; ix < keys.size(); ++ix)
 			{
@@ -622,8 +653,8 @@ namespace ImplValContainerUtilities {
 				);
 			}
 
-        Dictionary* data = (Dictionary*)tr.data();
-        new (data) Dictionary(dict);
+		Dictionary* data = (Dictionary*)tr.data();
+		new (data) Dictionary(dict);
 
 		return ImplValContainer::assumeOwnershipOf(tr);
 		}

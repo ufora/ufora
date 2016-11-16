@@ -811,8 +811,6 @@ class Converter(object):
                             if result is not UnconvertibleToken:
                                 members[(str(memberName),)] = result
 
-                sourcePath = defPoint.defPoint.asExternal.paths[0]
-
                 om = implval.objectMetadata
                 if 'classMetadata' in om:
                     om = om['classMetadata']
