@@ -928,10 +928,11 @@ void _handleUnresolvedFreeVariableException(const PyObject* filename)
             );
         }
     else {
-        Py_DECREF(exception);
-        Py_DECREF(v);
-        Py_DECREF(tb);
-        throw std::runtime_error("expected an UnresolvedFreeVariableException");
+        PyErr_Restore(exception, v, tb);
+        throw std::runtime_error(
+            "PyObjectWalker::<anonymous namespace>::"
+            "_handleUnresolvedFreeVariableException: " +
+            PyObjectUtils::format_exc());
         }
 
     Py_DECREF(exception);
