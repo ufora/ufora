@@ -30,7 +30,6 @@
 #include "UnresolvedFreeVariableExceptions.hpp"
 #include "UnresolvedFreeVariableExceptionWithTrace.hpp"
 
-#include <iostream>
 #include <stdexcept>
 #include <vector>
 
