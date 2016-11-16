@@ -31,29 +31,29 @@ class FreeVariableMemberAccessChain;
 
 class BinaryObjectRegistry {
 public:
-    const static uint8_t CODE_NONE=1;
-    const static uint8_t CODE_INT=2;
-    const static uint8_t CODE_LONG=3;
-    const static uint8_t CODE_FLOAT=4;
-    const static uint8_t CODE_BOOL=5;
-    const static uint8_t CODE_STR=6;
-    const static uint8_t CODE_LIST_OF_PRIMITIVES=7;
-    const static uint8_t CODE_TUPLE=8;
-    const static uint8_t CODE_PACKED_HOMOGENOUS_DATA=9;
-    const static uint8_t CODE_LIST=10;
-    const static uint8_t CODE_FILE=11;
-    const static uint8_t CODE_DICT=12;
-    const static uint8_t CODE_REMOTE_PY_OBJECT=13;
-    const static uint8_t CODE_BUILTIN_EXCEPTION_INSTANCE=14;
-    const static uint8_t CODE_NAMED_SINGLETON=15;
-    const static uint8_t CODE_FUNCTION=16;
-    const static uint8_t CODE_CLASS=17;
-    const static uint8_t CODE_UNCONVERTIBLE=18;
-    const static uint8_t CODE_CLASS_INSTANCE=19;
-    const static uint8_t CODE_INSTANCE_METHOD=20;
-    const static uint8_t CODE_WITH_BLOCK=21;
-    const static uint8_t CODE_PY_ABORT_EXCEPTION=22;
-    const static uint8_t CODE_STACKTRACE_AS_JSON=23;
+    constexpr static uint8_t CODE_NONE=1;
+    constexpr static uint8_t CODE_INT=2;
+    constexpr static uint8_t CODE_LONG=3;
+    constexpr static uint8_t CODE_FLOAT=4;
+    constexpr static uint8_t CODE_BOOL=5;
+    constexpr static uint8_t CODE_STR=6;
+    constexpr static uint8_t CODE_LIST_OF_PRIMITIVES=7;
+    constexpr static uint8_t CODE_TUPLE=8;
+    constexpr static uint8_t CODE_PACKED_HOMOGENOUS_DATA=9;
+    constexpr static uint8_t CODE_LIST=10;
+    constexpr static uint8_t CODE_FILE=11;
+    constexpr static uint8_t CODE_DICT=12;
+    constexpr static uint8_t CODE_REMOTE_PY_OBJECT=13;
+    constexpr static uint8_t CODE_BUILTIN_EXCEPTION_INSTANCE=14;
+    constexpr static uint8_t CODE_NAMED_SINGLETON=15;
+    constexpr static uint8_t CODE_FUNCTION=16;
+    constexpr static uint8_t CODE_CLASS=17;
+    constexpr static uint8_t CODE_UNCONVERTIBLE=18;
+    constexpr static uint8_t CODE_CLASS_INSTANCE=19;
+    constexpr static uint8_t CODE_INSTANCE_METHOD=20;
+    constexpr static uint8_t CODE_WITH_BLOCK=21;
+    constexpr static uint8_t CODE_PY_ABORT_EXCEPTION=22;
+    constexpr static uint8_t CODE_STACKTRACE_AS_JSON=23;
 
 public:
     BinaryObjectRegistry();
