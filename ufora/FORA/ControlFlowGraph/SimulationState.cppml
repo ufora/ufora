@@ -179,28 +179,37 @@ void SimulationState::addNewSlotIfNecessary()
         mIndicesOfSubmittableFutures.insert(currentSlotIndex);
         }
 
-    addDependenciesAndRefcounts(slotIndicesWeDependOn, currentSlotIndex);
-
     mSlotDependencies.insert(slotIndicesWeDependOn, currentSlotIndex);
 
-    addSlot(
+    auto newSlot = 
         FutureSlot::Future(
             simulationHead().label(),
             simulationHead().values(),
             futureApplyArgs
-            )
-        );
+            );
+
+    addSlot(newSlot);
     }
 
 void SimulationState::addSlot(const FutureSlot& inSlot)
     {
     lassert(inSlot.isFuture());
 
-    mSlots.push_back(
-        inSlot
-        );
+    mSlots.push_back(inSlot);
 
-    mSlotRefcounts.push_back(1);
+    //implicitly, the top slot always has an incref from the current
+    //simulation head, and every slot has an incref for being a 'future'
+    mSlotRefcounts.push_back(2);
+
+    if (mSlots.size() > 1)
+        decref(mSlots.size() - 2);
+
+    //incref anybody referenced by this guy
+    std::set<uint64_t> indicesReferenced;
+    computeDependentSlotIndices(inSlot, indicesReferenced);
+
+    for (auto i: indicesReferenced)
+        incref(i);
     }
 
 void SimulationState::incref(uint64_t inSlotIndex)
@@ -213,8 +222,9 @@ void SimulationState::decref(uint64_t inSlotIndex)
     uint64_t& refcount = mSlotRefcounts.at(inSlotIndex);
 
     lassert(refcount > 0);
+    refcount--;
 
-    if (--refcount == 0)
+    if (refcount == 0)
         {
         FutureSlot& slot = mSlots.at(inSlotIndex);
 
@@ -225,7 +235,13 @@ void SimulationState::decref(uint64_t inSlotIndex)
             << inSlotIndex << "\n" << toString()
             );
 
+        std::set<uint64_t> indicesReferenced;
+        computeDependentSlotIndices(slot, indicesReferenced);
+
         slot = FutureSlot::GarbageCollected(slot.label());
+
+        for (auto i: indicesReferenced)
+            decref(i);
         }
     }
 
@@ -278,23 +294,22 @@ std::string SimulationState::toString() const
     {
     std::ostringstream oss;
 
-    oss << "SimulationState:\n"
-        << "simulationhead = "
-        << prettyPrintString(mSimulationHead)
-        << "\nslots = "
-        << prettyPrintString(mSlots)
-        << "\nrefcounts = "
-        << prettyPrintString(mSlotRefcounts)
-        << "\nsubmittables = "
-        << prettyPrintString(mIndicesOfSubmittableFutures)
-        << "\ndependencies k2v = "
-        << prettyPrintString(mSlotDependencies.getKeysToValues())
-        << "\ndependencies v2k = "
-        << prettyPrintString(mSlotDependencies.getValuesToKeys())
-        << "\ndependenciesAtHead = "
-        << prettyPrintString(mSlotDependenciesAtSimulationHead)
-        << "\n"
-        ;
+    oss << "graph hash = " << prettyPrintString(mSimulationHead.graph().hash()) << "\n";
+    oss << "graph label = " << prettyPrintString(mSimulationHead.label()) << "\n";
+
+    for (long k = 0; k < mSlots.size(); k++)
+        {
+        oss << "slot " << k << ", rc = " << mSlotRefcounts[k];
+        if (mIndicesOfSubmittableFutures.find(k) != mIndicesOfSubmittableFutures.end())
+            oss << " <submit> ";
+        else
+            oss << "          ";
+        oss << "needing us = " << prettyPrintStringWithoutWrapping(mSlotDependencies.getValues(k)) << ". ";
+        oss << "we need = " << prettyPrintStringWithoutWrapping(mSlotDependencies.getKeys(k)) << ". ";
+        oss << " -> " << prettyPrintStringWithoutWrapping(mSlots[k]) << "\n";
+        }
+
+    oss << "\n\nhead values = " << prettyPrintString(mSimulationHead.values()) << "\n";
 
     return oss.str();
     }
@@ -334,13 +349,25 @@ void SimulationState::slotCompleted(
         bool isException
         )
     {
+    ImmutableTreeVector<FutureValue> ifException;
+
+    @match FutureSlot(mSlots.at(inSlotIndex))
+        -| Future(values) ->> {
+            ifException = values;
+            }
+        -| _ ->> { lassert_dump(false, "didn't expect " << prettyPrintString(mSlots.at(inSlotIndex))); }
+
+    //incref anybody referenced by this guy
+    std::set<uint64_t> indicesReferenced;
+    computeDependentSlotIndices(mSlots.at(inSlotIndex), indicesReferenced);
+
     mSlots.at(inSlotIndex) =
         FutureSlot::Current(
-            mSlots.at(inSlotIndex).label(), inResult, isException
+            mSlots.at(inSlotIndex).label(), 
+            inResult, 
+            isException,
+            isException || !inResult.isCST() ? ifException : ImmutableTreeVector<FutureValue>()
             );
-
-    if (isException or !inResult.isCST())
-        incref(inSlotIndex);
 
     lassert(mIndicesOfSubmittableFutures.find(inSlotIndex) !=
         mIndicesOfSubmittableFutures.end());
@@ -350,31 +377,13 @@ void SimulationState::slotCompleted(
 
     updateSubmittableFuturesSet(inSlotIndex);
 
-    decrefKeysForSlotIndex(inSlotIndex);
+    for (auto i: indicesReferenced)
+        decref(i);
 
-    if (inResult.isCST() and not isException)
-        decrefSlotArgs(inSlotIndex);
-    }
-
-void SimulationState::decrefSlotArgs(uint64_t slotIndex)
-    {
-    for (auto noLongerNeededIx: mSlotsToDecrefOnResult[slotIndex])
-        {
-        decref(noLongerNeededIx);
-        }
-    }
-
-void SimulationState::addDependenciesAndRefcounts(
-        const std::set<uint64_t>& inSlotIndicesOfDependencies,
-        uint64_t inDependentSlotIndex
-        )
-    {
-    mSlotDependencies.insert(inSlotIndicesOfDependencies, inDependentSlotIndex);
-
-    for (auto slotIndex: inSlotIndicesOfDependencies)
-        {
-        incref(slotIndex);
-        }
+    //don't decref exceptions or mutables. We may not have any other refcount on it,
+    //but the main infrastructure will bail on it if it happens.
+    if (!isException && inResult.isCST())
+        decref(inSlotIndex);
     }
 
 void SimulationState::updateSimulationHeadAndDependentSlotIndices(
@@ -382,21 +391,10 @@ void SimulationState::updateSimulationHeadAndDependentSlotIndices(
         )
     {
     std::set<uint64_t> dependenciesOfNewHead;
+
     computeDependentSlotIndices(
         inNewSimulationHead,
         dependenciesOfNewHead
-        );
-
-    std::set<uint64_t> indicesWhichLeftCurrentHead;
-
-    std::set_difference(
-        mSlotDependenciesAtSimulationHead.begin(),
-        mSlotDependenciesAtSimulationHead.end(),
-        dependenciesOfNewHead.begin(),
-        dependenciesOfNewHead.end(),
-        std::inserter(
-            indicesWhichLeftCurrentHead,
-            indicesWhichLeftCurrentHead.begin())
         );
 
     auto body = inNewSimulationHead.body();
@@ -406,21 +404,12 @@ void SimulationState::updateSimulationHeadAndDependentSlotIndices(
     for (auto ix: dependenciesOfNewHead)
         incref(ix);
 
-    if (body.isApply() or body.isCached())
-        {
-        mSlotsToDecrefOnResult[getSlots().size()] = dependenciesOfNewHead;
-        }
+    for (auto ix: mSlotDependenciesAtSimulationHead)
+        decref(ix);
+
 
     mSimulationHead = inNewSimulationHead;
     mSlotDependenciesAtSimulationHead = dependenciesOfNewHead;
-    }
-
-void SimulationState::decrefKeysForSlotIndex(uint64_t inCompletedSlotIndex)
-    {
-    for (auto slotIx: mSlotDependencies.getKeys(inCompletedSlotIndex))
-        {
-        decref(slotIx);
-        }
     }
 
 void SimulationState::updateSubmittableFuturesSet(uint64_t inCompletedSlotIndex)
@@ -479,8 +468,7 @@ hash_type SimulationState::hash() const
         hashValue(mIndicesOfSubmittableFutures) + 
         hashValue(mSlotDependencies) + 
         hashValue(mSimulationHead) + 
-        hashValue(mSlotDependenciesAtSimulationHead) + 
-        hashValue(mSlotsToDecrefOnResult)
+        hashValue(mSlotDependenciesAtSimulationHead)
         ;
     }
 
@@ -493,7 +481,6 @@ void SimulationState::serialize(Fora::ForaValueSerializationStream& stream) cons
     stream.serialize(mSlotDependencies);
     stream.serialize(mSimulationHead);
     stream.serialize(mSlotDependenciesAtSimulationHead);
-    stream.serialize(mSlotsToDecrefOnResult);
     }
 
 void SimulationState::deserialize(Fora::ForaValueDeserializationStream& stream)
@@ -504,7 +491,6 @@ void SimulationState::deserialize(Fora::ForaValueDeserializationStream& stream)
     stream.deserialize(mSlotDependencies);
     stream.deserialize(mSimulationHead);
     stream.deserialize(mSlotDependenciesAtSimulationHead);
-    stream.deserialize(mSlotsToDecrefOnResult);
     }
 
 PolymorphicSharedPtr<SimulationState> SimulationState::deepcopy(
@@ -520,8 +506,7 @@ PolymorphicSharedPtr<SimulationState> SimulationState::deepcopy(
     res->mSimulationHead = mSimulationHead;
     res->mSimulationHead.values() = applyFunctionToObjectGraph(duplicator, mSimulationHead.values());
     res->mSlotDependenciesAtSimulationHead = mSlotDependenciesAtSimulationHead;
-    res->mSlotsToDecrefOnResult = mSlotsToDecrefOnResult;
-
+    
     return res;
     }
 
