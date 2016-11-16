@@ -17,10 +17,8 @@
 #include "BinaryObjectRegistry.hpp"
 #include "BinaryObjectRegistryHelpers.hpp"
 #include "FreeVariableMemberAccessChain.hpp"
-#include "Json.hpp"
 #include "PyObjectUtils.hpp"
 
-#include <iostream>
 #include <stdexcept>
 
 
@@ -28,37 +26,6 @@ BinaryObjectRegistry::BinaryObjectRegistry() : mNextObjectId(0)
     {
     }
     
-
-int64_t BinaryObjectRegistry::allocateObject() {
-    int64_t objectId = mNextObjectId;
-    mNextObjectId++;
-    return objectId;
-    }
-
-
-void BinaryObjectRegistry::_writePrimitive(bool b) {
-    mStringBuilder.addByte(CODE_BOOL);
-    mStringBuilder.addByte(b ? 1 : 0);
-    }
-
-
-void BinaryObjectRegistry::_writePrimitive(int64_t i) {
-    mStringBuilder.addByte(CODE_INT);
-    mStringBuilder.addInt64(i);
-    }
-
-
-void BinaryObjectRegistry::_writePrimitive(double d) {
-    mStringBuilder.addByte(CODE_FLOAT);
-    mStringBuilder.addFloat64(d);
-    }
-
-
-void BinaryObjectRegistry::_writePrimitive(const std::string& s) {
-    mStringBuilder.addByte(CODE_STR);
-    mStringBuilder.addString(s);
-    }
-
 
 void BinaryObjectRegistry::_writePrimitive(PyObject* obj) {
     if (obj == Py_None) {
@@ -109,66 +76,6 @@ void BinaryObjectRegistry::defineEndOfStream() {
     }
 
 
-void BinaryObjectRegistry::defineTuple(int64_t objectId,
-                                       const std::vector<int64_t>& memberIds)
-    {
-    defineTuple(objectId,
-                &memberIds[0],
-                memberIds.size());
-    }
-
-    
-void BinaryObjectRegistry::defineTuple(int64_t objectId,
-                                       const int64_t* memberIds,
-                                       uint64_t nMemberIds)
-    {
-    mStringBuilder.addInt64(objectId);
-    mStringBuilder.addByte(CODE_TUPLE);
-    mStringBuilder.addInt64s(memberIds, nMemberIds);
-    }
-
-
-void BinaryObjectRegistry::defineList(int64_t objectId,
-                                      const std::vector<int64_t>& memberIds)
-    {
-    defineList(objectId,
-               &memberIds[0],
-               memberIds.size());
-    }
-
-    
-void BinaryObjectRegistry::defineList(int64_t objectId,
-                                      const int64_t* memberIds,
-                                      uint64_t nMemberIds)
-    {
-    mStringBuilder.addInt64(objectId);
-    mStringBuilder.addByte(CODE_LIST);
-    mStringBuilder.addInt64s(memberIds, nMemberIds);
-    }
-
-
-void BinaryObjectRegistry::defineFile(int64_t objectId,
-                                      const std::string& text,
-                                      const std::string& path)
-    {
-    mStringBuilder.addInt64(objectId);
-    mStringBuilder.addByte(CODE_FILE);
-    mStringBuilder.addString(path);
-    mStringBuilder.addString(text);
-    }
-
-
-void BinaryObjectRegistry::defineDict(int64_t objectId,
-                                      const std::vector<int64_t>& keyIds,
-                                      const std::vector<int64_t>& valueIds)
-    {
-    mStringBuilder.addInt64(objectId);
-    mStringBuilder.addByte(CODE_DICT);
-    mStringBuilder.addInt64s(keyIds);
-    mStringBuilder.addInt64s(valueIds);
-    }
-
-
 void BinaryObjectRegistry::defineRemotePythonObject(
         int64_t objectId,
         const PyObject* computedValueArg)
@@ -180,51 +87,6 @@ void BinaryObjectRegistry::defineRemotePythonObject(
     
     mStringBuilder.addString(data);
     }
-
-void BinaryObjectRegistry::defineBuiltinExceptionInstance(
-        int64_t objectId,
-        const std::string& typeName,
-        int64_t argsId)
-    {
-    defineBuiltinExceptionInstance(
-        objectId,
-        typeName.data(),
-        typeName.size(),
-        argsId);
-    }
-
-
-void BinaryObjectRegistry::defineBuiltinExceptionInstance(
-        int64_t objectId,
-        const char* typeName,
-        uint64_t typeNameSize,
-        int64_t argsId)
-    {
-    mStringBuilder.addInt64(objectId);
-    mStringBuilder.addByte(CODE_BUILTIN_EXCEPTION_INSTANCE);
-    mStringBuilder.addString(typeName, typeNameSize);
-    mStringBuilder.addInt64(argsId);
-    }
-
-
-void BinaryObjectRegistry::defineNamedSingleton(
-        int64_t objectId,
-        const std::string& singletonName)
-    {
-    defineNamedSingleton(objectId, singletonName.data(), singletonName.size());
-    }
-
-
-void BinaryObjectRegistry::defineNamedSingleton(
-        int64_t objectId,
-        const char* singletonName,
-        uint64_t singletonNameSize)
-    {
-    mStringBuilder.addInt64(objectId);
-    mStringBuilder.addByte(CODE_NAMED_SINGLETON);
-    mStringBuilder.addString(singletonName, singletonNameSize);
-    }
-
 
 void BinaryObjectRegistry::defineUnconvertible(
         int64_t objectId,
@@ -428,11 +290,3 @@ std::string BinaryObjectRegistry::_computedValueDataString(
     }
 
 
-void BinaryObjectRegistry::defineStacktrace(
-        int64_t objectId,
-        const PyObject* stacktraceAsJson)
-    {
-    mStringBuilder.addInt64(objectId);
-    mStringBuilder.addByte(CODE_STACKTRACE_AS_JSON);
-    mStringBuilder.addString(Json::dumps(stacktraceAsJson));
-    }
