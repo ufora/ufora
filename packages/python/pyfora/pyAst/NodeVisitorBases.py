@@ -77,7 +77,9 @@ class SemanticOrderNodeTransvisitor(ast.NodeTransformer):
     """Modifies ast.NodeTransformer visitation order and enables to visit lists of ast.Node.
 
     It is called a 'transvisitor' because it implements a transformer but only
-    performs a visit (i.e., it does not modify the ast)
+    performs a visit (i.e., it should not modify the AST). This implementation
+    detail is exposed to the user because they must be aware of it to correctly
+    implement a derived class.
     """
     def generic_visit(self, node):
         if isinstance(node, list):

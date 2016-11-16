@@ -69,7 +69,7 @@ class _CollectBoundValuesInScopeTransvisitor(NodeVisitorBases.GenericInScopeTran
 
     def getBoundValues(self, getPositions=False):
         self._cachedCompute()
-        if getPositions is True:
+        if getPositions:
             return self._boundVarsWithPos.union(self._boundNamesWithPos)
         else:
             return self.getBoundVariables().union(self.getBoundNames())
@@ -232,7 +232,7 @@ class _FreeVariableMemberAccessChainsTransvisitor(NodeVisitorBases.GenericScoped
         (chainOrNone, root) = _memberAccessChainWithLocOrNone(node)
         if chainOrNone is not None:
             self.processChain(chainOrNone, root.ctx, root.lineno, root.col_offset)
-        elif allow_recursion is True:
+        elif allow_recursion:
             # required to recurse deeper into the AST, but only do it if
             # _freeVariableMemberAccessChain was None, indicating that it
             # doesn't want to consume the whole expression
