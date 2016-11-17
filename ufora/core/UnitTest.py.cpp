@@ -38,6 +38,8 @@ bool init_unit_test()
 
 int test(void)
 	{
+	ScopedPyThreads releaseTheGil;
+
 	char substr[3];
 	substr[0] = 0;
 
@@ -65,6 +67,8 @@ int testWithArgs(boost::python::object args)
 
 	//make sure there's a null terminator
 	charptrs.push_back(0);
+
+	ScopedPyThreads releaseTheGil;
 
 	return ::boost::unit_test::unit_test_main( &init_unit_test, charptrs.size()-1, &charptrs[0]);
 	}
