@@ -180,9 +180,10 @@ class _FreeVariableMemberAccessChainsTransvisitor(NodeVisitorBases.GenericScoped
         self._boundValues = set()
         self._boundInScopeSoFar = set()
 
-        self._freeVariableMemberAccessChainsWithPos = set()
-        self._freeVariablesWithPos = set()
-        self.exclude_predicate = exclude_predicate
+        self._freeVariableMemberAccessChainsWithPos = collections.defaultdict(set)
+        self._freeVariablesWithPos = collections.defaultdict(set)
+
+        self._exclude_predicate = exclude_predicate
 
     def getBoundValues(self):
         return (self._boundValues, self._boundInScopeSoFar)
@@ -194,27 +195,29 @@ class _FreeVariableMemberAccessChainsTransvisitor(NodeVisitorBases.GenericScoped
     def isBoundSoFar(self, name):
         return name in self._boundValues or name in self._boundInScopeSoFar
     def isFree(self, var):
-        return any(var == free_var for (free_var, _pos) in self._freeVariablesWithPos)
+        return var in self._freeVariablesWithPos
     def getFreeVars(self, getPositions=False):
         if getPositions:
-            return self._freeVariablesWithPos
+            return set([VarWithPosition(var=var, pos=pos)
+                        for var in self._freeVariablesWithPos
+                        for pos in self._freeVariablesWithPos[var]])
         else:
-            return {var for (var, _) in self._freeVariablesWithPos}
+            return set(self._freeVariablesWithPos.keys())
     def getFreeVariablesMemberAccessChains(self, getPositions=False):
         if getPositions:
-            return self._freeVariableMemberAccessChainsWithPos
+            return set([VarWithPosition(var=chain, pos=pos)
+                        for chain in self._freeVariableMemberAccessChainsWithPos
+                        for pos in self._freeVariableMemberAccessChainsWithPos[chain]])
         else:
-            return {chain for (chain, _) in self._freeVariableMemberAccessChainsWithPos}
+            return set(self._freeVariableMemberAccessChainsWithPos.keys())
 
     def addFreeVariableMemberAccessChain(self, chain, lineno, col_offset):
         pos = NodeVisitorBases.PositionInFile(
                     lineno=lineno,
                     col_offset=col_offset
                     )
-        self._freeVariableMemberAccessChainsWithPos.add(
-            VarWithPosition(var=chain, pos=pos))
-        self._freeVariablesWithPos.add(
-            VarWithPosition(var=chain[0], pos=pos))
+        self._freeVariableMemberAccessChainsWithPos[chain].add(pos)
+        self._freeVariablesWithPos[chain[0]].add(pos)
 
     def processChain(self, chain, ctx, lineno, col_offset):
         '''Updates bound and free variables and returns isBoundSoFar before call.'''
@@ -249,8 +252,8 @@ class _FreeVariableMemberAccessChainsTransvisitor(NodeVisitorBases.GenericScoped
         return NodeVisitorBases.GenericScopedTransvisitor.visit_ClassDef(self, node)
 
     def generic_visit(self, node):
-        if self.exclude_predicate is None or not self.exclude_predicate(node):
-            super(_FreeVariableMemberAccessChainsTransvisitor, self).generic_visit(node)
+        if self._exclude_predicate is None or not self._exclude_predicate(node):
+            node = super(_FreeVariableMemberAccessChainsTransvisitor, self).generic_visit(node)
         return node
 
 def getFreeVariables(pyAstNode, isClassContext=None, getPositions=False):
