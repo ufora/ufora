@@ -34,6 +34,33 @@
 #include <vector>
 
 
+namespace {
+
+bool _isPrimitive(const PyObject* pyObject)
+    {
+    return Py_None == pyObject or
+        PyInt_Check(pyObject) or
+        PyFloat_Check(pyObject) or
+        PyString_Check(pyObject) or
+        PyBool_Check(pyObject);        
+    }
+
+
+bool _allPrimitives(const PyObject* pyList)
+    {
+    // precondition: the argument must be a PyList
+    Py_ssize_t size = PyList_GET_SIZE(pyList);
+    for (Py_ssize_t ix = 0; ix < size; ++ix)
+        {
+        if (not _isPrimitive(PyList_GET_ITEM(pyList, ix)))
+            return false;
+        }
+    return true;
+    }
+
+} // anonymous namespace
+
+
 PyObjectWalker::PyObjectWalker(
         PyObject* purePythonClassMapping,
         BinaryObjectRegistry& objectRegistry,
@@ -453,29 +480,6 @@ void PyObjectWalker::_walkPyObject(PyObject* pyObject, int64_t objectId) {
         throw std::runtime_error("PyObjectWalker couldn't handle a PyObject: " +
             PyObjectUtils::repr_string(pyObject));
         }
-    }
-
-
-bool PyObjectWalker::_isPrimitive(const PyObject* pyObject)
-    {
-    return Py_None == pyObject or
-        PyInt_Check(pyObject) or
-        PyFloat_Check(pyObject) or
-        PyString_Check(pyObject) or
-        PyBool_Check(pyObject);        
-    }
-
-
-bool PyObjectWalker::_allPrimitives(const PyObject* pyList)
-    {
-    // precondition: the argument must be a PyList
-    Py_ssize_t size = PyList_GET_SIZE(pyList);
-    for (Py_ssize_t ix = 0; ix < size; ++ix)
-        {
-        if (not _isPrimitive(PyList_GET_ITEM(pyList, ix)))
-            return false;
-        }
-    return true;
     }
 
 
