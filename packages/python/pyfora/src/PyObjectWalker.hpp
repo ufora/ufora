@@ -141,9 +141,6 @@ private:
     void _initUnconvertibleClass();
     void _initPyforaConnectHack();
 
-    static bool _isPrimitive(const PyObject* pyObject);
-    static bool _allPrimitives(const PyObject* pyList);
-
     PureImplementationMappings mPureImplementationMappings;
 
     PyObject* mRemotePythonObjectClass;
