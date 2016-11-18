@@ -302,16 +302,87 @@ void PythonBinaryStreamFromImplval::writeList(
         return;
         }
 
-    bool successfullyWrote =
-        tryWriteHomogeneousListOfDirectlySeralizable(stream,
-                                                     vec,
-                                                     objId);
+    bool successfullyWrote;
+
+    successfullyWrote =
+        tryWriteHomogeneousListOfDirectlySeralizable(stream, vec, objId);
+    if (successfullyWrote) {
+        return;
+        }
+
+    successfullyWrote = tryWriteVectorOfPrimitives(stream, vec, objId);
     if (successfullyWrote) {
         return;
         }
 
     writeListGeneric(stream, vec, objId);
+    }
 
+
+bool PythonBinaryStreamFromImplval::isPrimitive(const JudgmentOnValue& jov) const
+    {
+    if (jov == JOV::OfType(mConstantConverter->nonePrototype().type()) or
+        jov == JOV::OfType(mConstantConverter->intPrototype().type()) or
+        jov == JOV::OfType(mConstantConverter->floatPrototype().type()) or
+        jov == JOV::OfType(mConstantConverter->stringPrototype().type()) or
+        jov == JOV::OfType(mConstantConverter->boolPrototype().type())
+        ) {
+        return true;
+        }
+
+    return false;
+    }
+
+
+bool PythonBinaryStreamFromImplval::allPrimitives(const JudgmentOnResult& jor) const
+    {
+    for (uword_t ix = 0; ix < jor.size(); ++ix) {
+        if (not isPrimitive(jor[ix])) {
+            return false;
+            }
+        }
+    return true;
+    }
+
+
+//  Returns true if write was successful, false if not
+bool PythonBinaryStreamFromImplval::tryWriteVectorOfPrimitives(
+        OBinaryStream& stream,
+        VectorRecord& vec,
+        int64_t objId)
+    {
+    if (not allPrimitives(vec.jor())) {
+        return false;
+        }
+
+    stream << objId;
+    stream << PythonBinaryStreamCommon::CODE_LIST_OF_PRIMITIVES;
+    stream << (int64_t) vec.size();
+
+    bool allLoaded = vec.visitAnyValuesPresentInVdm(
+        &*mVDM,
+        [&](ForaValueArray* array, IntegerSequence subsequence) {
+            for (long k = 0; k < subsequence.size();k++)
+                {
+                ImplValContainer value = (*array)[subsequence.offsetForIndex(k)];
+
+                Nullable<ImplVal> primitive =
+                    mConstantConverter->unwrapToPrimitiveRaw(value);
+
+                lassert(primitive.isValue());
+
+                _writePrimitive(
+                    stream,
+                    *primitive
+                    );
+                }
+            },
+        IntegerSequence(vec.size())
+        );
+
+    lassert(allLoaded);
+
+    return true;
     }
 
 Nullable<PythonBinaryStreamCommon::DtypePrimitive>
@@ -475,23 +546,30 @@ void PythonBinaryStreamFromImplval::writePrimitive(
         int64_t objId
         )
     {
+    stream << objId;
+    _writePrimitive(stream, primitive);
+    }
+
+
+void PythonBinaryStreamFromImplval::_writePrimitive(
+        OBinaryStream& stream,
+        const ImplVal& primitive
+        )
+    {
     @match Type(primitive.type())
         -| String() ->> {
-            stream << objId;
             stream << PythonBinaryStreamCommon::CODE_STR;
             stream << primitive.cast<String>().stdString();
             }
         -| Integer(sz, isSigned) ->> {
             if (sz == 64 && isSigned)
                 {
-                stream << objId;
                 stream << PythonBinaryStreamCommon::CODE_INT;
                 stream << primitive.cast<int64_t>();
                 }
             else
                 if (sz == 1 && !isSigned)
                     {
-                    stream << objId;
                     stream << PythonBinaryStreamCommon::CODE_BOOL;
                     stream << primitive.cast<bool>();
                     }
@@ -499,17 +577,14 @@ void PythonBinaryStreamFromImplval::writePrimitive(
         -| Float(bits) ->> {
             if (bits == 64)
                 {
-                stream << objId;
                 stream << PythonBinaryStreamCommon::CODE_FLOAT;
                 stream << primitive.cast<double>();
                 }
             }
         -| Nothing() ->> {
-            stream << objId;
             stream << PythonBinaryStreamCommon::CODE_NONE;
             }
         -| Vector() ->> {
-            stream << objId;
             stream << PythonBinaryStreamCommon::CODE_STR;
 
             VectorRecord vec = primitive.cast<VectorRecord>();
