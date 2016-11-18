@@ -155,7 +155,7 @@ class CheckpointingTest(unittest.TestCase):
 
         assert False, "timed out"
 
-    def timestampOfMostRecentFullCheckpoint(self, simulation, onlyUnfinished = True):
+    def timestampOfMostRecentFullCheckpoint(self, simulation, onlyUnfinished = True, onlySuccessful = True):
         if not simulation.getGlobalScheduler():
             return None
 
@@ -164,7 +164,7 @@ class CheckpointingTest(unittest.TestCase):
             (computation, (checkpointStatus, checkpointRequest)) = statuses[0]
 
             timestamp = checkpointRequest.timestamp
-            isFull = checkpointRequest.writeToStorage
+            isFull = checkpointRequest.writeToStorage and (not onlySuccessful or checkpointStatus.checkpointSuccessful)
 
             if isFull:
                 return timestamp
@@ -216,7 +216,7 @@ class CheckpointingTest(unittest.TestCase):
             if scheduler:
                 statuses = simulation.getGlobalScheduler().currentOutstandingCheckpointStatuses(True, True)
                 for (computation, (stats, checkpoint)) in statuses:
-                    if checkpoint.writeToStorage:
+                    if checkpoint.writeToStorage and stats.checkpointSuccessful:
                         checkpointSecondsElapsed = stats.statistics.timeElapsed.timeSpentInCompiledCode
                         found.append(checkpointSecondsElapsed)
 
@@ -226,7 +226,7 @@ class CheckpointingTest(unittest.TestCase):
                 return found
 
 
-    def waitForFullCheckpoint(self, simulation, priorCheckpoint = None, checkInterval = 0.1, onlyUnfinished = True):
+    def waitForFullCheckpoint(self, simulation, priorCheckpoint = None, checkInterval = 0.1, onlyUnfinished = True, onlySuccessful = False):
         t1 = time.time()
         foundFullCheckpoint = False
         while time.time() - t1 < TIMEOUT and not foundFullCheckpoint:
@@ -235,7 +235,7 @@ class CheckpointingTest(unittest.TestCase):
                 statuses = simulation.getGlobalScheduler().currentOutstandingCheckpointStatuses(onlyUnfinished, True)
                 if statuses:
                     (computation, (stats, checkpoint)) = statuses[0]
-                    if checkpoint.writeToStorage:
+                    if checkpoint.writeToStorage and (not onlySuccessful or stats.checkpointSuccessful):
                         checkpointSecondsElapsed = stats.statistics.timeElapsed.timeSpentInCompiledCode
 
                         if priorCheckpoint is None or priorCheckpoint < checkpointSecondsElapsed:
@@ -322,11 +322,12 @@ class CheckpointingTest(unittest.TestCase):
                         newCheckpoint = checkpoint.timestamp
                         if lastCheckpoint is None or newCheckpoint != lastCheckpoint:
                             lastCheckpoint = newCheckpoint
-                            if checkpoint.writeToStorage:
+                            if checkpoint.writeToStorage and stats.checkpointSuccessful:
                                 foundFullCheckpoint = True
                     time.sleep(.1)
 
                 self.assertTrue(foundFullCheckpoint)
+
                 count += 1
                 logging.info(
                     "Total: %d after %s with %d files.",
@@ -876,7 +877,7 @@ class CheckpointingTest(unittest.TestCase):
 
                     simulation.getGlobalScheduler().triggerFullCheckpointsOnOutstandingComputations()
 
-                    timestamp = self.waitForFullCheckpoint(simulation, priorCheckpoint=timestamp)
+                    timestamp = self.waitForFullCheckpoint(simulation, priorCheckpoint=timestamp, onlySuccessful = False)
 
                     statuses = simulation.getGlobalScheduler().currentOutstandingCheckpointStatuses(True, True)
 
