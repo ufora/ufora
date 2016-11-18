@@ -96,14 +96,19 @@ RUN wget http://developer.download.nvidia.com/compute/cuda/repos/ubuntu1604/x86_
 
 RUN dpkg -i cuda-repo-ubuntu1604_8.0.44-1_amd64.deb
 
-RUN apt-get update && \
-    DEBIAN_FRONTEND=noninteractive  apt-get install -y --no-install-recommends \
-    cuda-core-8-0 \
-    cuda-cudart-8-0 \
-    cuda-cudart-dev-8-0 \
-    cuda-driver-dev-8-0 \
-    cuda-drivers \
-    cuda-nvrtc-8-0 \
-    libcuda1-367
+RUN apt-get update \
+    && \
+    DEBIAN_FRONTEND=noninteractive \
+    apt-get install  --no-upgrade --no-install-recommends --yes \
+        nvidia-367=367.48-0ubuntu1     \
+        nvidia-367-dev=367.48-0ubuntu1 \
+        nvidia-opencl-icd-367=367.48-0ubuntu1 \
+        cuda-core-8-0=8.0.44-1         \
+        cuda-cudart-8-0=8.0.44-1       \
+        cuda-cudart-dev-8-0=8.0.44-1   \
+        cuda-driver-dev-8-0=8.0.44-1   \
+        cuda-drivers=367.48-1          \
+        cuda-nvrtc-8-0=8.0.44-1        \
+        libcuda1-367=367.48-0ubuntu1
 
 ENV SHELL bash
