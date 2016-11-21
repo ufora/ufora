@@ -20,7 +20,6 @@
 #include "../IRToPythonConverter.hpp"
 #include "../PyObjectUtils.hpp"
 #include "PackedHomogenousDataTypeDescription.hpp"
-#include "PureTypeDescriptionModuleWrapper.hpp"
 
 #include <stdexcept>
 
@@ -160,7 +159,7 @@ PyObject* PackedHomogenousDataTypeDescription::transform(
 
     if (retainHomogenousListsAsNumpy) {
         PyObject* packedHomogeneousDataInstance =
-            PureTypeDescriptionModuleWrapper::pyHomogeneousListAsNumpyArray(array);
+            c.pyHomogeneousListAsNumpyArray(array);
 
         Py_DECREF(array);
 

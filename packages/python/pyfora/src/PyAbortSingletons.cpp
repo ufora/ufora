@@ -45,10 +45,23 @@ PyAbortSingletons::PyAbortSingletons()
     }
 
 
-PyObject* PyAbortSingletons::singletonNameToObject(const std::string& name)
+PyAbortSingletons::PyAbortSingletons(const PyAbortSingletons& other)
+    : mSingletonNameToObject(other.mSingletonNameToObject)
+    {
+    Py_INCREF(mSingletonNameToObject);
+    }
+
+
+PyAbortSingletons::~PyAbortSingletons()
+    {
+    Py_DECREF(mSingletonNameToObject);
+    }
+
+
+PyObject* PyAbortSingletons::singletonNameToObject(const std::string& name) const
     {
     PyObject* tr = PyDict_GetItemString(
-        _getInstance().mSingletonNameToObject,
+        mSingletonNameToObject,
         name.c_str()
         );
 

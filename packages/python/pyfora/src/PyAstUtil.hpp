@@ -17,55 +17,40 @@
 
 #include <Python.h>
 
+#include "PyforaInspect.hpp"
+
 #include <string>
 #include <utility>
 
 
 class PyAstUtil {
 public:
-    static PyObject* sourceFilenameAndText(const PyObject*);
-    static long startingSourceLine(const PyObject*);
+    PyAstUtil();
+    PyAstUtil(const PyAstUtil&);
+    ~PyAstUtil();
 
-    static PyObject* pyAstFromText(const std::string& fileText);
-    static PyObject* pyAstFromText(const PyObject* pyString);
-    static PyObject* functionDefOrLambdaAtLineNumber(const PyObject* obj,
-                                                     long sourceLine);
-    static PyObject* classDefAtLineNumber(const PyObject* obj, long sourceLine);
-    static PyObject* withBlockAtLineNumber(const PyObject* obj, long sourceLine);
-    static PyObject* collectDataMembersSetInInit(PyObject* pyObject);
+    PyObject* sourceFilenameAndText(const PyObject*) const;
+    long startingSourceLine(const PyObject*) const;
 
-    static bool hasReturnInOuterScope(const PyObject* pyAst);
-    static bool hasYieldInOuterScope(const PyObject* pyAst);
+    PyObject* pyAstFromText(const std::string& fileText) const;
+    PyObject* pyAstFromText(const PyObject* pyString) const;
+    PyObject* functionDefOrLambdaAtLineNumber(const PyObject* obj,
+                                              long sourceLine) const;
+    PyObject* classDefAtLineNumber(const PyObject* obj, long sourceLine) const;
+    PyObject* withBlockAtLineNumber(const PyObject* obj, long sourceLine) const;
+    PyObject* collectDataMembersSetInInit(PyObject* pyObject) const;
 
-    static long getYieldLocationsInOuterScope(const PyObject* pyAstNode);
-    static long getReturnLocationsInOuterScope(const PyObject* pyAstNode);
+    bool hasReturnInOuterScope(const PyObject* pyAst) const;
+    bool hasYieldInOuterScope(const PyObject* pyAst) const;
+
+    long getYieldLocationsInOuterScope(const PyObject* pyAstNode) const;
+    long getReturnLocationsInOuterScope(const PyObject* pyAstNode) const;
 
 private:
-    // singleton instance
-    static PyAstUtil& _getInstance() {
-        static PyAstUtil instance;
-        return instance;
-        }
-
-    // implement, but keep private for singleton pattern
-    PyAstUtil();
-    // don't implement for these next two methods for the singleton pattern
-    PyAstUtil(const PyAstUtil&) = delete;
     void operator=(const PyAstUtil&) = delete;
 
-    void _initPyAstUtilModule();
-    void _initGetSourceFilenameAndTextFun();
-    void _initGetSourceLinesFun();
-    void _initPyAstFromTextFun();
-    void _initFunctionDefOrLambdaAtLineNumberFun();
-    void _initClassDefAtLineNumberFun();
-
-    static void _translateError();
+    void _translateError() const;
 
     PyObject* mPyAstUtilModule;
-    PyObject* mGetSourceFilenameAndTextFun;
-    PyObject* mGetSourceLinesFun;
-    PyObject* mPyAstFromTextFun;
-    PyObject* mFunctionDefOrLambdaAtLineNumberFun;
-    PyObject* mClassDefAtLineNumberFun;
+    PyforaInspect mPyforaInspectModule;
 };

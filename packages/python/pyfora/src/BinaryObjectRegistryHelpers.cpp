@@ -20,7 +20,7 @@
 
 
 BinaryObjectRegistryHelpers::BinaryObjectRegistryHelpers() :
-        mComputedValueDataStringFun(0)
+        mComputedValueDataStringFun(nullptr)
     {
     PyObject* binaryObjectRegistryHelpersModule = PyImport_ImportModule("pyfora.BinaryObjectRegistryHelpers");
     if (binaryObjectRegistryHelpersModule == nullptr) {
@@ -46,12 +46,27 @@ BinaryObjectRegistryHelpers::BinaryObjectRegistryHelpers() :
         }
     }
 
+
+BinaryObjectRegistryHelpers::BinaryObjectRegistryHelpers(
+    const BinaryObjectRegistryHelpers& other)
+    : mComputedValueDataStringFun(other.mComputedValueDataStringFun)
+    {
+    Py_INCREF(mComputedValueDataStringFun);
+    }
+
+
+BinaryObjectRegistryHelpers::~BinaryObjectRegistryHelpers()
+    {
+    Py_XDECREF(mComputedValueDataStringFun);
+    }
+
+
 PyObject* BinaryObjectRegistryHelpers::computedValueDataString(
        const PyObject* computedValueArg
-       )
+       ) const
     {
     PyObject* tr = PyObject_CallFunctionObjArgs(
-        _getInstance().mComputedValueDataStringFun,
+        mComputedValueDataStringFun,
         computedValueArg,
         nullptr
         );

@@ -34,12 +34,19 @@ PureTypeDescriptionModuleWrapper::PureTypeDescriptionModuleWrapper()
         }
     }
 
+
+PureTypeDescriptionModuleWrapper::~PureTypeDescriptionModuleWrapper()
+    {
+    Py_XDECREF(mPureTypeDescriptionModule);
+    }
+
+
 PyObject* PureTypeDescriptionModuleWrapper::pyFileDescription(
         const FileTypeDescription& filedescription
-        )
+        ) const
     {
     PyObject* pyFileDescriptionClass = PyObject_GetAttrString(
-        _getInstance().mPureTypeDescriptionModule,
+        mPureTypeDescriptionModule,
         "File"
         );
     if (pyFileDescriptionClass == nullptr) {
@@ -79,10 +86,10 @@ PyObject* PureTypeDescriptionModuleWrapper::pyFileDescription(
 
 PyObject* PureTypeDescriptionModuleWrapper::pyHomogeneousListAsNumpyArray(
         const PyObject* array
-        )
+        ) const
     {
     PyObject* pyHomogeneousListAsNumpyArrayClass = PyObject_GetAttrString(
-        _getInstance().mPureTypeDescriptionModule,
+        mPureTypeDescriptionModule,
         "HomogenousListAsNumpyArray"
         );
     if (pyHomogeneousListAsNumpyArrayClass == nullptr) {

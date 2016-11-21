@@ -20,10 +20,15 @@
 #include <map>
 #include <stdint.h>
 
+#include "Ast.hpp"
 #include "BinaryObjectRegistry.hpp"
 #include "FreeVariableResolver.hpp"
 #include "ModuleLevelObjectIndex.hpp"
 #include "PureImplementationMappings.hpp"
+#include "PyAstFreeVariableAnalyses.hpp"
+#include "PyAstUtil.hpp"
+#include "PyforaInspect.hpp"
+#include "UnresolvedFreeVariableExceptions.hpp"
 
 
 class ClassOrFunctionInfo;
@@ -58,6 +63,8 @@ public:
     int64_t walkFileDescription(const FileDescription& fileDescription);
 
     static FreeVariableMemberAccessChain toChain(const PyObject*);
+
+    UnresolvedFreeVariableExceptions unresolvedFreeVariableExceptionsModule() const;
 
 private:
     PyObjectWalker(const PyObjectWalker&) = delete;
@@ -141,6 +148,8 @@ private:
     void _initUnconvertibleClass();
     void _initPyforaConnectHack();
 
+    void _handleUnresolvedFreeVariableException(const PyObject* filename);
+
     PureImplementationMappings mPureImplementationMappings;
 
     PyObject* mRemotePythonObjectClass;
@@ -156,6 +165,11 @@ private:
     PyObject* mPythonTracebackToJsonFun;
 
     ModuleLevelObjectIndex mModuleLevelObjectIndex;
+    Ast mAstModule;
+    PyAstUtil mPyAstUtilModule;
+    PyforaInspect mPyforaInspectModule;
+    PyAstFreeVariableAnalyses mPyAstFreeVariableAnalysesModule;
+    UnresolvedFreeVariableExceptions mUnresolvedFreeVariableExceptions;
 
     std::map<long, PyObject*> mConvertedObjectCache;
     std::map<PyObject*, int64_t> mPyObjectToObjectId;

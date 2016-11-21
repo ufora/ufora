@@ -18,18 +18,15 @@
 
 class Ast {
 public:
-    static PyObject* FunctionDef(PyObject* args, PyObject* kw);
-    static PyObject* arguments(PyObject* args, PyObject* kw);
-
-private:
-    static Ast& _getInstance() {
-        static Ast singleton;
-        return singleton;
-        }
-
     Ast();
 
-    Ast(const Ast&) = delete;
+    Ast(const Ast&);
+    ~Ast();
+
+    PyObject* FunctionDef(PyObject* args, PyObject* kw) const;
+    PyObject* arguments(PyObject* args, PyObject* kw) const;
+
+private:
     void operator=(const Ast&) = delete;
 
     PyObject* mAstModule;

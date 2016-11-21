@@ -146,11 +146,14 @@ void translateBadWithBlockError(const BadWithBlockError& e)
     }
 
 void translateUnresolvedFreeVariableExceptionWithTrace(
-        const UnresolvedFreeVariableExceptionWithTrace& e
+    const UnresolvedFreeVariableExceptionWithTrace& e,
+    const UnresolvedFreeVariableExceptions& unresolvedFreeVariableExceptionsModule
         )
     {
     PyObject* unresolvedFreeVariableExceptionWithTraceClass =
-        UnresolvedFreeVariableExceptions::getUnresolvedFreeVariableExceptionWithTraceClass();
+        unresolvedFreeVariableExceptionsModule
+        .getUnresolvedFreeVariableExceptionWithTraceClass();
+
     if (unresolvedFreeVariableExceptionWithTraceClass == nullptr) {
         return;
         }
@@ -311,7 +314,9 @@ PyObjectWalkerStruct_walkPyObject(PyObjectWalkerStruct* self, PyObject* args)
         return nullptr;
         }
     catch (const UnresolvedFreeVariableExceptionWithTrace& e) {
-        translateUnresolvedFreeVariableExceptionWithTrace(e);
+        translateUnresolvedFreeVariableExceptionWithTrace(
+            e,
+            self->nativePyObjectWalker->unresolvedFreeVariableExceptionsModule());
         return nullptr;
         }
     catch (const std::runtime_error& e) {

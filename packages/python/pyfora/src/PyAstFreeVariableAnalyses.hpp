@@ -20,31 +20,24 @@
 
 class PyAstFreeVariableAnalyses {
 public:
-    static PyObject*  getFreeMemberAccessChainsWithPositions(
+    PyAstFreeVariableAnalyses();
+    PyAstFreeVariableAnalyses(const PyAstFreeVariableAnalyses&);
+    ~PyAstFreeVariableAnalyses();
+
+    PyObject* getFreeMemberAccessChainsWithPositions(
         const PyObject* pyAst,
         bool isClassContext,
         bool getPositions,
-        const PyObject* exclude_predicate);
+        const PyObject* exclude_predicate) const;
 
     // should return a PySet
-    static PyObject* collectBoundValuesInScope(
+    PyObject* collectBoundValuesInScope(
         const PyObject* pyAst,
-        bool getPositions=false);
+        bool getPositions=false) const;
 
-    static PyObject* varWithPosition(const PyObject* var, const PyObject* pos);
+    PyObject* varWithPosition(const PyObject* var, const PyObject* pos) const;
 
 private:
-    // singleton instance
-    static PyAstFreeVariableAnalyses& _getInstance() {
-        static PyAstFreeVariableAnalyses instance;
-        return instance;
-        }
-
-    // implement, but keep private for singleton pattern
-    PyAstFreeVariableAnalyses();
-
-    // don't implement these next two methods for the singleton pattern
-    PyAstFreeVariableAnalyses(const PyAstFreeVariableAnalyses&) = delete;
     void operator=(const PyAstFreeVariableAnalyses&) = delete;
 
     void _initPyAstFreeVariableAnalysesModule();

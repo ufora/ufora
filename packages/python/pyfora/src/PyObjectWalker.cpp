@@ -15,15 +15,11 @@
 ****************************************************************************/
 #include "PyObjectWalker.hpp"
 
-#include "Ast.hpp"
 #include "BadWithBlockError.hpp"
 #include "CantGetSourceTextError.hpp"
 #include "ClassOrFunctionInfo.hpp"
 #include "FileDescription.hpp"
 #include "FreeVariableResolver.hpp"
-#include "PyAstUtil.hpp"
-#include "PyAstFreeVariableAnalyses.hpp"
-#include "PyforaInspect.hpp"
 #include "PyforaInspectError.hpp"
 #include "PyObjectUtils.hpp"
 #include "PythonToForaConversionError.hpp"
@@ -81,7 +77,6 @@ PyObjectWalker::PyObjectWalker(
             mPyforaConnectHack(nullptr),
             mTracebackType(traceback_type),
             mPythonTracebackToJsonFun(pythonTracebackToJsonFun),
-            mModuleLevelObjectIndex(ModuleLevelObjectIndex::get()),
             mObjectRegistry(objectRegistry),
             mFreeVariableResolver(excludeList, terminalValueFilter)
     {
@@ -464,7 +459,7 @@ void PyObjectWalker::_walkPyObject(PyObject* pyObject, int64_t objectId) {
         {
         _registerFunction(objectId, pyObject);
         }
-    else if (PyforaInspect::isclass(pyObject))
+    else if (mPyforaInspectModule.isclass(pyObject))
         {
         _registerClass(objectId, pyObject);
         }
@@ -472,7 +467,7 @@ void PyObjectWalker::_walkPyObject(PyObject* pyObject, int64_t objectId) {
         {
         _registerInstanceMethod(objectId, pyObject);
         }
-    else if (PyforaInspect::isclassinstance(pyObject))
+    else if (mPyforaInspectModule.isclassinstance(pyObject))
         {
         _registerClassInstance(objectId, pyObject);
         }
@@ -639,7 +634,7 @@ bool PyObjectWalker::_isTypeOrBuiltinFunctionAndInNamedSingletons(PyObject* pyOb
 
 std::string PyObjectWalker::_fileText(const PyObject* fileNamePyObj) const
     {
-    PyObject* lines = PyforaInspect::getlines(fileNamePyObj);
+    PyObject* lines = mPyforaInspectModule.getlines(fileNamePyObj);
     if (lines == nullptr) {
         throw std::runtime_error(
             "error calling getlines");
@@ -737,7 +732,10 @@ int64_t _getWithBlockLineNumber(PyObject* withBlock)
 
 
 
-void _handleUnresolvedFreeVariableException(const PyObject* filename)
+}
+
+
+void PyObjectWalker::_handleUnresolvedFreeVariableException(const PyObject* filename)
     {
     PyObject * exception, * v, * tb;
 
@@ -750,10 +748,10 @@ void _handleUnresolvedFreeVariableException(const PyObject* filename)
 
     if (PyObject_IsInstance(
             v,
-            UnresolvedFreeVariableExceptions::getUnresolvedFreeVariableExceptionClass()))
+            mUnresolvedFreeVariableExceptions.getUnresolvedFreeVariableExceptionClass()))
         {
         PyObject* unresolvedFreeVariableExceptionWithTrace =
-            UnresolvedFreeVariableExceptions::getUnresolvedFreeVariableExceptionWithTrace(
+            mUnresolvedFreeVariableExceptions.getUnresolvedFreeVariableExceptionWithTrace(
                 v,
                 filename
                 );
@@ -786,9 +784,6 @@ void _handleUnresolvedFreeVariableException(const PyObject* filename)
     Py_DECREF(v);
     Py_DECREF(tb);
     }
-
-
-}
 
 
 PyObject* PyObjectWalker::_pythonTracebackToJson(const PyObject* pyObject) const
@@ -829,20 +824,20 @@ void PyObjectWalker::_registerWithBlock(int64_t objectId, PyObject* pyObject)
             " in PyObjectWalker::_registerWithBlock: " +
             PyObjectUtils::exc_string());
         }
-    if (PyAstUtil::hasReturnInOuterScope(withBlockFun)) {
+    if (mPyAstUtilModule.hasReturnInOuterScope(withBlockFun)) {
         std::ostringstream err_oss;
         err_oss << "return statement not supported in pyfora with-block (line ";
-        err_oss << PyAstUtil::getReturnLocationsInOuterScope(withBlockFun);
+        err_oss << mPyAstUtilModule.getReturnLocationsInOuterScope(withBlockFun);
         err_oss << ")";
 
         Py_DECREF(withBlockFun);
 
         throw BadWithBlockError(err_oss.str());
         }
-    if (PyAstUtil::hasYieldInOuterScope(withBlockFun)) {
+    if (mPyAstUtilModule.hasYieldInOuterScope(withBlockFun)) {
         std::ostringstream err_oss;
         err_oss << "yield expression not supported in pyfora with-block (line ";
-        err_oss << PyAstUtil::getYieldLocationsInOuterScope(withBlockFun);
+        err_oss << mPyAstUtilModule.getYieldLocationsInOuterScope(withBlockFun);
         err_oss << ")";
 
         Py_DECREF(withBlockFun);
@@ -944,7 +939,7 @@ void PyObjectWalker::_augmentChainsWithBoundValuesInScope(
         }
     
     PyObject* boundValuesInScopeWithPositions =
-        PyAstFreeVariableAnalyses::collectBoundValuesInScope(withBlockFun, true);
+        mPyAstFreeVariableAnalysesModule.collectBoundValuesInScope(withBlockFun, true);
     if (boundValuesInScopeWithPositions == nullptr) {
         throw std::runtime_error(
             "py err in PyObjectWalker::_augmentChainsWithBoundValuesInScope: " +
@@ -1000,7 +995,7 @@ void PyObjectWalker::_augmentChainsWithBoundValuesInScope(
                 PyObjectUtils::in(boundVariables, val))
             {
             PyObject* varWithPosition = 
-                PyAstFreeVariableAnalyses::varWithPosition(val, pos);
+                mPyAstFreeVariableAnalysesModule.varWithPosition(val, pos);
             if (varWithPosition == nullptr) {
                 Py_DECREF(item);
                 Py_DECREF(iterator);
@@ -1148,7 +1143,7 @@ PyObjectWalker::_classOrFunctionInfo(PyObject* obj, bool isFunction)
 
     // should probably make these just return PyStrings, as 
     // we only repackage these into PyStrings anyway
-    PyObject* textAndFilename = PyAstUtil::sourceFilenameAndText(obj);
+    PyObject* textAndFilename = mPyAstUtilModule.sourceFilenameAndText(obj);
     if (textAndFilename == nullptr) {
         throw std::runtime_error(
             "error calling sourceFilenameAndText: " + PyObjectUtils::exc_string()
@@ -1170,8 +1165,8 @@ PyObjectWalker::_classOrFunctionInfo(PyObject* obj, bool isFunction)
     // borrowed reference
     PyObject* filename = PyTuple_GET_ITEM(textAndFilename, 1);
 
-    long startingSourceLine = PyAstUtil::startingSourceLine(obj);
-    PyObject* sourceAst = PyAstUtil::pyAstFromText(text);
+    long startingSourceLine = mPyAstUtilModule.startingSourceLine(obj);
+    PyObject* sourceAst = mPyAstUtilModule.pyAstFromText(text);
     if (sourceAst == nullptr) {
         Py_DECREF(textAndFilename);
         throw std::runtime_error(
@@ -1183,12 +1178,12 @@ PyObjectWalker::_classOrFunctionInfo(PyObject* obj, bool isFunction)
 
     PyObject* pyAst = nullptr;
     if (isFunction) {
-        pyAst = PyAstUtil::functionDefOrLambdaAtLineNumber(
+        pyAst = mPyAstUtilModule.functionDefOrLambdaAtLineNumber(
             sourceAst,
             startingSourceLine);
         }
     else {
-        pyAst = PyAstUtil::classDefAtLineNumber(sourceAst,
+        pyAst = mPyAstUtilModule.classDefAtLineNumber(sourceAst,
                                                 startingSourceLine);
         }
 
@@ -1323,7 +1318,7 @@ PyObject* PyObjectWalker::_freeMemberAccessChainsWithPositions(
         const PyObject* pyAst
         ) const
     {
-    return PyAstFreeVariableAnalyses::getFreeMemberAccessChainsWithPositions(
+    return mPyAstFreeVariableAnalysesModule.getFreeMemberAccessChainsWithPositions(
             pyAst,
             false,
             true,
@@ -1502,7 +1497,7 @@ PyObjectWalker::_getDataMemberNames(PyObject* pyObject, PyObject* classObject) c
         return keys;
         }
     else {
-        return PyAstUtil::collectDataMembersSetInInit(classObject);
+        return mPyAstUtilModule.collectDataMembersSetInInit(classObject);
         }
     }
 
@@ -1514,13 +1509,13 @@ PyObject* PyObjectWalker::_withBlockFun(PyObject* withBlock, int64_t lineno) con
         return nullptr;
         }
 
-    PyObject* sourceTree = PyAstUtil::pyAstFromText(sourceText);
+    PyObject* sourceTree = mPyAstUtilModule.pyAstFromText(sourceText);
     Py_DECREF(sourceText);
     if (sourceTree == nullptr) {
         return nullptr;
         }
 
-    PyObject* withBlockAst = PyAstUtil::withBlockAtLineNumber(sourceTree, lineno);
+    PyObject* withBlockAst = mPyAstUtilModule.withBlockAtLineNumber(sourceTree, lineno);
     Py_DECREF(sourceTree);
     if (withBlockAst == nullptr) {
         return nullptr;
@@ -1568,7 +1563,7 @@ PyObject* PyObjectWalker::_withBlockFun(PyObject* withBlock, int64_t lineno) con
         return nullptr;
         }
         
-    PyObject* res = Ast::FunctionDef(argsTuple, kwds);
+    PyObject* res = mAstModule.FunctionDef(argsTuple, kwds);
 
     Py_DECREF(kwds);
     Py_DECREF(decorator_list);
@@ -1605,7 +1600,7 @@ PyObject* PyObjectWalker::_defaultAstArgs() const
         return nullptr;
         }
     
-    PyObject* res = Ast::arguments(args, kwargs);
+    PyObject* res = mAstModule.arguments(args, kwargs);
 
     Py_DECREF(kwargs);
     Py_DECREF(emptyList);
@@ -1672,4 +1667,11 @@ FreeVariableMemberAccessChain PyObjectWalker::toChain(const PyObject* obj)
         }
 
     return FreeVariableMemberAccessChain(variables);
+    }
+
+
+UnresolvedFreeVariableExceptions
+PyObjectWalker::unresolvedFreeVariableExceptionsModule() const
+    {
+    return mUnresolvedFreeVariableExceptions;
     }

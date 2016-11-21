@@ -19,7 +19,8 @@
 #include <stdexcept>
 
 
-ModuleLevelObjectIndex ModuleLevelObjectIndex::get()
+ModuleLevelObjectIndex::ModuleLevelObjectIndex()
+    : mModuleLevelObjectIndexSingleton(nullptr)
     {
     PyObject* moduleLevelObjectIndexModule = PyImport_ImportModule(
         "pyfora.ModuleLevelObjectIndex"
@@ -59,7 +60,7 @@ ModuleLevelObjectIndex ModuleLevelObjectIndex::get()
             );
         }
 
-    PyObject* tr = PyObject_CallFunctionObjArgs(
+    mModuleLevelObjectIndexSingleton = PyObject_CallFunctionObjArgs(
         singletonFunc,
         nullptr
         );
@@ -68,23 +69,13 @@ ModuleLevelObjectIndex ModuleLevelObjectIndex::get()
     Py_DECREF(moduleLevelObjectIndexClass);
     Py_DECREF(moduleLevelObjectIndexModule);
 
-    if (tr == nullptr) {
+    if (mModuleLevelObjectIndexSingleton == nullptr) {
         throw std::runtime_error(
             "error getting ModuleLevelObjectIndex.singleton "
             "in ModuleLevelObjectIndex::get():\n" +
             PyObjectUtils::exc_string()
             );
         }
-
-    return ModuleLevelObjectIndex(tr);
-    }
-
-
-ModuleLevelObjectIndex::ModuleLevelObjectIndex(
-        PyObject* moduleLevelObjectIndexSingleton
-        )
-    : mModuleLevelObjectIndexSingleton(moduleLevelObjectIndexSingleton)
-    {
     }
 
 
@@ -99,7 +90,7 @@ ModuleLevelObjectIndex::ModuleLevelObjectIndex(
 
 ModuleLevelObjectIndex::~ModuleLevelObjectIndex()
     {
-    Py_DECREF(mModuleLevelObjectIndexSingleton);
+    Py_XDECREF(mModuleLevelObjectIndexSingleton);
     }
 
 

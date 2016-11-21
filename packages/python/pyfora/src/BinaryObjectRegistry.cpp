@@ -15,14 +15,14 @@
 ****************************************************************************/
 
 #include "BinaryObjectRegistry.hpp"
-#include "BinaryObjectRegistryHelpers.hpp"
 #include "FreeVariableMemberAccessChain.hpp"
 #include "PyObjectUtils.hpp"
 
 #include <stdexcept>
 
 
-BinaryObjectRegistry::BinaryObjectRegistry() : mNextObjectId(0) 
+BinaryObjectRegistry::BinaryObjectRegistry()
+    : mNextObjectId(0)
     {
     }
     
@@ -270,7 +270,7 @@ std::string BinaryObjectRegistry::_computedValueDataString(
         const PyObject* computedValueArg
         ) const
     {
-    PyObject* res = BinaryObjectRegistryHelpers::computedValueDataString(
+    PyObject* res = mBinaryObjectRegisteryHelpers.computedValueDataString(
         computedValueArg);
     if (res == nullptr) {
         throw std::runtime_error(

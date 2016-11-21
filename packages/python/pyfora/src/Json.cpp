@@ -20,8 +20,20 @@
 #include <stdexcept>
 
 
-Json::Json()
-    : mJsonModule(nullptr)
+Json::Json(const Json& other)
+    : mJsonModule(other.mJsonModule)
+    {
+    Py_INCREF(mJsonModule);
+    }
+
+
+Json::~Json()
+    {
+    Py_XDECREF(mJsonModule);
+    }
+
+
+Json::Json() : mJsonModule(nullptr)
     {
     mJsonModule = PyImport_ImportModule("json");
     if (mJsonModule == nullptr) {
@@ -31,9 +43,7 @@ Json::Json()
 
 
 PyObject* Json::loads(const std::string& s) {
-    PyObject* loadsFun = PyObject_GetAttrString(
-        _getInstance().mJsonModule,
-        "loads");
+    PyObject* loadsFun = PyObject_GetAttrString(mJsonModule, "loads");
     if (loadsFun == nullptr) {
         return nullptr;
         }
@@ -58,9 +68,7 @@ PyObject* Json::loads(const std::string& s) {
 
 std::string Json::dumps(const PyObject* obj)
     {
-    PyObject* dumpsFun = PyObject_GetAttrString(
-        _getInstance().mJsonModule,
-        "dumps");
+    PyObject* dumpsFun = PyObject_GetAttrString(mJsonModule, "dumps");
     if (dumpsFun == nullptr) {
         throw std::runtime_error(PyObjectUtils::exc_string());
         }

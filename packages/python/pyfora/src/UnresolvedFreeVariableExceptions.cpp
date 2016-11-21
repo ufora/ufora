@@ -68,17 +68,41 @@ UnresolvedFreeVariableExceptions::UnresolvedFreeVariableExceptions() :
     }
 
 
-PyObject*
-UnresolvedFreeVariableExceptions::getUnresolvedFreeVariableExceptionWithTraceClass()
+UnresolvedFreeVariableExceptions::~UnresolvedFreeVariableExceptions()
     {
-    return _getInstance().mUnresolvedFreeVariableExceptionWithTraceClass;
+    Py_XDECREF(mGetUnresolvedFreeVariableExceptionWithTraceFun);
+    Py_XDECREF(mUnresolvedFreeVariableExceptionClass);
+    Py_XDECREF(mUnresolvedFreeVariableExceptionWithTraceClass);
+    }
+
+
+UnresolvedFreeVariableExceptions::UnresolvedFreeVariableExceptions(
+        const UnresolvedFreeVariableExceptions& other
+        )
+    : mUnresolvedFreeVariableExceptionWithTraceClass(
+        other.mUnresolvedFreeVariableExceptionWithTraceClass),
+      mUnresolvedFreeVariableExceptionClass(
+          other.mUnresolvedFreeVariableExceptionClass),
+      mGetUnresolvedFreeVariableExceptionWithTraceFun(
+          other.mGetUnresolvedFreeVariableExceptionWithTraceFun)
+    {
+    Py_INCREF(mUnresolvedFreeVariableExceptionWithTraceClass);
+    Py_INCREF(mUnresolvedFreeVariableExceptionClass);
+    Py_INCREF(mGetUnresolvedFreeVariableExceptionWithTraceFun);
     }
 
 
 PyObject*
-UnresolvedFreeVariableExceptions::getUnresolvedFreeVariableExceptionClass()
+UnresolvedFreeVariableExceptions::getUnresolvedFreeVariableExceptionWithTraceClass() const
     {
-    return _getInstance().mUnresolvedFreeVariableExceptionClass;
+    return mUnresolvedFreeVariableExceptionWithTraceClass;
+    }
+
+
+PyObject*
+UnresolvedFreeVariableExceptions::getUnresolvedFreeVariableExceptionClass() const
+    {
+    return mUnresolvedFreeVariableExceptionClass;
     }
 
 
@@ -86,10 +110,10 @@ PyObject*
 UnresolvedFreeVariableExceptions::getUnresolvedFreeVariableExceptionWithTrace(
         const PyObject* unresolvedFreeVariableException,
         const PyObject* filename
-        )
+        ) const
     {
     return PyObject_CallFunctionObjArgs(
-        _getInstance().mGetUnresolvedFreeVariableExceptionWithTraceFun,
+        mGetUnresolvedFreeVariableExceptionWithTraceFun,
         unresolvedFreeVariableException,
         filename,
         nullptr

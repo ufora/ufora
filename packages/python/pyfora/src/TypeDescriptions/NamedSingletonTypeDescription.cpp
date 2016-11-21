@@ -14,7 +14,6 @@
    limitations under the License.
 ****************************************************************************/
 #include "../IRToPythonConverter.hpp"
-#include "../NamedSingletons.hpp"
 #include "NamedSingletonTypeDescription.hpp"
 
 
@@ -30,9 +29,9 @@ NamedSingletonTypeDescription::~NamedSingletonTypeDescription()
 
 
 PyObject* NamedSingletonTypeDescription::transform(
-        IRToPythonConverter& c,
+        IRToPythonConverter& converter,
         bool retainHomogenousListsAsNumpy
         )
     {
-    return NamedSingletons::singletonNameToObject(mName);
+    return converter.singletonNameToObject(mName);
     }

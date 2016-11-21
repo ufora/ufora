@@ -19,22 +19,35 @@
 #include <stdexcept>
 
 
+Ast::Ast(const Ast& other)
+    : mAstModule(other.mAstModule)
+    {
+    Py_INCREF(mAstModule);
+    }
+
+
+Ast::~Ast()
+    {
+    Py_XDECREF(mAstModule);
+    }
+
+
 Ast::Ast() : mAstModule(nullptr)
     {
     mAstModule = PyImport_ImportModule("ast");
 
     if (mAstModule == nullptr) {
         throw std::runtime_error(
-            "py error in Ast::Ast(): " + PyObjectUtils::format_exc()
+            "py error in Ast::get(): " + PyObjectUtils::format_exc()
             );
         }
     }
 
 
-PyObject* Ast::FunctionDef(PyObject* args, PyObject* kw)
+PyObject* Ast::FunctionDef(PyObject* args, PyObject* kw) const
     {
     PyObject* FunctionDefFun = PyObject_GetAttrString(
-        _getInstance().mAstModule,
+        mAstModule,
         "FunctionDef"
         );
     if (FunctionDefFun == nullptr) {
@@ -49,10 +62,10 @@ PyObject* Ast::FunctionDef(PyObject* args, PyObject* kw)
     }
 
 
-PyObject* Ast::arguments(PyObject* args, PyObject* kw)
+PyObject* Ast::arguments(PyObject* args, PyObject* kw) const
     {
     PyObject* argumentsFun = PyObject_GetAttrString(
-        _getInstance().mAstModule,
+        mAstModule,
         "arguments"
         );
     if (argumentsFun == nullptr) {

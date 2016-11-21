@@ -179,3 +179,27 @@ PyObject* IRToPythonConverter::getPathToObject(const PyObject* obj) const
     {
     return mModuleLevelObjectIndex.getPathToObject(obj);
     }
+
+PyObject* IRToPythonConverter::singletonNameToObject(const std::string& s) const
+    {
+    return mNamedSingletonsModule.singletonNameToObject(s);
+    }
+
+
+PyObject* IRToPythonConverter::pyAbortSingletonNameToObject(const std::string& s) const
+    {
+    return mPyAbortSingletons.singletonNameToObject(s);
+    }
+
+
+PyObject* IRToPythonConverter::pyHomogeneousListAsNumpyArray(const PyObject* arg) const
+    {
+    return mPureTypeDescriptionModule.pyHomogeneousListAsNumpyArray(arg);
+    }
+
+
+PyObject* IRToPythonConverter::pyFileDescription(const FileTypeDescription& f) const
+    {
+    return mPureTypeDescriptionModule.pyFileDescription(f);
+    }
+

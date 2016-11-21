@@ -33,7 +33,7 @@ PythonObjectRehydrator::PythonObjectRehydrator(
     : mNoConversionFunc(nullptr),
       mPureImplementationMappings(purePythonClassMapping),
       mPurePythonObjectRehydratorHelpers(nullptr),
-      mModuleLevelObjectIndex(ModuleLevelObjectIndex::get())
+      mModuleLevelObjectIndex(ModuleLevelObjectIndex())
     {
     _initNoConversionFunc();
     _initPurePythonObjectRehydratorHelpers(

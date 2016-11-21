@@ -20,27 +20,22 @@
 
 class PyforaInspect {
 public:
-    static bool isclass(PyObject*);
-    static bool isclassinstance(PyObject*);
-    static bool isfunction(PyObject*);
-    static bool ismodule(PyObject*);
-
-    static PyObject* getlines(const PyObject*);
-
-    // returns a borrowed reference
-    static PyObject* getPyforaInspectErrorClass();
-
-private:
-    static PyforaInspect& _getInstance() {
-        static PyforaInspect instance;
-        return instance;
-        }
-
-    // implement, but keep private for singleton
     PyforaInspect();
 
-    // declare private and don't implement these to prevent copying
-    PyforaInspect(const PyforaInspect&) = delete;
+    PyforaInspect(const PyforaInspect&);
+    ~PyforaInspect();
+
+    bool isclass(PyObject*) const;
+    bool isclassinstance(PyObject*) const;
+    bool isfunction(PyObject*) const;
+    bool ismodule(PyObject*) const;
+
+    PyObject* getlines(const PyObject*) const;
+
+    // returns a borrowed reference
+    PyObject* getPyforaInspectErrorClass() const;
+
+private:
     void operator=(const PyforaInspect&) = delete;
 
     void _initMembers();
