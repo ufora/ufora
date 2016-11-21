@@ -47,11 +47,7 @@ private:
       This call must also not touch any Python data structures,
       or python API calls
     */
-    const char* grabBytes(size_t nBytes);
-
-    // actual implementation of grabBytes, with the 
-    // work being done after releasing the Python GIL
-    virtual const char* _grabBytes(size_t nBytes) = 0;
+    virtual const char* grabBytes(size_t nBytes) = 0;
 
 };
 

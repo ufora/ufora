@@ -14,7 +14,6 @@
    limitations under the License.
 ****************************************************************************/
 #include "DeserializerBase.hpp"
-#include "../ScopedPyThreads.hpp"
 
 
 void Deserializer::readInt64s(std::vector<int64_t>& ioInts) {
@@ -24,14 +23,3 @@ void Deserializer::readInt64s(std::vector<int64_t>& ioInts) {
     }
 
 
-const char* Deserializer::grabBytes(size_t nBytes)
-    {
-    const char* tr;
-
-        {
-        ScopedPyThreads releaseTheGil;
-        tr = _grabBytes(nBytes);
-        }
-
-    return tr;
-    }

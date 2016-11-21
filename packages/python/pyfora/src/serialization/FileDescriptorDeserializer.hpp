@@ -31,7 +31,7 @@ public:
     std::string toString() const;
 
 private:
-    virtual const char* _grabBytes(size_t nBytes);
+    virtual const char* grabBytes(size_t nBytes);
 
     void reserveAndShiftLeft(size_t nBytes);
     void refillBuffer(size_t nBytes);
