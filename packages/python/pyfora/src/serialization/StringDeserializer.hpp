@@ -29,7 +29,7 @@ public:
     StringDeserializer(const char* data, size_t size);
 
 private:
-    virtual const char* _grabBytes(size_t nBytes);
+    virtual const char* grabBytes(size_t nBytes);
 
     std::vector<char> mData;
     uint64_t mIndex;

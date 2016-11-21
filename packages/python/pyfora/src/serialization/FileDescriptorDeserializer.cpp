@@ -14,6 +14,7 @@
    limitations under the License.
 ****************************************************************************/
 #include "FileDescriptorDeserializer.hpp"
+#include "../ScopedPyThreads.hpp"
 
 #include <cstring>
 #include <cerrno>
@@ -37,6 +38,8 @@ FileDescriptorDeserializer::FileDescriptorDeserializer(
 
 void FileDescriptorDeserializer::refillBuffer(size_t nBytes)
     {
+    ScopedPyThreads releaseTheGil;
+
     size_t bytes_available = mWriteHead - mReadHead;
 
     while (bytes_available < nBytes) {
@@ -146,7 +149,7 @@ void FileDescriptorDeserializer::adjustIfNecessary(size_t nBytes)
     }
 
 
-const char* FileDescriptorDeserializer::_grabBytes(size_t nBytes)
+const char* FileDescriptorDeserializer::grabBytes(size_t nBytes)
     {
     adjustIfNecessary(nBytes);
 

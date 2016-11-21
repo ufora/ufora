@@ -39,12 +39,12 @@ StringDeserializer::StringDeserializer(const char* data, size_t size)
     }
 
 
-const char* StringDeserializer::_grabBytes(size_t nBytes)
+const char* StringDeserializer::grabBytes(size_t nBytes)
     {
     if (mIndex + nBytes > mData.size()) {
         std::ostringstream err;
         err << "attempting to read too many bytes from string buffer! "
-            << "in StringDeserializer::_grabBytes. "
+            << "in StringDeserializer::grabBytes. "
             << "mIndex = " << mIndex
             << ", nBytes = " << nBytes
             << ", mData.size() = " << mData.size()
