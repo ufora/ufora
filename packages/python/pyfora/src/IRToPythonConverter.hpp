@@ -17,7 +17,10 @@
 
 #include <Python.h>
 
+#include "NamedSingletons.hpp"
 #include "ModuleLevelObjectIndex.hpp"
+#include "PyAbortSingletons.hpp"
+#include "TypeDescriptions/PureTypeDescriptionModuleWrapper.hpp"
 
 #include <map>
 #include <stdint.h>
@@ -35,7 +38,6 @@ public:
         std::map<int64_t, PyObject*>& converted,
         const ModuleLevelObjectIndex& moduleLevelObjectIndex
         );
-    
 
     PyObject* convert(int64_t objectId,
                       bool retainHomogenousListsAsNumpy=false
@@ -58,11 +60,20 @@ public:
     PyObject* getObjectFromPath(const PyObject* path) const;
     PyObject* getPathToObject(const PyObject* obj) const;
 
+    PyObject* singletonNameToObject(const std::string& s) const;
+    PyObject* pyAbortSingletonNameToObject(const std::string& s) const;
+    
+    PyObject* pyHomogeneousListAsNumpyArray(const PyObject*) const;
+    PyObject* pyFileDescription(const FileTypeDescription&) const;
+
 private:
     PythonObjectRehydrator& mRehydrator;
     const ObjectRegistry& mObjectRegistry;
     std::map<int64_t, PyObject*>& mConverted;
     ModuleLevelObjectIndex mModuleLevelObjectIndex;
+    NamedSingletons mNamedSingletonsModule;
+    PyAbortSingletons mPyAbortSingletons;
+    PureTypeDescriptionModuleWrapper mPureTypeDescriptionModule;
 
     IRToPythonConverter(const IRToPythonConverter&) = delete;
     void operator=(const IRToPythonConverter&) = delete;

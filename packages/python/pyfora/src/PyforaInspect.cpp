@@ -19,6 +19,22 @@
 #include <stdexcept>
 
 
+PyforaInspect::PyforaInspect(const PyforaInspect& other) :
+        mClassType(other.mClassType),
+        mTypeType(other.mTypeType),
+        mFunctionType(other.mFunctionType),
+        mModuleType(other.mModuleType),
+        mGetLinesFunc(other.mGetLinesFunc),
+        mPyforaInspectErrorClass(other.mPyforaInspectErrorClass)
+    {
+    Py_INCREF(mClassType);
+    Py_INCREF(mTypeType);
+    Py_INCREF(mFunctionType);
+    Py_INCREF(mModuleType);
+    Py_INCREF(mGetLinesFunc);
+    Py_INCREF(mPyforaInspectErrorClass);
+    }
+
 PyforaInspect::PyforaInspect() :
         mClassType(nullptr),
         mTypeType(nullptr),
@@ -28,6 +44,17 @@ PyforaInspect::PyforaInspect() :
         mPyforaInspectErrorClass(nullptr)
     {
     _initMembers();
+    }
+
+
+PyforaInspect::~PyforaInspect()
+    {
+    Py_XDECREF(mPyforaInspectErrorClass);
+    Py_XDECREF(mGetLinesFunc);
+    Py_XDECREF(mModuleType);
+    Py_XDECREF(mFunctionType);
+    Py_XDECREF(mTypeType);
+    Py_XDECREF(mClassType);
     }
 
 
@@ -102,37 +129,37 @@ void PyforaInspect::_initMembers()
     }
 
 
-bool PyforaInspect::isclass(PyObject* pyObject)
+bool PyforaInspect::isclass(PyObject* pyObject) const
     {
-    return PyObject_IsInstance(pyObject, _getInstance().mTypeType) or 
-        PyObject_IsInstance(pyObject, _getInstance().mClassType);
+    return PyObject_IsInstance(pyObject, mTypeType) or 
+        PyObject_IsInstance(pyObject, mClassType);
     }
 
 
-bool PyforaInspect::isclassinstance(PyObject* pyObject)
+bool PyforaInspect::isclassinstance(PyObject* pyObject) const
     {
     return PyObject_HasAttrString(pyObject, "__class__");
     }
 
 
-bool PyforaInspect::isfunction(PyObject* pyObject)
+bool PyforaInspect::isfunction(PyObject* pyObject) const
     {
-    return PyObject_IsInstance(pyObject, _getInstance().mFunctionType);
+    return PyObject_IsInstance(pyObject, mFunctionType);
     }
 
 
-bool PyforaInspect::ismodule(PyObject* pyObject)
+bool PyforaInspect::ismodule(PyObject* pyObject) const
     {
-    return PyObject_IsInstance(pyObject, _getInstance().mModuleType);
+    return PyObject_IsInstance(pyObject, mModuleType);
     }
 
 
-PyObject* PyforaInspect::getlines(const PyObject* obj)
+PyObject* PyforaInspect::getlines(const PyObject* obj) const
     {
-    return PyObject_CallFunctionObjArgs(_getInstance().mGetLinesFunc, obj, nullptr);
+    return PyObject_CallFunctionObjArgs(mGetLinesFunc, obj, nullptr);
     }
 
 
-PyObject* PyforaInspect::getPyforaInspectErrorClass() {
-    return _getInstance().mPyforaInspectErrorClass;
+PyObject* PyforaInspect::getPyforaInspectErrorClass() const {
+    return mPyforaInspectErrorClass;
     }

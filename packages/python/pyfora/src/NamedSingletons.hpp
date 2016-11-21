@@ -22,19 +22,12 @@
 
 class NamedSingletons {
 public:
-    static PyObject* singletonNameToObject(const std::string& s);
-private:
-    static NamedSingletons& _getInstance()
-        {
-        static NamedSingletons singleton;
-        return singleton;
-        }
-
-    // implement, keep private for singleton
     NamedSingletons();
+    NamedSingletons(const NamedSingletons&);
+    ~NamedSingletons();
 
-    // don't implement
-    NamedSingletons(const NamedSingletons&) = delete;
+    PyObject* singletonNameToObject(const std::string& s) const;
+private:
     void operator=(const NamedSingletons) = delete;
     
     PyObject* mSingletonNameToObjectDict;

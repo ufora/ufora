@@ -14,7 +14,6 @@
    limitations under the License.
 ****************************************************************************/
 #include "../IRToPythonConverter.hpp"
-#include "../NamedSingletons.hpp"
 #include "BuiltinExceptionInstanceTypeDescription.hpp"
 
 
@@ -34,17 +33,16 @@ BuiltinExceptionInstanceTypeDescription::~BuiltinExceptionInstanceTypeDescriptio
 
 
 PyObject* BuiltinExceptionInstanceTypeDescription::transform(
-        IRToPythonConverter& c,
+        IRToPythonConverter& converter,
         bool retainHomogenousListsAsNumpy
         )
     {
-    PyObject* builtinExceptionType = 
-        NamedSingletons::singletonNameToObject(mTypeName);
+    PyObject* builtinExceptionType = converter.singletonNameToObject(mTypeName);
     if (builtinExceptionType == nullptr) {
         return nullptr;
         }
     
-    PyObject* args = c.convert(mArgsId);
+    PyObject* args = converter.convert(mArgsId);
     if (args == nullptr) {
         Py_DECREF(builtinExceptionType);
         return nullptr;

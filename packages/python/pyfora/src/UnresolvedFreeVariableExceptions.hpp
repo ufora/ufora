@@ -22,28 +22,24 @@
 
 class UnresolvedFreeVariableExceptions {
 public:
-    // returns a borrowed reference
-    static PyObject* getUnresolvedFreeVariableExceptionWithTraceClass();
-    // returns a borrowed reference
-    static PyObject* getUnresolvedFreeVariableExceptionClass();
-
-    // returns a new reference
-    static PyObject* getUnresolvedFreeVariableExceptionWithTrace(
-        const PyObject* unresolvedFreeVariableException,
-        const PyObject* filename
-        );
-    
-private:
-    static UnresolvedFreeVariableExceptions& _getInstance() {
-        static UnresolvedFreeVariableExceptions singleton;
-        return singleton;
-        }
-
     UnresolvedFreeVariableExceptions();
-
+    ~UnresolvedFreeVariableExceptions();
     UnresolvedFreeVariableExceptions(
         const UnresolvedFreeVariableExceptions&
-        ) = delete;
+        );
+
+    // returns a borrowed reference
+    PyObject* getUnresolvedFreeVariableExceptionWithTraceClass() const;
+    // returns a borrowed reference
+    PyObject* getUnresolvedFreeVariableExceptionClass() const;
+
+    // returns a new reference
+    PyObject* getUnresolvedFreeVariableExceptionWithTrace(
+        const PyObject* unresolvedFreeVariableException,
+        const PyObject* filename
+        ) const;
+    
+private:
     void operator=(const UnresolvedFreeVariableExceptions&) = delete;
 
     PyObject* mUnresolvedFreeVariableExceptionWithTraceClass;

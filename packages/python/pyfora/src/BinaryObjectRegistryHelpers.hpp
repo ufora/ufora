@@ -20,18 +20,14 @@
 
 class BinaryObjectRegistryHelpers {
 public:
+    BinaryObjectRegistryHelpers();
+    ~BinaryObjectRegistryHelpers();
+    BinaryObjectRegistryHelpers(const BinaryObjectRegistryHelpers&);
+
     // returns nullptr or a reference to a new PyString
-    static PyObject* computedValueDataString(const PyObject* computedValueArg);
+    PyObject* computedValueDataString(const PyObject* computedValueArg) const;
 
 private:
-    static BinaryObjectRegistryHelpers& _getInstance() {
-        static BinaryObjectRegistryHelpers singleton;
-        return singleton;
-        }
-
-    BinaryObjectRegistryHelpers();
-
-    BinaryObjectRegistryHelpers(const BinaryObjectRegistryHelpers&) = delete;
     void operator=(const BinaryObjectRegistryHelpers&) = delete;
 
     PyObject* mComputedValueDataStringFun;

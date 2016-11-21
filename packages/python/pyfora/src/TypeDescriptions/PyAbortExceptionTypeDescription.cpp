@@ -14,7 +14,6 @@
    limitations under the License.
 ****************************************************************************/
 #include "../IRToPythonConverter.hpp"
-#include "../PyAbortSingletons.hpp"
 #include "PyAbortExceptionTypeDescription.hpp"
 
 
@@ -34,17 +33,17 @@ PyAbortExceptionTypeDescription::~PyAbortExceptionTypeDescription()
 
 
 PyObject* PyAbortExceptionTypeDescription::transform(
-        IRToPythonConverter& c,
+        IRToPythonConverter& converter,
         bool retainHomogenousListsAsNumpy
         )
     {
     PyObject* pyAbortExceptionType = 
-        PyAbortSingletons::singletonNameToObject(mTypeName);
+        converter.pyAbortSingletonNameToObject(mTypeName);
     if (pyAbortExceptionType == nullptr) {
         return nullptr;
         }
     
-    PyObject* args = c.convert(mArgsId);
+    PyObject* args = converter.convert(mArgsId);
     if (args == nullptr) {
         Py_DECREF(pyAbortExceptionType);
         return nullptr;

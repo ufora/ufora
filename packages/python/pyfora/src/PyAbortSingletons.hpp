@@ -22,17 +22,12 @@
 
 class PyAbortSingletons {
 public:
-    static PyObject* singletonNameToObject(const std::string& name);
-private:
-    static PyAbortSingletons& _getInstance()
-        {
-        static PyAbortSingletons tr;
-        return tr;
-        }
-
     PyAbortSingletons();
+    PyAbortSingletons(const PyAbortSingletons&);
+    ~PyAbortSingletons();
 
-    PyAbortSingletons(const PyAbortSingletons&) = delete;
+    PyObject* singletonNameToObject(const std::string& name) const;
+private:
     void operator=(const PyAbortSingletons&) = delete;
 
     PyObject* mSingletonNameToObject;

@@ -17,9 +17,27 @@
 
 #include "PyObjectUtils.hpp"
 
-#include <iostream>
 #include <exception>
 #include <stdexcept>
+
+
+PyAstFreeVariableAnalyses::~PyAstFreeVariableAnalyses()
+    {
+    Py_XDECREF(mVarWithPosition);
+    Py_XDECREF(mGetFreeVariableMemberAccessChainsFun);
+    Py_XDECREF(mPyAstFreeVariableAnalysesModule);
+    }
+
+
+PyAstFreeVariableAnalyses::PyAstFreeVariableAnalyses(const PyAstFreeVariableAnalyses& other)
+    : mPyAstFreeVariableAnalysesModule(other.mPyAstFreeVariableAnalysesModule),
+      mGetFreeVariableMemberAccessChainsFun(other.mGetFreeVariableMemberAccessChainsFun),
+      mVarWithPosition(other.mVarWithPosition)
+    {
+    Py_INCREF(mPyAstFreeVariableAnalysesModule);
+    Py_INCREF(mGetFreeVariableMemberAccessChainsFun);
+    Py_INCREF(mVarWithPosition);
+    }
 
 
 PyAstFreeVariableAnalyses::PyAstFreeVariableAnalyses()
@@ -76,7 +94,7 @@ PyObject* PyAstFreeVariableAnalyses::getFreeMemberAccessChainsWithPositions(
         const PyObject* pyAst,
         bool isClassContext,
         bool getPositions,
-        const PyObject* exclude_predicate)
+        const PyObject* exclude_predicate) const
     {
     PyObject* pyIsClassContext = PyBool_FromLong(isClassContext);
     if (pyIsClassContext == nullptr) {
@@ -114,7 +132,7 @@ PyObject* PyAstFreeVariableAnalyses::getFreeMemberAccessChainsWithPositions(
         }
 
     PyObject* res = PyObject_Call(
-        _getInstance().mGetFreeVariableMemberAccessChainsFun,
+        mGetFreeVariableMemberAccessChainsFun,
         argsTuple,
         kwds);
 
@@ -130,10 +148,10 @@ PyObject* PyAstFreeVariableAnalyses::getFreeMemberAccessChainsWithPositions(
 PyObject* PyAstFreeVariableAnalyses::collectBoundValuesInScope(
         const PyObject* pyAst,
         bool getPositions
-        )
+        ) const
     {
     PyObject* collectBoundValuesInScopeFun = PyObject_GetAttrString(
-        _getInstance().mPyAstFreeVariableAnalysesModule,
+        mPyAstFreeVariableAnalysesModule,
         "collectBoundValuesInScope"
         );
     if (collectBoundValuesInScopeFun == nullptr) {
@@ -159,7 +177,7 @@ PyObject* PyAstFreeVariableAnalyses::collectBoundValuesInScope(
 
 
 PyObject* PyAstFreeVariableAnalyses::varWithPosition(const PyObject* var,
-                                                     const PyObject* pos)
+                                                     const PyObject* pos) const
     {
     PyObject* varTup = Py_BuildValue("(O)", var);
     if (varTup == nullptr) {
@@ -167,7 +185,7 @@ PyObject* PyAstFreeVariableAnalyses::varWithPosition(const PyObject* var,
         }
 
     PyObject* tr = PyObject_CallFunctionObjArgs(
-        _getInstance().mVarWithPosition,
+        mVarWithPosition,
         varTup,
         pos,
         nullptr);

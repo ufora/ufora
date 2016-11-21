@@ -22,6 +22,7 @@
 #include <stdint.h>
 #include <string>
 
+#include "BinaryObjectRegistryHelpers.hpp"
 #include "Json.hpp"
 #include "StringBuilder.hpp"
 
@@ -181,6 +182,8 @@ private:
     StringBuilder mStringBuilder;
     int64_t mNextObjectId;
     std::set<int64_t> mUnconvertibleIndices;
+    Json mJsonModule;
+    BinaryObjectRegistryHelpers mBinaryObjectRegisteryHelpers;
 
     void _writePrimitive(bool b);
     void _writePrimitive(int64_t l);
@@ -359,5 +362,5 @@ void BinaryObjectRegistry::defineStacktrace(
     {
     mStringBuilder.addInt64(objectId);
     mStringBuilder.addByte(CODE_STACKTRACE_AS_JSON);
-    mStringBuilder.addString(Json::dumps(stacktraceAsJson));
+    mStringBuilder.addString(mJsonModule.dumps(stacktraceAsJson));
     }

@@ -33,11 +33,11 @@ FileTypeDescription::~FileTypeDescription()
 
 
 PyObject* FileTypeDescription::transform(
-        IRToPythonConverter& c,
+        IRToPythonConverter& converter,
         bool retainHomogenousListsAsNumpy
         )
     {
-    return PureTypeDescriptionModuleWrapper::pyFileDescription(*this);
+    return converter.pyFileDescription(*this);
     }
 
 

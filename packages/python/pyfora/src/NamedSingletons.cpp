@@ -19,6 +19,19 @@
 #include <stdexcept>
 
 
+NamedSingletons::NamedSingletons(const NamedSingletons& other)
+    : mSingletonNameToObjectDict(other.mSingletonNameToObjectDict)
+    {
+    Py_INCREF(mSingletonNameToObjectDict);
+    }
+
+
+NamedSingletons::~NamedSingletons()
+    {
+    Py_XDECREF(mSingletonNameToObjectDict);
+    }
+
+
 NamedSingletons::NamedSingletons()
     : mSingletonNameToObjectDict(nullptr)
     {
@@ -49,10 +62,10 @@ NamedSingletons::NamedSingletons()
     }
 
 
-PyObject* NamedSingletons::singletonNameToObject(const std::string& s)
+PyObject* NamedSingletons::singletonNameToObject(const std::string& s) const
     {
     PyObject* tr = PyDict_GetItemString(
-        _getInstance().mSingletonNameToObjectDict,
+        mSingletonNameToObjectDict,
         s.c_str()
         );
 

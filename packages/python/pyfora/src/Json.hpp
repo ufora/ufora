@@ -22,21 +22,14 @@
 
 class Json {
 public:
-    static std::string dumps(const PyObject* obj);
-    static PyObject* loads(const std::string& s);
+    Json();
+    Json(const Json&);
+    ~Json();
+
+    std::string dumps(const PyObject* obj);
+    PyObject* loads(const std::string& s);
 
 private:
-    // singleton instance
-    static Json& _getInstance() {
-        static Json instance;
-        return instance;
-        }
-
-    // implement, but keep private for singleton pattern
-    Json();
-
-    // don't implement these next two for singleton pattern
-    Json(const Json&) = delete;
     void operator=(const Json&) = delete;
 
     PyObject* mJsonModule;

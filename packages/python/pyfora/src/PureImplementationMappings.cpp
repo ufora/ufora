@@ -82,7 +82,7 @@ PureImplementationMappings::canInvertInstancesOf(const PyObject* classObject)
 
 PureImplementationMappings::~PureImplementationMappings()
     {
-    Py_DECREF(mPyPureImplementationMappings);
+    Py_XDECREF(mPyPureImplementationMappings);
     }
 
 

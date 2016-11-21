@@ -20,7 +20,7 @@
 
 class ModuleLevelObjectIndex {
 public:
-    static ModuleLevelObjectIndex get();        
+    ModuleLevelObjectIndex();
 
     ModuleLevelObjectIndex(const ModuleLevelObjectIndex&);
 
@@ -30,13 +30,6 @@ public:
     PyObject* getPathToObject(const PyObject* obj) const;
 
 private:
-    // STEALS a reference to moduleLevelObjectIndexSingleton.
-    // In other words, this class does not incref this arg,
-    // but does decref it on destruction
-    explicit ModuleLevelObjectIndex(
-        PyObject* moduleLevelObjectIndexSingleton
-        );
-
     void operator=(const ModuleLevelObjectIndex&) = delete;
     
     PyObject* mModuleLevelObjectIndexSingleton;

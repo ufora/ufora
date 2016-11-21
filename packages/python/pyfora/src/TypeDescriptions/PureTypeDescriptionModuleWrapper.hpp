@@ -21,17 +21,12 @@ class FileTypeDescription;
 
 class PureTypeDescriptionModuleWrapper {
 public:
-    static PyObject* pyHomogeneousListAsNumpyArray(const PyObject*);
-    static PyObject* pyFileDescription(const FileTypeDescription&);
-private:
-    static PureTypeDescriptionModuleWrapper& _getInstance()
-        {
-        static PureTypeDescriptionModuleWrapper singleton;
-        return singleton;
-        }
-
     PureTypeDescriptionModuleWrapper();
+    ~PureTypeDescriptionModuleWrapper();
 
+    PyObject* pyHomogeneousListAsNumpyArray(const PyObject*) const;
+    PyObject* pyFileDescription(const FileTypeDescription&) const;
+private:
     PureTypeDescriptionModuleWrapper(
         const PureTypeDescriptionModuleWrapper&
         ) = delete;

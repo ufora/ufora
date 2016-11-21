@@ -46,6 +46,8 @@ void BinaryObjectRegistryDeserializer::deserializeFromStream(
         PyObject* convertJsonToObject
         )
     {
+    Json jsonModule;
+
     while (true) {
         int64_t objectId = stream->readInt64();
 
@@ -114,7 +116,7 @@ void BinaryObjectRegistryDeserializer::deserializeFromStream(
             }
         else if (code == BinaryObjectRegistry::CODE_REMOTE_PY_OBJECT) {
             std::string s = stream->readString();
-            PyObject* jsonRepresentation = Json::loads(s);
+            PyObject* jsonRepresentation = jsonModule.loads(s);
 
             PyObject* pyObject = PyObject_CallFunctionObjArgs(
                 convertJsonToObject,
@@ -273,7 +275,7 @@ void BinaryObjectRegistryDeserializer::deserializeFromStream(
         else if (code == BinaryObjectRegistry::CODE_STACKTRACE_AS_JSON) {
             std::string stackAsJson = stream->readString();
 
-            PyObject* res = Json::loads(stackAsJson);
+            PyObject* res = jsonModule.loads(stackAsJson);
             if (res == nullptr) {
                 throw std::runtime_error(
                     "error calling Json::loads: " +
