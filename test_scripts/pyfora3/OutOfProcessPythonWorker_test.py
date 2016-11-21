@@ -70,8 +70,9 @@ class Cases:
 
             t0 = time.time()
 
-            for ix in xrange(100):
-                threads.append(threading.Thread(target=pool.execute_code, args=(generateLambda(ix),)))
+            for ix in xrange(count):
+                threads.append(threading.Thread(target=pool.execute_code,
+                                                args=(generateLambda(ix),)))
                 threads[-1].start()
 
             for t in threads:
