@@ -14,7 +14,6 @@
 
 import logging
 import pyfora.Exceptions as Exceptions
-import pyfora.TypeDescription as TypeDescription
 import base64
 
 class ObjectConverter(object):

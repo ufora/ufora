@@ -110,6 +110,13 @@ class RoundTripPyforaConversionTest(unittest.TestCase):
             anArray,
             "pyfora.RoundTripConversion.small_strings_100k")
 
+    def test_conversion_performance_large_strings_100k(self):
+        base_str = "a" * 32
+        anArray = [base_str + str(ix) for ix in xrange(100000)]
+        self.roundtripConvert(
+            anArray,
+            "pyfora.RoundTripConversion.large_strings_100k")
+
     def test_conversion_performance_ints_100k(self):
         anArray = [ix for ix in xrange(100000)]
         self.roundtripConvert(
