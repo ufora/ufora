@@ -15,6 +15,7 @@
 ****************************************************************************/
 
 #include "CUDAExecutionContext.hppml"
+#include "CUDAVectorRecord.hpp"
 #include "NativeCFGToPTX.hppml"
 #include "../Core/Alignment.hpp"
 #include "../Core/AlignmentManager.hpp"
@@ -24,11 +25,15 @@
 #include "../Native/NativeCFGTransforms/ConvertForGPUExecution.hppml"
 #include "../Native/NativeCFGTransforms/Transforms.hppml"
 #include "../Native/NativeCode.hppml"
+#include "../Native/NativeType.hppml"
+#include "../Native/NativeTypeFor.hpp"
 #include "../Runtime.hppml"
 #include "../TypedFora/JitCompiler/StaticInliner.hppml"
 #include "../TypedFora/Converter.hppml"
+#include "../TypedFora/ABI/NativeLayoutType.hppml"
 #include "../TypedFora/ABI/SlottedForaValueArrayAppend.hppml"
 #include "../TypedFora/ABI/VectorRecord.hpp"
+#include "../TypedFora/ABI/VectorRecordCodegen.hppml"
 #include "../TypedFora/ABI/VectorHandle.hpp"
 #include "../TypedFora/TypedFora.hppml"
 #include "../Reasoner/SimpleForwardReasoner.hppml"
@@ -48,6 +53,20 @@ using TypedFora::Abi::VectorRecord;
 using Fora::Interpreter::ExecutionContext;
 
 constexpr uint8_t GPU_EXCEPTION_INDEX = 0xFF;
+
+NativeType cudaNativeTypeFor(const Type& type)
+	{
+	static NativeType vec = NativeTypeFor<TypedFora::Abi::VectorRecord>::get();
+	auto res = TypedFora::Abi::nativeLayoutType(type);
+	if (res == vec)
+		{
+		return NativeTypeFor<CUDAVectorRecord>::get();
+		}
+	else
+		{
+		return res;
+		}
+	}
 
 class CUDAExecutionContextInternalState {
 public:
@@ -289,9 +308,6 @@ public:
 
 			// Launch the CUDA kernel
 			LOG_DEBUG << "executeFunction: 4: About to launch CUDA kernel";
-			LOG_DEBUG << "executeFunction: 4.1: first 64bits of closure as int: " << ((int64_t*)inCudaClosureData)[0];
-			LOG_DEBUG << "executeFunction: 4.2: initialized CUDA outVecIdx with " << (int)outCudaIndexData[0]
-					<< ", at address " << (uint64_t)outCudaIndexData;
 
 			error = cuLaunchKernel( functionNameForModule(contextToUse, inModuleName),
 									blocksPerGrid, 1, 1,
@@ -303,9 +319,6 @@ public:
 			cudaDeviceSynchronize();
 			//free cuda memory
 			LOG_DEBUG << "executeFunction: 5: About to free CUDA kernel args";
-			LOG_DEBUG << "executeFunction: 5.1: first 64bits of closure as int: " << ((int64_t*)inCudaClosureData)[0];
-			LOG_DEBUG << "executeFunction: 5.2: initialized CUDA outVecIdx with " << (int)outCudaIndexData[0]
-					<< ", at address " << (uint64_t)outCudaIndexData;
 			free(args);
 
 			LOG_DEBUG << "executeFunction : 6";
@@ -359,13 +372,29 @@ void	CUDAExecutionContext::define(
 	mNativeKernelsByName[inKernelName] = inCFG;
 	mPTXKernelFunctionNames[inKernelName] = inKernelName;
 	mPTXKernelsByName[inKernelName] = ptxDefinition;
-	mInputOutputTypesByName[inKernelName] = make_pair(inInputType, inOutputTypes);
+
+	NativeType inputNativeType = cudaNativeTypeFor(inInputType);
+
+	std::vector<NativeType> outputNativeTypes;
+	outputNativeTypes.resize(inOutputTypes.size());
+	for (long k = 0; k < outputNativeTypes.size(); ++k)
+		{
+		outputNativeTypes[k] = cudaNativeTypeFor(inOutputTypes[k]);
+		}
+	auto res = mInputOutputTypesByName.insert(
+		make_pair(
+			inKernelName,
+			CUDAExecutionContext::InputOutputTypes(inInputType, inOutputTypes, inputNativeType, outputNativeTypes)
+			)
+		);
+	lassert(res.second);
 	}
 
 ImplValContainer    createFORAVector(
 						uint8_t* indexData,
 						uword_t  indexAlignedSize, // we can also pass the Type if necessary
 						const std::vector<Type>& outputElementTypes,
+						const std::vector<NativeType>& outputElementNativeTypes,
 						const std::vector<uint8_t*> alignedDataVectors,
 						uint64_t count,
 						MemoryPool* inPool
@@ -396,8 +425,8 @@ ImplValContainer    createFORAVector(
 			for (uword_t i = 0; i < outputElementTypes.size(); ++i)
 				{
 				LOG_DEBUG << "[lower byte]outputVal_" << i << "[" << k << "]= "
-					<< (long)alignedDataVectors[i][k*outputElementTypes[i].alignedSize()]
-					<< ", type: " << prettyPrintString(outputElementTypes[i]);
+					<< (long)alignedDataVectors[i][k*outputElementNativeTypes[i].alignedSize()]
+					<< ", type: " << prettyPrintString(outputElementNativeTypes[i]);
 				}
 			if (index == GPU_EXCEPTION_INDEX)
 				return ImplValContainerUtilities::createVector(VectorRecord());
@@ -405,7 +434,8 @@ ImplValContainer    createFORAVector(
 			lassert_dump(index < outputElementTypes.size(),
 					"index = " << (long)index << ", elmtTypes = " << outputElementTypes.size());
 			const Type& t = outputElementTypes[index];
-			slots[k] = alignedDataVectors[index] + (k * t.alignedSize());
+			const NativeType& nt = outputElementNativeTypes[index];
+			slots[k] = alignedDataVectors[index] + (k * nt.alignedSize());
 			jovs[k] = JOV::OfType(t);
 			jovSet.insert(jovs[k]);
 			}
@@ -420,20 +450,30 @@ ImplValContainer    createFORAVector(
 	if (jovSet.size() == 1)
 		{
 		const JOV& objectType = *jovSet.begin();
+		lassert(objectType.type());
+		const Type t = *objectType.type();
+		const NativeType nativeTyp = cudaNativeTypeFor(t);
+
 		uint8_t* alignedData;
 		if (indexData)
 			alignedData = alignedDataVectors[indexData[0]];
 		else
 			alignedData = alignedDataVectors[0];
+
 		TypedFora::Abi::PackedForaValues vals = array->appendUninitialized(objectType, count);
-		if (objectType.type()->alignedSize() != objectType.type()->size())
+		if (nativeTyp.alignedSize() != nativeTyp.packedSize())
 			{
 			uint8_t* packedData  = vals.data();
-			for (int i = 0; i < count; ++i)
-				copyAlignedToPacked(*objectType.type(), (uint8_t*)alignedData, packedData);
+			for (int i = 0; i < count; ++i) {
+				copyAlignedToPacked(nativeTyp, alignedData, packedData);
+				alignedData += nativeTyp.alignedSize();
+				packedData += nativeTyp.packedSize();
+				}
 			}
-		else
+		else {
+			lassert(objectType.type()->size() == nativeTyp.packedSize());
 			memcpy(vals.data(), alignedData, objectType.type()->size() * count);
+			}
 		}
 	else
 		{
@@ -461,25 +501,37 @@ ImplValContainer	CUDAExecutionContext::executeKernel(
 	{
 	Type closureType = inApplyObject.type();
 	Type inputElementType;
+	NativeType inputElementNativeType;
 	const std::vector<Type>* outputElementTypes;
+	const std::vector<NativeType>* outputElementNativeTypes;
 	bool mayThrowException = false;
 
 		{
 		boost::recursive_mutex::scoped_lock lock(mMutex);
 
 		//verify that this kernel exists
+		auto inoutIt = mInputOutputTypesByName.find(inKernelName);
 		lassert_dump(
-				mInputOutputTypesByName.find(inKernelName) != mInputOutputTypesByName.end(),
+				inoutIt != mInputOutputTypesByName.end(),
 				"used kernel " << inKernelName << " without defining it."
 				);
 		lassert_dump(
 				mMayThrowException.find(inKernelName) != mMayThrowException.end(),
 				"used kernel " << inKernelName << " without defining mMayThrowException for it."
 				);
-		inputElementType = mInputOutputTypesByName[inKernelName].first;
-		outputElementTypes = &mInputOutputTypesByName[inKernelName].second;
-		mayThrowException = mMayThrowException[inKernelName];
+
+		// inputElementType = mInputOutputTypesByName[inKernelName].first;
+		// outputElementTypes = &mInputOutputTypesByName[inKernelName].second;
+		auto& inout = inoutIt->second;
+		inputElementType = inout.inputType;
+		outputElementTypes = &inout.outputTypes;
 		lassert(outputElementTypes);
+
+		inputElementNativeType = inout.inputNativeType;
+		outputElementNativeTypes = &inout.outputNativeTypes;
+		lassert(outputElementNativeTypes);
+
+		mayThrowException = mMayThrowException[inKernelName];
 		}
 
 	lassert(inApplyObject.type().isClass());
@@ -516,12 +568,11 @@ ImplValContainer	CUDAExecutionContext::executeKernel(
 	if (!cudaInVecData || (!cudaClosureData && inApplyObject.type().size() > 0))
 		return ImplValContainer(CSTValue::blankOf(Type::Vector()));
 
-	LOG_DEBUG << "executeKernel(2): first 64bits of closure as int: " << ((int64_t*)cudaClosureData)[0];
-
 	uword_t outputElementTypesCount = outputElementTypes->size();
 	lassert_dump(outputElementTypesCount < GPU_EXCEPTION_INDEX, // reserve value 0xFF to flag exceptions
 			"Too many output types for 8bit unsigned integer to encode");
-	Type indexElementType = Type::Integer(8, false);
+	// Type indexElementType = Type::Integer(8, false);
+	NativeType indexElementType = NativeType::uint8();
 
 	uint8_t* cudaOutVecIndex = nullptr;
 	if (outputElementTypesCount > 1 || mayThrowException) {
@@ -538,10 +589,12 @@ ImplValContainer	CUDAExecutionContext::executeKernel(
 
 	for (uword_t k = 0; k < outputElementTypesCount; ++k)
 		{
-		const Type& t = (*outputElementTypes)[k];
-		uint8_t* ptr = alignMgr.allocateCudaAlignedData(t, elementCount);
+		// const Type& t = (*outputElementTypes)[k];
+		const NativeType& nt = (*outputElementNativeTypes)[k];
+
+		uint8_t* ptr = alignMgr.allocateCudaAlignedData(nt, elementCount);
 		lassert(ptr != nullptr);
-		memset(ptr, k+1, elementCount * t.alignedSize()); // For debugging purposes
+		memset(ptr, k+1, elementCount * nt.alignedSize()); // For debugging purposes
 		if (!ptr)
 			return ImplValContainer(CSTValue::blankOf(Type::Vector()));
 		cudaOutVecDataVectors[k] = ptr;
@@ -563,14 +616,12 @@ ImplValContainer	CUDAExecutionContext::executeKernel(
 	MemoryPool* pool = ExecutionContext::currentExecutionContext()->getMemoryPool();
 
 	LOG_DEBUG << "executeKernel(2): 5: about to createFORAVector";
-	LOG_DEBUG << "executeKernel(2): 6: first 64bits of closure as int: " << ((int64_t*)cudaClosureData)[0];
-	LOG_DEBUG << "executeKernel(2): 7: initialized CUDA outVecIdx with " << (int)cudaOutVecIndex[0]
-				<< ", at address " << (uint64_t)cudaOutVecIndex;
 
 	auto res = createFORAVector(
 					cudaOutVecIndex,
 					indexElementType.alignedSize(),
 					*outputElementTypes,
+					*outputElementNativeTypes,
 					cudaOutVecDataVectors,
 					elementCount,
 					pool);

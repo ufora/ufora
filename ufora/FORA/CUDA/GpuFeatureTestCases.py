@@ -271,6 +271,23 @@ class GpuFeatureTestCases:
 
         self.compareCudaToCPU(functionExpr, vectorExpr, captureExpr)
 
+    def test_flat_mat_add(self):
+        captureExpr = """
+                let mat_d = 20
+                let convert_1d2d = fun(offset) { (offset / mat_d, offset % mat_d)};
+                let convert_2d1d = fun(xy) { xy[0] * mat_d + xy[1]};
+                let mat1 = Vector.range(mat_d * mat_d);
+                let mat2 = Vector.range(mat_d * mat_d);
+                """
+        functionExpr = """
+                fun(xy) {
+                let offset = convert_2d1d(xy)
+                mat1[offset] + mat2[offset]
+                }"""
+        vectorExpr = "Vector.range(mat_d * mat_d, fun(offset) { convert_1d2d(offset) })"
+
+        self.compareCudaToCPU(functionExpr, vectorExpr, captureExpr)
+
     def test_flat_mat_mult_unrolled_conversions(self):
         captureExpr = """
                 let mat_d = 20;
@@ -289,5 +306,28 @@ class GpuFeatureTestCases:
                  sum
                 }"""
         vectorExpr = "Vector.range(mat_d * mat_d, fun(offset) { (offset / mat_d, offset % mat_d) })"
+
+        self.compareCudaToCPU(functionExpr, vectorExpr, captureExpr)
+
+    def test_flat_mat_mult(self):
+        captureExpr = """
+                let mat_d = 20;
+                let convert_1d2d = fun(offset) { (offset / mat_d, offset % mat_d)};
+                let convert_2d1d = fun(xy) { xy[0] * mat_d + xy[1]};
+                let mat1 = Vector.range(mat_d * mat_d);
+                let mat2 = Vector.range(mat_d * mat_d);
+                """
+        functionExpr = """
+                fun(xy) {
+                let sum = 0;
+                let k = 0;
+                 while (k < mat_d) {
+                   let prod = mat1[convert_2d1d((xy[0], k))] * mat2[convert_2d1d((k, xy[1]))];
+                   sum = sum + prod;
+                   k = k + 1
+                   }
+                 sum
+                }"""
+        vectorExpr = "Vector.range(mat_d * mat_d, fun(offset) { convert_1d2d(offset) })"
 
         self.compareCudaToCPU(functionExpr, vectorExpr, captureExpr)

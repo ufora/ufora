@@ -13,80 +13,92 @@
     See the License for the specific language governing permissions and
     limitations under the License.
 ****************************************************************************/
-#include "Type.hppml"
-
-uword_t alignedOffset(const Type& t, uword_t unalignedOffset)
-	{
-	uword_t align = t.alignment();
-	if (align == 0)
-		return 0;
-	uword_t padding = (align - (unalignedOffset % align)) % align;
-	return unalignedOffset + padding;
-	}
+#include "../Native/NativeType.hppml"
 
 static void copyBetweenAlignedAndPacked(
 		bool copyFromAlignedToPacked,
-		const Type& typ,
+		const NativeType& typ,
 		uint8_t* alignedData,
 		uint8_t* packedData
 		)
 	{
-	@match Type(typ)
+		lassert_dump(
+			(uint64_t)alignedData % typ.alignment() == 0,
+			"pointer to aligned data is not aligned (ptr_addr: "
+			<< (uint64_t*)alignedData
+			<< ", alignment:" << typ.alignment() << ")"
+			);
+	@match NativeType(typ)
 		-|	Nothing() ->> {
 			}
-		-|	Alternative(t) ->> {
-			copyBetweenAlignedAndPacked(copyFromAlignedToPacked, Type::Symbol(), alignedData, packedData);
-
-			uword_t offset = Type::Symbol().alignedSize();
-			uword_t padding = alignedOffset(t, offset) - offset;
-			alignedData = (uint8_t*)alignedData + padding;
-			copyBetweenAlignedAndPacked(copyFromAlignedToPacked, t, alignedData, packedData)
-			}
-		-|	Tuple(t) ->> {
+		-| 	Composite(types, names) ->> {
 			uword_t offset = 0;
-			for (long k = 0; k < t.size(); ++k)
+			for (long k = 0; k < types.size(); ++k)
 				{
-				uword_t padding = alignedOffset(t[k], offset) - offset;
+				uword_t padding = alignedOffset(types[k], offset) - offset;
 				alignedData = alignedData + padding;
-				copyBetweenAlignedAndPacked(copyFromAlignedToPacked, t[k], alignedData, packedData);
-				alignedData = alignedData + t[k].alignedSize();
-				packedData  = packedData + t[k].size();
-				offset += padding + t[k].alignedSize();
+				copyBetweenAlignedAndPacked(copyFromAlignedToPacked, types[k], alignedData, packedData);
+				alignedData = alignedData + types[k].alignedSize();
+				packedData  = packedData + types[k].packedSize();
+				offset += padding + types[k].alignedSize();
 				}
 			}
-		-|	Class(t) ->> {
-			uword_t offset = 0;
-			for (long k = 0; k < t.size(); ++k)
+		-|	Array(type, count) ->> {
+			if (type.packedSize() == type.alignedSize())
 				{
-				uword_t padding = alignedOffset(t[k], offset) - offset;
-				alignedData = alignedData + padding;
-				copyBetweenAlignedAndPacked(copyFromAlignedToPacked, t[k], alignedData, packedData);
-				alignedData = alignedData + t[k].alignedSize();
-				packedData  = packedData + t[k].size();
-				offset += padding + t[k].alignedSize();
+				if (copyFromAlignedToPacked)
+					memcpy(packedData, alignedData, type.packedSize() * count);
+				else
+					memcpy(alignedData, packedData, type.packedSize() * count);
 				}
+			else { // packedSize != alignedSize
+				uword_t offset = 0;
+				for (long k = 0; k < count; ++k)
+					{
+					uword_t padding = alignedOffset(type, offset) - offset;
+					alignedData = alignedData + padding;
+					// TODO :: simplify
+					copyBetweenAlignedAndPacked(
+						copyFromAlignedToPacked,
+						type,
+						alignedData, // alignedData + k * type.alignedSize()
+						packedData   // packedData  + k * type.packedSize()
+						);
+					alignedData = alignedData + type.alignedSize();
+					packedData  = packedData + type.packedSize();
+					offset += padding + type.alignedSize();
+					}
+				}
+			}
+		-|	Continuations(_) ->> {
+			lassert_dump(false, "not implemented yet");
 			}
 		-|	_ ->> {
-			// same packed and aligned sizes
-			// Note: for VectorRecords we make a shallow-copy
 			lassert_dump(
-					typ.size() == typ.alignedSize(),
-					"Type " << typ.toString()
+					typ.isInteger() || typ.isFloat() || typ.isPointer(),
+					"unexpected type in aligned<->packed copy: " << prettyPrintString(typ)
+					);
+			lassert_dump(
+					typ.packedSize() == typ.alignedSize(),
+					"Type " << prettyPrintString(typ)
 					<< " has different packed and aligned sizes, but it is"
-					<< " not special-cased when copying (it should be)");
-			if (copyFromAlignedToPacked)
-				memcpy(packedData, alignedData, typ.size());
-			else
-				memcpy(alignedData, packedData, typ.size());
+					<< " not special-cased when copying (it should be)"
+					);
+			if (copyFromAlignedToPacked) {
+				memcpy(packedData, alignedData, typ.packedSize());
+				}
+			else {
+				memcpy(alignedData, packedData, typ.packedSize());
+				}
 			}
 	}
 
-void copyAlignedToPacked(const Type& typ, uint8_t* alignedData, uint8_t* packedData)
+void copyAlignedToPacked(const NativeType& typ, uint8_t* alignedData, uint8_t* packedData)
 	{
 	copyBetweenAlignedAndPacked(true, typ, alignedData, packedData);
 	}
 
-void copyPackedToAligned(const Type& typ, uint8_t* packedData, uint8_t* alignedData)
+void copyPackedToAligned(const NativeType& typ, uint8_t* packedData, uint8_t* alignedData)
 	{
 	copyBetweenAlignedAndPacked(false, typ, alignedData, packedData);
 	}

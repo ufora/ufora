@@ -15,12 +15,9 @@
 ****************************************************************************/
 #pragma once
 
-#include "../../core/containers/ImmutableTreeSet.hppml"
-#include "../../core/IntegerTypes.hpp"
-
 class ImplValContainer;
 class MemoryPool;
-
+class NativeType;
 
 class AlignmentManager {
 public:
@@ -30,8 +27,8 @@ public:
 
 	uint8_t* getHandleToAlignedData(const ImplValContainer& value);
 	uint8_t* getHandleToCudaAlignedData(const ImplValContainer& value);
-	uint8_t* allocateAlignedData(const Type& type, uword_t count);
-	uint8_t* allocateCudaAlignedData(const Type& type, uword_t count);
+	uint8_t* allocateAlignedData(const NativeType& type, uword_t count);
+	uint8_t* allocateCudaAlignedData(const NativeType& type, uword_t count);
 
 private:
 	std::set<uint8_t*> mManagedMemory;
@@ -41,7 +38,7 @@ private:
 
 	uint8_t* getHandleToAlignedDataGeneric(
 			const ImplValContainer& value,
-			uint8_t* (AlignmentManager::*fun)(const Type&, uword_t),
+			uint8_t* (AlignmentManager::*allocator)(const NativeType&, uword_t),
 			bool shouldAlwaysCopyData=true
 			);
 };

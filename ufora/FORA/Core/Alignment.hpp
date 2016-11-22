@@ -16,11 +16,10 @@
 #pragma once
 
 #include "../../core/IntegerTypes.hpp"
-class Type;
 
-uword_t alignedOffset(const Type& t, uword_t unalignedOffset);
+class NativeType;
 
-void copyAlignedToPacked(const Type& typ, uint8_t* alignedData, uint8_t* packedData);
+void copyAlignedToPacked(const NativeType& typ, uint8_t* alignedData, uint8_t* packedData);
 
-void copyPackedToAligned(const Type& typ, uint8_t* packedData, uint8_t* alignedData);
+void copyPackedToAligned(const NativeType& typ, uint8_t* packedData, uint8_t* alignedData);
 
