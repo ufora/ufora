@@ -73,13 +73,13 @@ public:
 				{
 				//initialize the driver
 				CUresult error = cuInit(0);
-				throwOnError("Initialize cuda", error);
+				throwOnError(error, "Initialize cuda");
 				isInitialized = true;
 				}
 			}
 		}
 
-	static void throwOnError(std::string op, CUresult error)
+	static void throwOnError(CUresult error, std::string op)
 		{
 		if (error != CUDA_SUCCESS)
 			{
@@ -93,7 +93,7 @@ public:
 	void	cudaDeviceInitializer()
 		{
 		CUresult error = cuDeviceGetCount(&mDeviceCount);
-		throwOnError("Get a device count", error);
+		throwOnError(error, "Get a device count");
 
 		lassert_dump(mDeviceCount, "there are no CUDA-enabled devices");
 
@@ -107,8 +107,14 @@ public:
 			constexpr int DEVICE_NAME_MAX_LENGTH = 256;
 			char deviceName[DEVICE_NAME_MAX_LENGTH];
 
-			cuDeviceComputeCapability(&major, &minor, devID);
-			cuDeviceGetName(deviceName, DEVICE_NAME_MAX_LENGTH, devID);
+			throwOnError(
+				cuDeviceComputeCapability(&major, &minor, devID),
+				"get CUDA device compute capability"
+				);
+			throwOnError(
+				cuDeviceGetName(deviceName, DEVICE_NAME_MAX_LENGTH, devID),
+				"get CUDA device name"
+				);
 
 			LOG_INFO 	<< "CUDA Using Device " << devID
 						<< ": \"" << deviceName
@@ -117,13 +123,16 @@ public:
 						;
 
 			// pick up device with zero ordinal (default, or devID)
-			error = cuDeviceGet(&mCuDevices[devID], devID);
-
-			lassert(error == CUDA_SUCCESS);
+			throwOnError(
+				cuDeviceGet(&mCuDevices[devID], devID),
+				"get CUDA device handle"
+				);
 
 			// Create context
-			error = cuCtxCreate(&mCuContexts[devID], 0, mCuDevices[devID]);
-			lassert(error == CUDA_SUCCESS);
+			throwOnError(
+				cuCtxCreate(&mCuContexts[devID], 0, mCuDevices[devID]),
+				"create CUDA execution context for device"
+				);
 			}
 
 		for (auto c: mCuContexts)
@@ -155,7 +164,10 @@ public:
 		{
 		for (auto context: mCuContexts)
 			{
-			cuCtxSetCurrent(context);
+			throwOnError(
+				cuCtxSetCurrent(context),
+				"set CUDA execution context"
+				);
 
 			const unsigned int jitNumOptions = 5;
 			CUjit_option *jitOptions = new CUjit_option[jitNumOptions];
@@ -203,11 +215,10 @@ public:
 			CUfunction cuFun;
 
 			// Get function handle from module
-			error = cuModuleGetFunction(&cuFun, cuModule,
-												inFunctionName.c_str());
-			if (error != CUDA_SUCCESS)
-				lassert_dump(false, "PTX code didn't define function " <<
-											inFunctionName);
+			throwOnError(
+				cuModuleGetFunction(&cuFun, cuModule, inFunctionName.c_str()),
+				std::string("get function '") + inFunctionName + "' in CUDA Module"
+				);
 
 				{
 				boost::mutex::scoped_lock lock(mMutex);
@@ -240,7 +251,10 @@ public:
 		CUcontext contextToUse = mUnusedContexts.get();
 
 		try {
-			cuCtxSetCurrent(contextToUse);
+			throwOnError(
+				cuCtxSetCurrent(contextToUse),
+				"set CUDA execution context"
+				);
 			std::vector<CUdeviceptr> d_destData(outputTypesCount);
 
 			CUresult error;
@@ -259,6 +273,7 @@ public:
 			uword_t argCount = outputTypesCount + extraArgs;
 			LOG_DEBUG << "executeFunction : 3: argCount " << argCount;
 			void **args = (void**) malloc(sizeof(void*) * (argCount));
+			lassert(args);
 			if (inCudaClosureData)
 				args[kk++] = &inCudaClosureData;
 			args[kk++] = &inN;
@@ -283,7 +298,7 @@ public:
 									threadsPerBlock, 1, 1,
 									0,
 									NULL, args, NULL);
-			throwOnError("Launch Kernel: ", error);
+			throwOnError(error, "Launch Kernel: ");
 			lassert_dump(error == CUDA_SUCCESS, "UNKNOWN CUDA ERROR");
 			cudaDeviceSynchronize();
 			//free cuda memory
@@ -300,7 +315,6 @@ public:
 			{
 			LOG_DEBUG << "executeFunction : 7";
 			mUnusedContexts.write(contextToUse);
-			// FIXME: we are not freeing the cuda allocated memory properly
 			throw;
 			}
 		}
@@ -512,6 +526,7 @@ ImplValContainer	CUDAExecutionContext::executeKernel(
 	uint8_t* cudaOutVecIndex = nullptr;
 	if (outputElementTypesCount > 1 || mayThrowException) {
 		cudaOutVecIndex = alignMgr.allocateCudaAlignedData(indexElementType, elementCount);
+		lassert(cudaOutVecIndex != nullptr);
 		LOG_DEBUG << "allocated " << elementCount << " slots in the cuda result index vector (using CUDA unified memory)";
 		memset(cudaOutVecIndex, 0xff, elementCount * indexElementType.alignedSize());
 		LOG_DEBUG << "executeKernel(2): initialized CUDA outVecIdx with " << (int)cudaOutVecIndex[0]
@@ -525,6 +540,7 @@ ImplValContainer	CUDAExecutionContext::executeKernel(
 		{
 		const Type& t = (*outputElementTypes)[k];
 		uint8_t* ptr = alignMgr.allocateCudaAlignedData(t, elementCount);
+		lassert(ptr != nullptr);
 		memset(ptr, k+1, elementCount * t.alignedSize()); // For debugging purposes
 		if (!ptr)
 			return ImplValContainer(CSTValue::blankOf(Type::Vector()));
@@ -611,7 +627,8 @@ ImplValContainer	CUDAExecutionContext::executeKernel(
 				{
 				ostringstream msg;
 				msg << "Code returns zero types ("
-						<< frame->exits().resultPart().size() << ").";
+						<< frame->exits().resultPart().size() << "):"
+						<< prettyPrintString(frame->exits().resultPart());
 				throw UnableToConvertToPTX(msg.str());
 				}
 
