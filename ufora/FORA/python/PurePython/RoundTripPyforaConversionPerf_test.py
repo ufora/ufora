@@ -40,12 +40,18 @@ class RoundTripPyforaConversionTest(unittest.TestCase):
             cls.vdm.teardown()
             cls.vdm = None
 
-    def roundtripConvert(self, pyObject):
+    def roundtripConvert(self, pyObject, testName):
         try:
             _, timings = self._roundtripConvert(pyObject)
 
             for k in sorted(timings):
                 print k, timings[k]
+                PerformanceTestReporter.recordTest(
+                    testName=testName+"."+k,
+                    elapsedTime=timings[k],
+                    metadata=None
+                    )
+                
         except:
             import traceback
             traceback.print_exc()
@@ -91,46 +97,47 @@ class RoundTripPyforaConversionTest(unittest.TestCase):
         
         t4 = time.time()
 
-        timings = {'1. walking (py to binary)': t1 - t0,
-                   '2. binary to implVal': t2 - t1,
-                   '3. implval to binary': t3 - t2,
-                   '4. binary to python': t4 - t3}
+        timings = {'py_to_binary': t1 - t0,
+                   'binary_to_implVal': t2 - t1,
+                   'implval_to_binary': t3 - t2,
+                   'binary_to_python': t4 - t3}
 
         return converted, timings
-        
-    @PerformanceTestReporter.PerfTest("pyfora.RoundTripConversion.strings_100k")
-    def test_conversion_performance_strings(self):
-        anArray = [str(ix) for ix in xrange(100000)]
-        self.roundtripConvert(anArray)
 
-    @PerformanceTestReporter.PerfTest("pyfora.RoundTripConversion.ints_100k")
+    def test_conversion_performance_small_strings_100k(self):
+        anArray = [str(ix) for ix in xrange(100000)]
+        self.roundtripConvert(
+            anArray,
+            "pyfora.RoundTripConversion.small_strings_100k")
+
     def test_conversion_performance_ints_100k(self):
         anArray = [ix for ix in xrange(100000)]
-        self.roundtripConvert(anArray)
+        self.roundtripConvert(
+            anArray,
+            "pyfora.RoundTripConversion.ints_100k")
 
-    @PerformanceTestReporter.PerfTest(
-        "pyfora.RoundTripConversion.mixed_ints_floats_100k")
     def test_conversion_performance_mixed_ints_and_floats_100k(self):
         def elt(ix):
             if ix % 2:
                 return float(ix)
             return ix
         anArray = [elt(ix) for ix in xrange(100000)]
-        self.roundtripConvert(anArray)
+        self.roundtripConvert(
+            anArray,
+            "pyfora.RoundTripConversion.mixed_ints_floats_100k")
 
-    @PerformanceTestReporter.PerfTest("pyfora.RoundTripConversion.floats_100k")
     def test_conversion_performance_floats_100k(self):
         anArray = [float(ix) for ix in xrange(100000)]
-        self.roundtripConvert(anArray)
-
-    @PerformanceTestReporter.PerfTest(
-        "pyfora.RoundTripConversion.numpy_array_10mm")
+        self.roundtripConvert(
+            anArray,
+            "pyfora.RoundTripConversion.floats_100k")
+        
     def test_conversion_performance_numpy_10mm(self):
         anArray = numpy.zeros(10000000)
-        self.roundtripConvert(anArray)
+        self.roundtripConvert(
+            anArray,
+            "pyfora.RoundTripConversion.numpy_array_10mm")
 
-    @PerformanceTestReporter.PerfTest(
-        "pyfora.RoundTripConversion.homogeneous_class_instances_10k")
     def test_conversion_performance_homogeneous_class_instances_10k(self):
         class C(object):
             def __init__(self, x):
@@ -139,22 +146,23 @@ class RoundTripPyforaConversionTest(unittest.TestCase):
                 return self.x + y
 
         classes = [C(ix) for ix in xrange(10000)]
-        self.roundtripConvert(classes)
+        self.roundtripConvert(
+            classes,
+            "pyfora.RoundTripConversion.homogeneous_class_instances_10k")
 
-    @PerformanceTestReporter.PerfTest(
-        "pyfora.RoundTripConversion.tuples_10k")
     def test_conversion_performance_tuples_10k(self):
         tups = [tuple(range(ix % 10)) for ix in xrange(10000)]
-        self.roundtripConvert(tups)
+        self.roundtripConvert(
+            tups,
+            "pyfora.RoundTripConversion.tuples_10k"
+            )
 
-    @PerformanceTestReporter.PerfTest(
-        "pyfora.RoundTripConversion.small_lists_10k")
     def test_conversion_performance_small_lists(self):
         small_lists = [range(ix % 10) for ix in xrange(10000)]
-        self.roundtripConvert(small_lists)
+        self.roundtripConvert(
+            small_lists,
+            "pyfora.RoundTripConversion.small_lists_10k")
 
-    @PerformanceTestReporter.PerfTest(
-        "pyfora.RoundTripConversion.heterogeneous_class_instances_10k")
     def test_conversion_performance_heterogeneous_class_instances_10k(self):
         class C1(object):
             def __init__(self, x):
@@ -174,10 +182,10 @@ class RoundTripPyforaConversionTest(unittest.TestCase):
             return C2(ix)
 
         classes = [elt(ix) for ix in xrange(10000)]
-        self.roundtripConvert(classes)
+        self.roundtripConvert(
+            classes,
+            "pyfora.RoundTripConversion.heterogeneous_class_instances_10k")
 
-    @PerformanceTestReporter.PerfTest(
-        "pyfora.RoundTripConversion.functions_10k")
     def test_conversion_performance_functions_10k(self):
         def func(ix):
             def f(arg):
@@ -185,10 +193,11 @@ class RoundTripPyforaConversionTest(unittest.TestCase):
             return f
 
         funcs = [func(ix) for ix in xrange(10000)]
-        self.roundtripConvert(funcs)
+        self.roundtripConvert(
+            funcs,
+            "pyfora.RoundTripConversion.functions_10k")
         
-    @PerformanceTestReporter.PerfTest(
-        "pyfora.RoundTripConversion.class_objects_10k")
+        
     def test_conversion_performance_class_objects_10k(self):
         def class_factory(ix):
             class C(object):
@@ -199,6 +208,8 @@ class RoundTripPyforaConversionTest(unittest.TestCase):
             return C
 
         classes = [class_factory(ix) for ix in xrange(10000)]
-        self.roundtripConvert(classes)
+        self.roundtripConvert(
+            classes,
+            "pyfora.RoundTripConversion.class_objects_10k")
 
     
