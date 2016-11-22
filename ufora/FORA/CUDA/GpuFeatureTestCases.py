@@ -240,3 +240,54 @@ class GpuFeatureTestCases:
         self.compareCudaToCPU(functionExpr, "[0.0, 1.0, 2.0]", "")
         self.compareCudaToCPU(functionExpr, "[0.0]", "")
         self.compareCudaToCPU(functionExpr, "[1.0]", "")
+
+    def test_two_vec_multiply(self):
+        captureExpr = """
+                let vec_len = 20;
+                let vec1 = Vector.range(vec_len, fun(y){y});
+                let vec2 = Vector.range(vec_len, fun(z){z});
+                """
+        functionExpr = """
+                fun(x) {
+                vec1[x] * vec2[x];
+                }"""
+        vectorExpr = "Vector.range(vec_len)"
+        print "CapEx: ", captureExpr
+        self.compareCudaToCPU(functionExpr, vectorExpr, captureExpr)
+
+    def test_flat_mat_add_unrolled_conversions(self):
+        captureExpr = """
+                let mat_d = 30;
+                let mat1 = Vector.range(mat_d * mat_d);
+                let mat2 = Vector.range(mat_d * mat_d);
+                """
+        functionExpr = """
+                fun(xy) {
+                    let offset = xy[0] * mat_d + xy[1];
+                    mat1[offset] + mat2[offset]
+                }"""
+
+        vectorExpr = "Vector.range(mat_d * mat_d, fun(offset) { (offset / mat_d, offset % mat_d) })"
+
+        self.compareCudaToCPU(functionExpr, vectorExpr, captureExpr)
+
+    def test_flat_mat_mult_unrolled_conversions(self):
+        captureExpr = """
+                let mat_d = 20;
+                let mat1 = Vector.range(mat_d * mat_d);
+                let mat2 = Vector.range(mat_d * mat_d);
+                """
+        functionExpr = """
+                fun(xy) {
+                let sum = 0;
+                let k = 0;
+                 while (k < mat_d) {
+                   let prod = mat1[xy[0] * mat_d + k] * mat2[k * mat_d + xy[1]];
+                   sum = sum + prod;
+                   k = k + 1
+                   }
+                 sum
+                }"""
+        vectorExpr = "Vector.range(mat_d * mat_d, fun(offset) { (offset / mat_d, offset % mat_d) })"
+
+        self.compareCudaToCPU(functionExpr, vectorExpr, captureExpr)
