@@ -13,15 +13,18 @@
     See the License for the specific language governing permissions and
     limitations under the License.
 ****************************************************************************/
+#include <cuda_runtime_api.h>
+
 #include "Alignment.hpp"
 #include "AlignmentManager.hpp"
 #include "ExecutionContext.hppml"
 #include "ImplValContainerUtilities.hppml"
 #include "MemoryPool.hpp"
+#include "../Native/NativeType.hppml"
+#include "../TypedFora/ABI/NativeLayoutType.hppml"
 #include "../TypedFora/ABI/VectorHandle.hpp"
 #include "../TypedFora/ABI/VectorRecord.hpp"
 
-#include <cuda_runtime_api.h>
 
 #include "../../core/Logging.hpp"
 
@@ -53,7 +56,7 @@ AlignmentManager::~AlignmentManager()
 
 uint8_t* AlignmentManager::getHandleToAlignedDataGeneric(
 		const ImplValContainer& value,
-		uint8_t* (AlignmentManager::*allocator)(const Type&, uword_t),
+		uint8_t* (AlignmentManager::*allocator)(const NativeType&, uword_t),
 		bool shouldAlwaysCopyData
 		)
 	{
@@ -88,21 +91,24 @@ uint8_t* AlignmentManager::getHandleToAlignedDataGeneric(
 
 		packedDataPtr = vectorHandle.dataPtr()->unpagedValues()->offsetFor(0);
 
-		if (!shouldAlwaysCopyData && elementType.size() == elementType.alignedSize())
+		lassert(!elementType.isVector());
+		auto elementNativeType = TypedFora::Abi::nativeLayoutType(elementType);
+
+		if (!shouldAlwaysCopyData && elementNativeType.packedSize() == elementNativeType.alignedSize())
 			return packedDataPtr;
 
 		// Invariant: elementType.size() > 0
-		uint8_t* alignedDataPtr = (this->*allocator)(elementType, elementCount);
+		uint8_t* alignedDataPtr = (this->*allocator)(elementNativeType, elementCount);
 		if (alignedDataPtr)
-			if (elementType.size() == elementType.alignedSize())
-				memcpy(alignedDataPtr, packedDataPtr, elementCount * elementType.alignedSize());
+			if (elementNativeType.packedSize() == elementNativeType.alignedSize())
+				memcpy(alignedDataPtr, packedDataPtr, elementCount * elementNativeType.alignedSize());
 			else
 				for (long k = 0; k < elementCount; ++k)
 					{
 					copyPackedToAligned(
-							elementType,
-							packedDataPtr  + k * elementType.size(),
-							alignedDataPtr + k * elementType.alignedSize()
+							elementNativeType,
+							packedDataPtr  + k * elementNativeType.packedSize(),
+							alignedDataPtr + k * elementNativeType.alignedSize()
 							);
 					}
 		return alignedDataPtr;
@@ -111,7 +117,10 @@ uint8_t* AlignmentManager::getHandleToAlignedDataGeneric(
 		if (elementType.size() == 0)
 			return nullptr;
 
-		uint8_t* alignedDataPtr = (this->*allocator)(elementType, elementCount);
+		auto elementNativeType = TypedFora::Abi::nativeLayoutType(elementType);
+		lassert(elementNativeType.packedSize() == t.size());
+
+		uint8_t* alignedDataPtr = (this->*allocator)(elementNativeType, elementCount);
 		if (!alignedDataPtr)
 			return nullptr;
 
@@ -120,17 +129,20 @@ uint8_t* AlignmentManager::getHandleToAlignedDataGeneric(
 		uint8_t* packedData = packedDataPtr;
 		for (long k = 0; k < elementTypes.size(); ++k)
 			{
-			LOG_DEBUG << "copying packed to aligned for k=" << k << ", type:" << prettyPrintString(elementTypes[k]);
-			uword_t padding = alignedOffset(elementTypes[k], offset) - offset;
+			const Type& typ = elementTypes[k];
+			elementNativeType = TypedFora::Abi::nativeLayoutType(typ);
+			LOG_DEBUG << "copying packed to aligned for k=" << k << ", Type:" << prettyPrintString(typ)
+				<< ", NativeType:" << prettyPrintString(elementNativeType);
+			uword_t padding = alignedOffset(elementNativeType, offset) - offset;
 			LOG_DEBUG << "padding needed " << padding;
 			alignedData = alignedData + padding;
-			copyPackedToAligned(elementTypes[k], packedData, alignedData);
+			copyPackedToAligned(elementNativeType, packedData, alignedData);
 
 			lassert_dump(
-				elementTypes[k].isInteger() || elementTypes[k].isFloat() || elementTypes[k].isVector() || elementTypes[k].isTuple(),
-				"unexpected type in aligned allocation"
+				typ.isVector() || elementNativeType.isInteger() || elementNativeType.isFloat() || elementNativeType.isComposite(),
+				"unexpected type in aligned allocation:" << prettyPrintString(elementNativeType)
 				)
-			if (elementTypes[k].isVector())
+			if (typ.isVector())
 				{
 				// replace the pointer to the VectorHandle with a pointer to a
 				// freshly allocated vector
@@ -142,9 +154,9 @@ uint8_t* AlignmentManager::getHandleToAlignedDataGeneric(
 								);
 				*(uint8_t**)alignedData = vecPtr;
 				}
-			alignedData = alignedData + elementTypes[k].alignedSize();
-			packedData  = packedData + elementTypes[k].size();
-			offset += padding + elementTypes[k].alignedSize();
+			alignedData = alignedData + elementNativeType.alignedSize();
+			packedData  = packedData + elementNativeType.packedSize();
+			offset += padding + elementNativeType.alignedSize();
 			}
 		return alignedDataPtr;
 		}
@@ -164,13 +176,13 @@ uint8_t* AlignmentManager::getHandleToCudaAlignedData(const ImplValContainer& va
 	return getHandleToAlignedDataGeneric(value, &AlignmentManager::allocateCudaAlignedData, true);
 	}
 
-uint8_t* AlignmentManager::allocateAlignedData(const Type& t, uword_t elementCount)
+uint8_t* AlignmentManager::allocateAlignedData(const NativeType& typ, uword_t elementCount)
 	{
 	uint8_t* alignedDataPtr = nullptr;
 
-	if (!mPool->permitAllocation(t.alignedSize() * elementCount))
+	if (!mPool->permitAllocation(typ.alignedSize() * elementCount))
 		return nullptr;
-	alignedDataPtr = mPool->allocate(t.alignedSize() * elementCount);
+	alignedDataPtr = mPool->allocate(typ.alignedSize() * elementCount);
 	if (!alignedDataPtr)
 		return nullptr;
 
@@ -182,13 +194,13 @@ uint8_t* AlignmentManager::allocateAlignedData(const Type& t, uword_t elementCou
 	return alignedDataPtr;
 	}
 
-uint8_t* AlignmentManager::allocateCudaAlignedData(const Type& t, uword_t elementCount)
+uint8_t* AlignmentManager::allocateCudaAlignedData(const NativeType& typ, uword_t elementCount)
 	{
 	LOG_DEBUG << "allocateCudaAlignedData for " << elementCount << " objects of type "
-			<< prettyPrintString(t) << "of aligned size " << t.alignedSize();
+			<< prettyPrintString(typ) << " of aligned size " << typ.alignedSize();
 	uint8_t* alignedDataPtr = nullptr;
 	cudaError_t err;
-	err = cudaMallocManaged((void**)&alignedDataPtr, t.alignedSize() * elementCount, cudaMemAttachGlobal);
+	err = cudaMallocManaged((void**)&alignedDataPtr, typ.alignedSize() * elementCount, cudaMemAttachGlobal);
 	if (err != cudaSuccess) {
 		return nullptr;
 		}
