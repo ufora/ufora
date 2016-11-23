@@ -23,7 +23,7 @@ class GpuTestUtil:
         text = captureExpr + """
             let f = __funcExpr__;
             let vec = __vecExpr__;
-            let cuda = `CUDAVectorApply(f, vec);
+            let cuda = cached`(#GpuApply(f, vec));
             let cpu = [f(x) for x in vec]
 
             if (cuda == cpu)
@@ -50,7 +50,7 @@ class GpuTestUtil:
             let f = fun(x) {
                 `""" + function + """(x)
                 }
-            `CUDAVectorApply(f, [""" + str(input) + """])[0]
+            cached`(#GpuApply(f, [""" + str(input) + """]))[0]
             """
         res = InMemoryCumulusSimulation.computeUsingSeveralWorkers(text, s3, 1, timeout=120, threadCount=4)
         self.assertIsNotNone(res)
@@ -78,7 +78,7 @@ class GpuTestUtil:
                 }"""
 
         if onGPU:
-            text += """`CUDAVectorApply(f,""" + testingVectorText + """)"""
+            text += """cached`(#GpuApply(f,""" + testingVectorText + """))"""
         else:
             text += testingVectorText + """ ~~ f"""
 
