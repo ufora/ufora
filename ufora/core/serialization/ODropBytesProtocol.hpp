@@ -21,7 +21,7 @@ class ODropBytesProtocol : public OProtocol {
 public:
         ODropBytesProtocol() : mPosition(0) {}
 
-	void write(uword_t inByteCount, void *inData)
+	void write(uword_t inByteCount, const void* inData)
             {
             mPosition += inByteCount;
             }

@@ -27,7 +27,7 @@ public:
 	OMemProtocol& operator=(const OMemProtocol& in) = delete;
 	OMemProtocol(std::vector<char>& inData);
 
-	void write(uword_t inByteCount, void *inData);
+	void write(uword_t inByteCount, const void* inData);
 
 	uword_t position(void)
 		{

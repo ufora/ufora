@@ -241,7 +241,7 @@ public:
 		OHashProtocol(Hash& outHash);
 		~OHashProtocol();
 
-		void write(uword_t inByteCount, void *inData);
+		void write(uword_t inByteCount, const void* inData);
 		uword_t position(void);
 private:
 		uword_t 	mPosition;

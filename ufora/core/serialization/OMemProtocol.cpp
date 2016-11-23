@@ -21,7 +21,7 @@ OMemProtocol::OMemProtocol(std::vector<char>& inData) : mData(inData)
 	}
 
 
-void OMemProtocol::write(uword_t inByteCount, void *inData)
+void OMemProtocol::write(uword_t inByteCount, const void* inData)
 	{
 	if (inByteCount == 0)
 		return;
