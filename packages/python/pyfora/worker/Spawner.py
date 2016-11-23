@@ -83,25 +83,33 @@ class OutOfProcessWorkerConnection(WorkerConnectionBase):
         def onStderr(msg):
             logging.info("%s/%s err> %s", socket_dir, socket_name, msg)
 
-        self.proc = SubprocessRunner.SubprocessRunner(
-            [sys.executable, worker.__file__, worker_socket_path],
-            onStdout,
-            onStderr
-            )
+        pid = os.fork()
 
-        self.proc.start()
+        if pid == 0:
+            #we are the child
+            try:
+                code = Worker.Worker(worker_socket_path).executeLoop()
+            except:
+                logging.error("worker had exception")
+                code = 1
+
+            sys.stdout.flush()
+            sys.stderr.flush()
+            os._exit(code)
+        else:
+            self.childpid = pid
 
     def shutdown_worker(self):
-        self.proc.kill()
-        self.proc.wait()
+        os.kill(self.childpid, 9)
+        os.waitpid(self.childpid, 0)
 
     def processLooksTerminated(self):
-        return self.proc.poll() is not None
+        pid,exit = os.waitpid(self.childpid, os.WNOHANG)
+        return pid == self.childpid
 
     def cleanupAfterAppearingDead(self):
         #this worker is dead!
         logging.info("worker %s/%s was busy but looks dead to us", self.socket_dir, self.socket_name)
-        self.proc.wait()
         self.remove_socket()
 
 class InProcessWorkerConnection(WorkerConnectionBase):
