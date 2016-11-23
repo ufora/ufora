@@ -556,7 +556,7 @@ ImplValContainer	CUDAExecutionContext::executeKernel(
 	//create a aligned vectors
 	AlignmentManager alignMgr;
 	uint8_t* cudaClosureData = alignMgr.getHandleToCudaAlignedData(inApplyObject);
-	uint8_t* cudaInVecData   = alignMgr.getHandleToCudaAlignedData(inSourceVector);
+	CudaVectorRecordStorage* cudaInVecData = (CudaVectorRecordStorage*)alignMgr.getHandleToCudaAlignedData(inSourceVector);
 
 	if (!cudaInVecData || (!cudaClosureData && inApplyObject.type().size() > 0))
 		return ImplValContainer(CSTValue::blankOf(Type::Vector()));
@@ -569,7 +569,7 @@ ImplValContainer	CUDAExecutionContext::executeKernel(
 
 	uint8_t* cudaOutVecIndex = nullptr;
 	if (outputElementTypesCount > 1 || mayThrowException) {
-		cudaOutVecIndex = alignMgr.allocateCudaAlignedData(indexElementType, elementCount);
+		cudaOutVecIndex = alignMgr.allocateCudaMemory(indexElementType.alignedSize() * elementCount);
 		lassert(cudaOutVecIndex != nullptr);
 		LOG_DEBUG << "allocated " << elementCount << " slots in the cuda result index vector (using CUDA unified memory)";
 		memset(cudaOutVecIndex, 0xff, elementCount * indexElementType.alignedSize());
@@ -585,7 +585,7 @@ ImplValContainer	CUDAExecutionContext::executeKernel(
 		// const Type& t = (*outputElementTypes)[k];
 		const NativeType& nt = (*outputElementNativeTypes)[k];
 
-		uint8_t* ptr = alignMgr.allocateCudaAlignedData(nt, elementCount);
+		uint8_t* ptr = alignMgr.allocateCudaMemory(nt.alignedSize() * elementCount);
 		lassert(ptr != nullptr);
 		memset(ptr, k+1, elementCount * nt.alignedSize()); // For debugging purposes
 		if (!ptr)
@@ -593,14 +593,11 @@ ImplValContainer	CUDAExecutionContext::executeKernel(
 		cudaOutVecDataVectors[k] = ptr;
 		}
 
-	lassert(sourceVectorHandle.dataPtr()->unpagedValues());
-	lassert(sourceVectorHandle.dataPtr()->unpagedValues()->size() == elementCount);
-
 	mCUDAState->executeFunction(
 		inKernelName,
 		cudaClosureData,
 		elementCount,
-		cudaInVecData,
+		cudaInVecData->mDataPtr,
 		cudaOutVecDataVectors,
 		cudaOutVecIndex
 		);
@@ -629,20 +626,13 @@ ImplValContainer	CUDAExecutionContext::executeKernel(
 						ImplValContainer	inSourceVector
 						)
 	{
-	Type vecElementType = *inSourceVector.cast<VectorRecord>().jor()[0].type();
-	LOG_DEBUG << "CUDAApply Vector Element Type:" << prettyPrintString(vecElementType);
+	JOV vecElementJov = inSourceVector.cast<VectorRecord>().jor()[0];
+	LOG_DEBUG << "CUDAApply Vector Element Type:" << prettyPrintString(vecElementJov);
 	LOG_DEBUG << "CUDAApply Function Object:" << prettyPrintString(inApplyObject);
 
-	if (!vecElementType.isPOD())
-		{
-		throw UnableToConvertToPTX(
-			prettyPrintString(vecElementType) + " isn't POD");
-		}
+	JudgmentOnValue	funJOV = JudgmentOnValue::FromLiveValue(inApplyObject.getReference()).relaxedJOV();
 
-	JudgmentOnValue	funJOV =
-		JudgmentOnValue::Constant(inApplyObject.getReference()).relaxedJOV();
-
-	string kernelName = "CUDA_" + hashToString(funJOV.hash() + vecElementType.hash());
+	string kernelName = "CUDA_" + hashToString(funJOV.hash() + vecElementJov.hash());
 
 		{
 		boost::recursive_mutex::scoped_lock lock(mMutex);
@@ -653,7 +643,7 @@ ImplValContainer	CUDAExecutionContext::executeKernel(
 				emptyTreeVec() +
 					funJOV +
 					JudgmentOnValue::Constant(CSTValue(Symbol::Call())) +
-					JudgmentOnValue::OfType(vecElementType)
+					vecElementJov
 				;
 			LOG_DEBUG << "signature JOVs: " << prettyPrintString(signatureJOVs);
 
@@ -758,7 +748,7 @@ ImplValContainer	CUDAExecutionContext::executeKernel(
 				
 				LOG_TEST << "code pre-define " << cfg;
 
-				define(kernelName, cfg, vecElementType, outputTypes);
+				define(kernelName, cfg, *vecElementJov.type(), outputTypes);
 				}
 			catch(std::logic_error e)
 				{

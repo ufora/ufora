@@ -48,17 +48,6 @@ class PyforaGpuTests(
 
         return cls.executor
 
-
-    def test_with_block_assignment_1(self):
-        with self.create_executor() as fora:
-            x = 5
-
-            with fora.remotely:
-                b = 4 + x
-
-            result = b.toLocal().result()
-            self.assertEqual(result, 9)
-
 if __name__ == '__main__':
     import ufora.config.Mainline as Mainline
     Mainline.UnitTestMainline([FORA])

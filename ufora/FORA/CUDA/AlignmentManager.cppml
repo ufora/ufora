@@ -1,17 +1,17 @@
 /***************************************************************************
-    Copyright 2015,2016 Ufora Inc.
+	Copyright 2015,2016 Ufora Inc.
 
-    Licensed under the Apache License, Version 2.0 (the "License");
-    you may not use this file except in compliance with the License.
-    You may obtain a copy of the License at
+	Licensed under the Apache License, Version 2.0 (the "License");
+	you may not use this file except in compliance with the License.
+	You may obtain a copy of the License at
 
-        http://www.apache.org/licenses/LICENSE-2.0
+		http://www.apache.org/licenses/LICENSE-2.0
 
-    Unless required by applicable law or agreed to in writing, software
-    distributed under the License is distributed on an "AS IS" BASIS,
-    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-    See the License for the specific language governing permissions and
-    limitations under the License.
+	Unless required by applicable law or agreed to in writing, software
+	distributed under the License is distributed on an "AS IS" BASIS,
+	WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+	See the License for the specific language governing permissions and
+	limitations under the License.
 ****************************************************************************/
 #include <cuda_runtime_api.h>
 
@@ -24,9 +24,12 @@
 #include "../TypedFora/ABI/NativeLayoutType.hppml"
 #include "../TypedFora/ABI/VectorHandle.hpp"
 #include "../TypedFora/ABI/VectorRecord.hpp"
-
+#include "../VectorDataManager/VectorDataManager.hppml"
 
 #include "../../core/Logging.hpp"
+
+using namespace Fora::Interpreter;
+using namespace TypedFora::Abi;
 
 AlignmentManager::AlignmentManager(MemoryPool* pool, bool freeAllocatedMemoryOnDestroy)
 		: mPool(pool), mFreeOnDestroy(freeAllocatedMemoryOnDestroy)
@@ -50,166 +53,281 @@ AlignmentManager::~AlignmentManager()
 
 		cudaDeviceSynchronize();
 		for (auto ptr: mCudaManagedMemory)
-		    cudaFree(ptr);
+			cudaFree(ptr);
 		}
 	}
 
-uint8_t* AlignmentManager::getHandleToAlignedDataGeneric(
-		const ImplValContainer& value,
-		uint8_t* (AlignmentManager::*allocator)(const NativeType&, uword_t),
-		bool shouldAlwaysCopyData
+template<class T>
+void stridedMemcpyAs(
+		uint8_t* targetMemory,
+		uint8_t* sourceMemory,
+		uint64_t objectCount,
+		uint64_t destStride,
+		uint64_t sourceStride
 		)
 	{
-	Type t = value.type();
-	Type elementType = t;
-	uword_t elementCount = 1;
-	uint8_t* packedDataPtr = (uint8_t*) value.data();
-
-	@match Type(t)
-	-| 	Vector() ->>
+	for (long k = 0; k < objectCount; k++)
 		{
-		TypedFora::Abi::VectorRecord vectorHandle =
-				value.cast<TypedFora::Abi::VectorRecord>();
-
-		lassert(vectorHandle.size() &&
-				vectorHandle.jor().size() == 1 &&
-				vectorHandle.jor()[0].type());
-
-		elementCount = vectorHandle.size();
-		if (elementCount == 0)
-			return nullptr;
-
-		auto res = vectorHandle.jor()[0].type();
-		if (!res)
-			return nullptr;
-		elementType = *res;
-		if (elementType.size() == 0)
-			return nullptr;
-
-		lassert(vectorHandle.dataPtr()->unpagedValues());
-		lassert(vectorHandle.dataPtr()->unpagedValues()->size() == elementCount);
-
-		packedDataPtr = vectorHandle.dataPtr()->unpagedValues()->offsetFor(0);
-
-		lassert(!elementType.isVector());
-		auto elementNativeType = TypedFora::Abi::nativeLayoutType(elementType);
-
-		if (!shouldAlwaysCopyData && elementNativeType.packedSize() == elementNativeType.alignedSize())
-			return packedDataPtr;
-
-		// Invariant: elementType.size() > 0
-		uint8_t* alignedDataPtr = (this->*allocator)(elementNativeType, elementCount);
-		if (alignedDataPtr)
-			if (elementNativeType.packedSize() == elementNativeType.alignedSize())
-				memcpy(alignedDataPtr, packedDataPtr, elementCount * elementNativeType.alignedSize());
-			else
-				for (long k = 0; k < elementCount; ++k)
-					{
-					copyPackedToAligned(
-							elementNativeType,
-							packedDataPtr  + k * elementNativeType.packedSize(),
-							alignedDataPtr + k * elementNativeType.alignedSize()
-							);
-					}
-		return alignedDataPtr;
-		}
-	-|	Class(elementTypes, body) ->> {
-		if (elementType.size() == 0)
-			return nullptr;
-
-		auto elementNativeType = TypedFora::Abi::nativeLayoutType(elementType);
-		lassert(elementNativeType.packedSize() == t.size());
-
-		uint8_t* alignedDataPtr = (this->*allocator)(elementNativeType, elementCount);
-		if (!alignedDataPtr)
-			return nullptr;
-
-		uword_t offset = 0;
-		uint8_t* alignedData = alignedDataPtr;
-		uint8_t* packedData = packedDataPtr;
-		for (long k = 0; k < elementTypes.size(); ++k)
-			{
-			const Type& typ = elementTypes[k];
-			elementNativeType = TypedFora::Abi::nativeLayoutType(typ);
-			LOG_DEBUG << "copying packed to aligned for k=" << k << ", Type:" << prettyPrintString(typ)
-				<< ", NativeType:" << prettyPrintString(elementNativeType);
-			uword_t padding = alignedOffset(elementNativeType, offset) - offset;
-			LOG_DEBUG << "padding needed " << padding;
-			alignedData = alignedData + padding;
-			copyPackedToAligned(elementNativeType, packedData, alignedData);
-
-			lassert_dump(
-				typ.isVector() || elementNativeType.isInteger() || elementNativeType.isFloat() || elementNativeType.isComposite(),
-				"unexpected type in aligned allocation:" << prettyPrintString(elementNativeType)
-				)
-			if (typ.isVector())
-				{
-				// replace the pointer to the VectorHandle with a pointer to a
-				// freshly allocated vector
-				uint8_t* vecPtr =
-						getHandleToAlignedDataGeneric(
-								ImplValContainerUtilities::createVector(*(TypedFora::Abi::VectorRecord*)packedData),
-								allocator,
-								shouldAlwaysCopyData
-								);
-				*(uint8_t**)alignedData = vecPtr;
-				}
-			alignedData = alignedData + elementNativeType.alignedSize();
-			packedData  = packedData + elementNativeType.packedSize();
-			offset += padding + elementNativeType.alignedSize();
-			}
-		return alignedDataPtr;
-		}
-	-|	_ ->>
-		{
-		lassert_dump(false, "not implemented for type" << t.toString());
+		((T*)targetMemory)[0] = ((T*)sourceMemory)[0];
+		targetMemory += destStride;
+		sourceMemory += sourceStride;
 		}
 	}
 
-uint8_t* AlignmentManager::getHandleToAlignedData(const ImplValContainer& value)
+void stridedMemcpy(
+		uint8_t* targetMemory,
+		uint8_t* sourceMemory,
+		size_t bytesPerObject,
+		uint64_t objectCount,
+		uint64_t destStride,
+		uint64_t sourceStride
+		)
 	{
-	return getHandleToAlignedDataGeneric(value, &AlignmentManager::allocateAlignedData, false);
+	//see if this is a simple memcopy
+	if (bytesPerObject == sourceStride && bytesPerObject == destStride)
+		{
+		memcpy(targetMemory, sourceMemory, bytesPerObject * objectCount);
+		return;
+		}
+
+	while (bytesPerObject > 0)
+		{
+		if (bytesPerObject >= 16)
+			{
+			stridedMemcpyAs<pair<uint64_t, uint64_t> >(targetMemory, sourceMemory, objectCount, destStride, sourceStride);
+			bytesPerObject -= 16;
+			targetMemory += 16;
+			sourceMemory += 16;
+			}
+			else
+		if (bytesPerObject >= 8)
+			{
+			stridedMemcpyAs<uint64_t>(targetMemory, sourceMemory, objectCount, destStride, sourceStride);
+			bytesPerObject -= 8;
+			targetMemory += 8;
+			sourceMemory += 8;
+			}
+			else
+		if (bytesPerObject >= 4)
+			{
+			stridedMemcpyAs<uint32_t>(targetMemory, sourceMemory, objectCount, destStride, sourceStride);
+			bytesPerObject -= 4;
+			targetMemory += 4;
+			sourceMemory += 4;
+			}
+			else
+		if (bytesPerObject >= 2)
+			{
+			stridedMemcpyAs<uint16_t>(targetMemory, sourceMemory, objectCount, destStride, sourceStride);
+			bytesPerObject -= 2;
+			targetMemory += 2;
+			sourceMemory += 2;
+			}
+		else
+			{
+			stridedMemcpyAs<uint8_t>(targetMemory, sourceMemory, objectCount, destStride, sourceStride);
+			bytesPerObject -= 1;
+			targetMemory += 1;
+			sourceMemory += 1;
+			}
+		}
+	}
+
+void AlignmentManager::copyVectorToAlignedMemory(
+		CudaVectorRecordStorage& target,
+		VectorRecord& vector,
+		boost::function<uint8_t* (uword_t bytecount)> allocator
+		)
+	{
+	target.mSize = vector.size();
+	//we don't keep offset/stride information - instead we're fully deepcopying the object
+	target.mOffset = 0;
+	target.mStride = 1;
+	target.mDataPtr = nullptr;
+
+	if (!vector.size())
+		return;
+	
+	//should be a homogenous vector
+	lassert(vector.jor().size() == 1 && vector.jor()[0].type());
+
+	uint64_t elementCount = vector.size();
+	
+	Type elementType = *vector.jor()[0].type();
+	
+	auto elementNativeType = TypedFora::Abi::nativeLayoutType(elementType);
+
+	bool allObjectsPOD = vector.jor()[0].type()->isPOD();
+	bool allObjectsAlreadyAligned = elementNativeType.packedSize() == elementNativeType.alignedSize();
+
+	uint8_t* alignedDataPtr = allocator(std::max<uword_t>(8, elementNativeType.alignedSize() * elementCount));
+	lassert(alignedDataPtr);
+
+	target.mDataPtr = alignedDataPtr;
+
+	int64_t alignedSize = elementNativeType.alignedSize();
+	int64_t valuesCopied = 0;
+
+	bool allLoaded = vector.visitAnyValuesPresentInVdm(
+		&ExecutionContext::currentExecutionContext()->getVDM(),
+		[&](ForaValueArray* array, IntegerSequence subsequence) {
+			copyObjectsToAlignedMemory(
+				alignedDataPtr + valuesCopied * alignedSize,
+				array->offsetFor(subsequence.offset()),
+				elementType,
+				subsequence.size(),
+				alignedSize,
+				subsequence.stride() * elementType.size(),
+				allocator
+				);
+
+			valuesCopied += subsequence.size();
+			},
+		IntegerSequence(vector.size())
+		);
+
+	lassert(allLoaded);
+	lassert(valuesCopied == vector.size());
+	}
+
+void AlignmentManager::copyObjectsToAlignedMemory(
+		uint8_t* targetMemory,
+		uint8_t* sourceMemory,
+		Type objectType,
+		uint64_t objectCount,
+		uint64_t destStride,
+		uint64_t sourceStride,
+		boost::function<uint8_t* (uword_t bytecount)> allocator
+		)
+	{
+	if (objectType.size() == 0)
+		return;
+
+	bool isSimple = false;
+
+	@match Type(objectType)
+		-| Integer() ->> { isSimple = true; }
+		-| Float() ->> { isSimple = true; }
+		-| DateTime() ->> { isSimple = true; }
+		-| TimeDuration() ->> { isSimple = true; }
+		-| _ ->> {}
+
+	if (isSimple)
+		{
+		stridedMemcpy(
+			targetMemory,
+			sourceMemory,
+			nativeLayoutType(objectType).alignedSize(),
+			objectCount,
+			destStride,
+			sourceStride
+			);
+		return;
+		}
+
+	@match Type(objectType)
+		-| Vector() ->> {
+			for (long k = 0; k < objectCount; k++)
+				copyVectorToAlignedMemory(
+					*(CudaVectorRecordStorage*)(targetMemory + destStride * k),
+					*(VectorRecord*)(sourceMemory + sourceStride * k),
+					allocator
+					);
+			}
+		-|	Class(elementTypes) ->> {
+			uword_t offsetInTarget = 0;
+			uword_t offsetInSource = 0;
+			
+			for (long k = 0; k < elementTypes.size(); ++k)
+				{
+				const Type& typ = elementTypes[k];
+
+				auto childNativeType = TypedFora::Abi::nativeLayoutType(typ);
+
+				offsetInTarget = alignedOffset(childNativeType, offsetInTarget);
+				
+				copyObjectsToAlignedMemory(
+					targetMemory + offsetInTarget, 
+					sourceMemory + offsetInSource,
+					typ,
+					objectCount,
+					destStride,
+					sourceStride,
+					allocator
+					);
+
+				offsetInTarget += childNativeType.alignedSize();
+				offsetInSource += childNativeType.packedSize();
+				}
+			}
+		-|	Tuple(elementTypes) ->> {
+			uword_t offsetInTarget = 0;
+			uword_t offsetInSource = 0;
+			
+			for (long k = 0; k < elementTypes.size(); ++k)
+				{
+				const Type& typ = elementTypes[k];
+
+				auto childNativeType = TypedFora::Abi::nativeLayoutType(typ);
+
+				offsetInTarget = alignedOffset(childNativeType, offsetInTarget);
+				
+				copyObjectsToAlignedMemory(
+					targetMemory + offsetInTarget, 
+					sourceMemory + offsetInSource,
+					typ,
+					objectCount,
+					destStride,
+					sourceStride,
+					allocator
+					);
+
+				offsetInTarget += childNativeType.alignedSize();
+				offsetInSource += childNativeType.packedSize();
+				}
+			}
+		-|	_ ->>
+			{
+			lassert_dump(false, "not implemented for type" << objectType.toString());
+			}
 	}
 
 uint8_t* AlignmentManager::getHandleToCudaAlignedData(const ImplValContainer& value)
 	{
-	return getHandleToAlignedDataGeneric(value, &AlignmentManager::allocateCudaAlignedData, true);
-	}
+	auto elementNativeType = TypedFora::Abi::nativeLayoutType(value.type());
 
-uint8_t* AlignmentManager::allocateAlignedData(const NativeType& typ, uword_t elementCount)
-	{
-	uint8_t* alignedDataPtr = nullptr;
+	uint8_t* memory = allocateCudaMemory(elementNativeType.alignedSize());
 
-	if (!mPool->permitAllocation(typ.alignedSize() * elementCount))
-		return nullptr;
-	alignedDataPtr = mPool->allocate(typ.alignedSize() * elementCount);
-	if (!alignedDataPtr)
+	if (!memory)
 		return nullptr;
 
-	lassert_dump(
-			mManagedMemory.insert(alignedDataPtr).second,
-			"failed to insert pointer to allocated data into AlignmentManager data-structure"
-			);
+	copyObjectsToAlignedMemory(
+		memory,
+		(uint8_t*)value.data(),
+		value.type(),
+		1,
+		0,
+		0,
+		[&](uword_t bytecount) { return allocateCudaMemory(bytecount); }
+		);
 
-	return alignedDataPtr;
+	return memory;
 	}
 
-uint8_t* AlignmentManager::allocateCudaAlignedData(const NativeType& typ, uword_t elementCount)
+uint8_t* AlignmentManager::allocateCudaMemory(uword_t bytecount)
 	{
-	LOG_DEBUG << "allocateCudaAlignedData for " << elementCount << " objects of type "
-			<< prettyPrintString(typ) << " of aligned size " << typ.alignedSize();
 	uint8_t* alignedDataPtr = nullptr;
+	
 	cudaError_t err;
-	err = cudaMallocManaged((void**)&alignedDataPtr, typ.alignedSize() * elementCount, cudaMemAttachGlobal);
-	if (err != cudaSuccess) {
+	
+	err = cudaMallocManaged((void**)&alignedDataPtr, bytecount, cudaMemAttachGlobal);
+	
+	if (err != cudaSuccess)
 		return nullptr;
-		}
 
-	lassert_dump(
-			mCudaManagedMemory.insert(alignedDataPtr).second,
-			"failed to insert pointer to CUDA-allocated data into AlignmentManager data-structure"
-			);
+	mCudaManagedMemory.insert(alignedDataPtr);
 
 	cudaDeviceSynchronize();
+
 	return alignedDataPtr;
 	}
