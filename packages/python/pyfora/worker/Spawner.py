@@ -319,7 +319,30 @@ class Spawner:
 
             self.start_workers_if_necessary()
 
-        elif first_byte == Messages.MSG_RELEASE_WORKER:
+        elif first_byte in (Messages.MSG_RELEASE_WORKER, Messages.MSG_TERMINATE_WORKER):
+            wantsTerminate = first_byte == Messages.MSG_TERMINATE_WORKER
+
+            worker_name = Common.readString(connection.fileno())
+            worker_ix = [ix for ix,w in enumerate(self.busy_workers) if w.socket_name == worker_name][0]
+
+            worker = self.busy_workers[worker_ix]
+            self.busy_workers.pop(worker_ix)
+
+            connection.close()
+
+            if wantsTerminate:
+                worker.teardown()
+            elif worker.answers_self_test():
+                #see if anybody wants to use this worker
+                if self.waiting_sockets:
+                    self.apply_worker_to_waiting_socket(worker)
+                else:
+                    self.waiting_workers.append(worker)
+            else:
+                logging.error("Worker %s appears dead. Removing it.", worker.socket_name)
+                worker.teardown()
+
+        elif first_byte == Messages.MSG_TERMINATE_WORKER:
             worker_name = Common.readString(connection.fileno())
             worker_ix = [ix for ix,w in enumerate(self.busy_workers) if w.socket_name == worker_name][0]
 
