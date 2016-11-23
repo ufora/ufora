@@ -22,3 +22,20 @@ class GpuTestCases(object):
 
             result = res.toLocal().result()
             self.assertEqual(result, [2,3,4])
+
+    def test_gpu_apply_large_vector(self):
+        with self.create_executor() as fora:
+            with fora.remotely:
+                res = pyfora.gpu.map(lambda x: x+1, range(1000000))
+
+            result = res.toLocal().result()
+
+            self.assertEqual(result, [x+1 for x in range(1000000)])
+
+    def test_basic_vec_in_vec(self):
+        with self.create_executor() as fora:
+            with fora.remotely:
+                res = pyfora.gpu.map(lambda x: x[1], [[1,2,3],[2,3,4],[3,4,5]])
+
+            result = res.toLocal().result()
+            self.assertEqual(result, [2,3,4])

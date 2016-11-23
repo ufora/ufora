@@ -18,27 +18,60 @@
 class ImplValContainer;
 class MemoryPool;
 class NativeType;
+class Type;
+
+namespace TypedFora {
+namespace Abi {
+
+class VectorRecord;
+
+}
+}
+
+
+class CudaVectorRecordStorage {
+public:
+	uint8_t*		mDataPtr;
+	uint64_t		mSize;
+	uint64_t		mOffset;
+	int64_t			mStride;
+
+};
 
 class AlignmentManager {
 public:
 	AlignmentManager(bool freeAllocatedMemoryOnDestroy=true);
+	
 	AlignmentManager(MemoryPool* pool, bool freeAllocatedMemoryOnDestroy=true);
+	
 	~AlignmentManager();
 
-	uint8_t* getHandleToAlignedData(const ImplValContainer& value);
 	uint8_t* getHandleToCudaAlignedData(const ImplValContainer& value);
-	uint8_t* allocateAlignedData(const NativeType& type, uword_t count);
-	uint8_t* allocateCudaAlignedData(const NativeType& type, uword_t count);
+	
+	uint8_t* allocateCudaMemory(uword_t bytecount);
 
 private:
 	std::set<uint8_t*> mManagedMemory;
-	std::set<uint8_t*> mCudaManagedMemory;
-	MemoryPool *mPool;
-	bool mFreeOnDestroy;
 
-	uint8_t* getHandleToAlignedDataGeneric(
-			const ImplValContainer& value,
-			uint8_t* (AlignmentManager::*allocator)(const NativeType&, uword_t),
-			bool shouldAlwaysCopyData=true
+	std::set<uint8_t*> mCudaManagedMemory;
+
+	MemoryPool *mPool;
+
+	bool mFreeOnDestroy;
+	
+	static void copyVectorToAlignedMemory(
+			CudaVectorRecordStorage& target,
+			TypedFora::Abi::VectorRecord& source,
+			boost::function<uint8_t* (uword_t bytecount)> allocator
+			);
+
+	static void copyObjectsToAlignedMemory(
+			uint8_t* targetMemory,
+			uint8_t* sourceMemory,
+			::Type objectType,
+			uint64_t objectCount,
+			uint64_t destStride,
+			uint64_t sourceStride,
+			boost::function<uint8_t* (uword_t bytecount)> allocator
 			);
 };
