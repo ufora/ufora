@@ -55,6 +55,23 @@ class Cases:
 
         self.assertTrue(not os.listdir(socket_path), os.listdir(socket_path))
 
+    def test_workerpoolExecutesWithShutdown(self):
+        socket_path = tempfile.mkdtemp()
+
+        pool = self.constructWorkerPool(socket_path)
+
+        def generateLambda(arg):
+            def f():
+                return "received " + str(arg)
+            return f
+
+        for ix in xrange(100):
+            self.assertEqual(pool.execute_code(generateLambda(ix), terminateWhenDone=True), generateLambda(ix)())
+
+        pool.terminate()
+
+        self.assertTrue(not os.listdir(socket_path), os.listdir(socket_path))
+
     def test_workerpoolParallel(self):
         socket_path = tempfile.mkdtemp()
 

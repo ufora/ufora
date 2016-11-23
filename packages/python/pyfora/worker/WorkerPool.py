@@ -83,7 +83,7 @@ class WorkerPool:
         else:
             self.childThread.join()
 
-    def _communicate_with_worker(self, callback):
+    def _communicate_with_worker(self, callback, terminateWhenDone = False):
         aSocket = self.connect()
         Common.writeAllToFd(aSocket.fileno(), Messages.MSG_GET_WORKER)
         worker_path = Common.readString(aSocket.fileno())
@@ -94,7 +94,7 @@ class WorkerPool:
         aSocket.close()
 
         aSocket = self.connect()
-        Common.writeAllToFd(aSocket.fileno(), Messages.MSG_RELEASE_WORKER)
+        Common.writeAllToFd(aSocket.fileno(), Messages.MSG_RELEASE_WORKER if not terminateWhenDone else Messages.MSG_TERMINATE_WORKER)
         Common.writeString(aSocket.fileno(), worker_path)
         aSocket.close()
 
@@ -109,7 +109,7 @@ class WorkerPool:
 
         return result[0]
         
-    def execute_code(self, toCall):
+    def execute_code(self, toCall, terminateWhenDone = False):
         result = []
         def callback(aSocket):
             Common.writeAllToFd(aSocket.fileno(), Messages.MSG_OOPP_CALL)
@@ -134,6 +134,6 @@ class WorkerPool:
             rehydrator = PythonObjectRehydrator(mappings, allowUserCodeModuleLevelLookups=False)
             result.append(rehydrator.readFileDescriptorToPythonObject(aSocket.fileno()))
 
-        self._communicate_with_worker(callback)
+        self._communicate_with_worker(callback, terminateWhenDone)
 
         return result[0]
