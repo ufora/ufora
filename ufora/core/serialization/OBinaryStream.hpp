@@ -52,7 +52,7 @@ public:
 		mProtocol.write(mBufferPos, &mBuffer[0]);
 		mBufferPos = 0;
 		}
-	void write(size_type inBytes, void *inData, bool shouldSwap = false)
+	void write(size_type inBytes, const void* inData)
 		{
 		mBytesWritten += inBytes;
 

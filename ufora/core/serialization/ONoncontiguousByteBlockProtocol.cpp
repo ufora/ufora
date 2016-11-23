@@ -25,7 +25,7 @@ ONoncontiguousByteBlockProtocol::~ONoncontiguousByteBlockProtocol()
 	{
 	}
 
-void ONoncontiguousByteBlockProtocol::write(uword_t inByteCount, void *inData)
+void ONoncontiguousByteBlockProtocol::write(uword_t inByteCount, const void* inData)
 	{
 	if (inByteCount == 0)
 		return;

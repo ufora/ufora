@@ -160,7 +160,7 @@ OHashProtocol::~OHashProtocol()
 	delete (SHA_CTX*)mData;
 	}
 
-void OHashProtocol::write(uword_t inByteCount, void *inData)
+void OHashProtocol::write(uword_t inByteCount, const void* inData)
 	{
 	//by default, we ignore the endianness
 

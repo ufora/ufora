@@ -5,7 +5,7 @@
    you may not use this file except in compliance with the License.
    You may obtain a copy of the License at
 
-       http://www.apache.org/licenses/LICENSE-2.0
+	   http://www.apache.org/licenses/LICENSE-2.0
 
    Unless required by applicable law or agreed to in writing, software
    distributed under the License is distributed on an "AS IS" BASIS,
@@ -108,7 +108,7 @@ public:
 		return mPosition;
 		}
 
-	void write(uword_t inByteCount, void *inData)
+	void write(uword_t inByteCount, const void* inData)
 		{
 		if (inByteCount == 0)
 			return;
@@ -147,9 +147,9 @@ public:
 		}
 
 private:
-	void write_(uword_t inByteCount, void *inData)
+	void write_(uword_t inByteCount, const void* inData)
 		{
-		uint8_t* toWrite = (uint8_t*)inData;
+		const uint8_t* toWrite = static_cast<const uint8_t*>(inData);
 
 		while (inByteCount > 0)
 			{
