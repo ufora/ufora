@@ -82,19 +82,12 @@ def formatCodeLocation(codeLocation, lines = 1):
         return "\tAxiom: " + str(codeRange.stop.line) + "\n"
     return ""
 
-def formatStackTraceHash(hash, lines = 1):
-    codeLocation = ForaNative.getCodeLocation(hash)
-    if codeLocation is not None:
-        return formatCodeLocation(codeLocation, lines)
-    else:
-        return ""
-
 def formatStacktrace(stacktrace, lines = 1):
     """given a list of CodeLocation objects, print a stacktrace
 
     stacktrace -- list of CodeLocation objects
     """
     return "".join([
-        formatStackTraceHash(s, lines)
+        formatCodeLocation(s, lines)
             for index, s in enumerate(stacktrace)])
 

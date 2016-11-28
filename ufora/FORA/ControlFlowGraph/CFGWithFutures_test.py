@@ -20,7 +20,7 @@ import ufora.FORA.python.ForaValue as ForaValue
 import ufora.native.FORA as ForaNative
 import ufora.FORA.python.FORA as FORA
 
-emptyCodeDefinitionPoint = ForaNative.CodeDefinitionPoint.ExternalFromStringList([])
+emptyCodeDefinitionPoint = ForaNative.CodeDefinitionPoint.ExternalFromStringList(["dummy"])
 
 def normalComputationResult(result):
     return ForaNative.ComputationResult.Result(

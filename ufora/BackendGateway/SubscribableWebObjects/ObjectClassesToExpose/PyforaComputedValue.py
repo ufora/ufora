@@ -160,12 +160,10 @@ class PyforaComputedValue(ComputedValue.ComputedValue):
                 return None
 
             _, stacktrace = self.valueIVC.getTuple()
-            hashes = stacktrace.getStackTrace()
+            codeLocations = stacktrace.getStackTrace()
 
-            if hashes is None:
+            if codeLocations is None:
                 return None
-
-            codeLocations = [ForaNative.getCodeLocation(h) for h in hashes]
 
             def formatCodeLocation(c):
                 if c is None:
@@ -174,7 +172,6 @@ class PyforaComputedValue(ComputedValue.ComputedValue):
                     return None
                 def posToJson(simpleParsePosition):
                     return {
-                        'characterOffset': simpleParsePosition.rawOffset,
                         'line': simpleParsePosition.line,
                         'col': simpleParsePosition.col
                         }

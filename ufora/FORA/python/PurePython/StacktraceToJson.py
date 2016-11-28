@@ -5,13 +5,10 @@ def implvalStacktraceToJson(stacktrace):
     if not stacktrace.isStackTrace():
         stacktrace = stacktrace[0]
 
-    hashes = stacktrace.getStackTrace()
+    codeLocations = stacktrace.getStackTrace()
 
-    if hashes is None:
+    if codeLocations is None:
         return None
-
-    codeLocations = [ForaNative.getCodeLocation(h) for h in hashes]
-    codeLocations = [c for c in codeLocations if c is not None]
 
     def formatCodeLocation(c):
         if not c.defPoint.isExternal():

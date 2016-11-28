@@ -16,6 +16,7 @@ import ufora.FORA.python.PurePython.InMemorySimulationExecutorFactory as \
     InMemorySimulationExecutorFactory
 import pyfora.Exceptions as Exceptions
 import pyfora.helpers as helpers
+import traceback
 
 import unittest
 import numpy
@@ -121,7 +122,7 @@ class WithRegularPython_test(unittest.TestCase):
             self.assertEqual(x, [2,3,4,5,6])
 
     def test_exception_marshalling(self):
-        with self.assertRaises(UserWarning):
+        try:
             with self.create_executor() as fora:
                 with fora.remotely:
                     def g():
@@ -131,6 +132,17 @@ class WithRegularPython_test(unittest.TestCase):
 
                     with helpers.python:
                         f()
+            self.assertTrue(False, "shouldn't get here")
+        except UserWarning as e:
+            self.assertEqual(e.message, "This is a user warning")
+            
+            _,_,tb = sys.exc_info()
+            frames = traceback.extract_tb(tb)
+
+            self.assertEqual(frames[-1][2], 'g')
+            self.assertEqual(frames[-2][2], 'f')
+            self.assertEqual(frames[-3][2], 'test_exception_marshalling')
+
 
 
     def test_basic_out_of_process_variable_identities(self):

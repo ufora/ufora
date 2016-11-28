@@ -20,23 +20,7 @@ class TestSimpleParse(unittest.TestCase):
     #parse as a module member and then get screwy results. Expressions like 'x:10' shouldn't
     #be considered valid expressions.
 
-    def assertValidParseRange(self, node, text):
-        subtext = text[node.extent.start.rawOffset:node.extent.stop.rawOffset]
-        try:
-            simpleParse = ForaNative.SimpleParseNode.parse(subtext)
-        except:
-            self.assertTrue(False,
-                "couldn't parse text for node %s which was '%s'" % (node, subtext)
-                )
-            return
-
-        self.assertEqual(str(simpleParse), str(node),
-            "node didn't parse to itself: %s (%s) != %s" %
-                (node, subtext, simpleParse)
-            )
-
     def walkNodesAndTestExtents(self, node, text):
-        self.assertValidParseRange(node, text)
         if node.isGrouping():
             self.walkNodesAndTestExtents(node.asGrouping.node, text)
         elif node.isSequence():

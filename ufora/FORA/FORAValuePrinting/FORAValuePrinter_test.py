@@ -58,11 +58,21 @@ class FunctionToStringTest(unittest.TestCase):
                 "Wasn't able to parse:\n**************\n%s\n*************\n\n%s"
                  % (result1, traceback.format_exc())
                 )
+
+        resultStr2 = FORA.makeSymbol("ParsableRepresentation")(result2)
+        try:
+            result3 = FORA.eval(resultStr2)
+        except:
+            self.assertTrue(False,
+                "Wasn't able to parse:\n**************\n%s\n*************\n\n%s"
+                 % (result2, traceback.format_exc())
+                )
+
         if checkActualValues:
             self.assertTrue(
-                    result1 == result2,
+                    result2 == result3,
                     "Printing and parsing %s resulted in %s, which is not the same"
-                    % (result1, result2)
+                    % (result2, result3)
                     )
 
     def assertValidStringifyAndParse(self, foraValue, checkActualValues = False):

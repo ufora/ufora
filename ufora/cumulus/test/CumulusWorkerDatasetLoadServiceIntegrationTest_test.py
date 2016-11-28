@@ -441,7 +441,7 @@ class CumulusWorkerDatasetLoadServiceIntegrationTest(unittest.TestCase):
 
         interpreterTimes = []
 
-        for ix in range(10):
+        for ix in range(20):
             interpTime = self.computeUsingSeveralWorkers("""
                     let f = fun(x){x+x+x+x+x}
                     let v = [f((x+1,x+2,x-10,x)) for x in sequence(4000)];
@@ -461,8 +461,8 @@ class CumulusWorkerDatasetLoadServiceIntegrationTest(unittest.TestCase):
 
             interpreterTimes.append(interpTime)
 
-        for interpTime in interpreterTimes[1:]:  # ignoring the first run
-            self.assertLess(interpTime, (sum(interpreterTimes) - interpTime) / (len(interpreterTimes) - 1) * 10)
+        for interpTime in interpreterTimes[10:]:  # ignoring the first few runs
+            self.assertLess(interpTime, interpreterTimes[0] / 5, interpreterTimes)
 
     @PerformanceTestReporter.PerfTest("python.InMemoryCumulus.gcOfPagedVectors")
     def test_gcOfPagedVectors(self):
