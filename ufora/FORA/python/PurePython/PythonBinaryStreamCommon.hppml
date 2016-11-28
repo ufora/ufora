@@ -19,6 +19,7 @@
 #include "../../Core/Type.hppml"
 #include "../../Core/ClassMediator.hppml"
 #include "../../Core/ImplValContainer.hppml"
+#include "../../../core/Logging.hpp"
 #include "../../Language/RebindFreeMemberAccesses.hppml"
 #include "../../Language/FunctionStage1Simulation.hppml"
 
@@ -149,37 +150,6 @@ public:
             );
         }
 
-    static Nullable<CodeLocation>
-    getObjectDefinitionPoint(const ImplValContainer& val)
-        {
-        if (!val.type().isClass())
-            return null();
-
-        ExpressionLocationMetadata meta;
-
-        @match ClassMediator(*val.type().getClass().classBody().mediator())
-            -| Function(f) ->> {
-                meta = f.locationMetadata();
-                }
-            -| Lambda(e) ->> {
-                meta = e.locationMetadata();
-                }
-            -| Object(o) ->> {
-                meta = o.locationMetadata();
-                }
-            -| Class(o) ->> {
-                meta = o.locationMetadata();
-                }
-            -| _ ->> { return null(); }
-            ;
-
-        Nullable<CodeLocation> loc;
-        if (meta.isWithId())
-            loc = GlobalCodeLocationRegistry::getCodeLocation(meta.getWithId().id());
-
-        return loc;
-        }
-
     static ImmutableTreeVector<Symbol>
     getObjectMembers(const ImplValContainer& value)
         {
@@ -281,7 +251,13 @@ public:
         return null();
         }
 
-    static Nullable<std::string>
+    @type SourceTextAndMeta = 
+        std::string text,
+        std::string path,
+        int64_t lineNumber
+        ;
+
+    static Nullable<SourceTextAndMeta>
     getObjectDefinitionSourceTextFromMetadata(const ImplValContainer& value)
         {
         auto nMeta = PythonBinaryStreamCommon::getObjectMetadata(value);
@@ -296,14 +272,50 @@ public:
                     break;
                     }
 
+        bool foundText = false;
+        bool foundPath = false;
+        bool foundLine = false;
+
+        SourceTextAndMeta result;
+
         for (long k = 0; k < nMeta->type().getTuple().types().size(); k++)
             if (nMeta->type().getTuple().names()[k] == Nullable<Symbol>(Symbol("sourceText")))
                 {
                 auto val = getObjectMetadata(*nMeta->tupleGetItem(k));
+                
                 if (!val || !val->type().isString())
                     return null();
-                return null() << val->cast<String>().stdString();
+                
+                result.text() = val->cast<String>().stdString();
+                foundText = true;
                 }
+                else
+            if (nMeta->type().getTuple().names()[k] == Nullable<Symbol>(Symbol("sourcePath")))
+                {
+                auto val = nMeta->tupleGetItem(k);
+
+                if (!val || !val->type().isString())
+                    return null();
+                
+                result.path() = val->cast<String>().stdString();
+                foundPath = true;
+                }
+                else
+            if (nMeta->type().getTuple().names()[k] == Nullable<Symbol>(Symbol("sourceLine")))
+                {
+                auto val = nMeta->tupleGetItem(k);
+                
+                if (!val || val->type() != Type::Integer(64, true))
+                    return null();
+
+                result.lineNumber() = val->cast<int64_t>();
+                foundLine = true;
+                }
+            else
+                return null();
+
+        if (foundText && foundPath && foundLine)
+            return null() << result;
 
         return null();
         }

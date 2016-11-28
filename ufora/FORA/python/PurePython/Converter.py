@@ -590,6 +590,23 @@ class Converter(object):
         res = tuple([pyforaValue for pyforaValue in pyforaTuple])
         return res
 
+    def extractSourcePathAndLine(self, implval):
+        om = implval.objectMetadata
+        if om is None:
+            return None
+
+        if 'classMetadata' in om:
+            om = om['classMetadata']
+        
+        if 'sourceText' not in om:
+            return None
+        if 'sourcePath' not in om:
+            return None
+        if 'sourceLine' not in om:
+            return None
+        return om['sourceText'].objectMetadata.pyval, om['sourcePath'].pyval, om['sourceLine'].pyval
+
+
     def transformPyforaImplval(self, implval, stream, vectorContentsExtractor, maxBytecount=None):
         hashToObjectId = {}
         fileToObjectId = {}
@@ -741,8 +758,9 @@ class Converter(object):
                         )
                     return objId
 
-                defPoint = implval.getObjectDefinitionPoint()
-                if defPoint is not None:
+                sourcePathAndLine = self.extractSourcePathAndLine(implval)
+
+                if sourcePathAndLine is not None:
                     if objectClass is not None:
                         classObjectId = transform(objectClass)
                         members = {}
@@ -780,17 +798,12 @@ class Converter(object):
                                         if transformed is not UnconvertibleToken:
                                             members[(str(memberName),)] = transformed
 
-                        om = implval.objectMetadata
-                        if 'classMetadata' in om:
-                            om = om['classMetadata']
-                        om = om['sourceText'].objectMetadata
-
-                        sourceFileId = transformFile(defPoint.defPoint.asExternal.paths[0], om.pyval)
+                        sourceFileId = transformFile(sourcePathAndLine[1], sourcePathAndLine[0])
 
                         stream.defineFunction(
                             objId,
                             sourceFileId,
-                            defPoint.range.start.line,
+                            sourcePathAndLine[2],
                             members
                             )
 
@@ -798,8 +811,9 @@ class Converter(object):
 
             elif implval.isClass():
                 members = {}
-                defPoint = implval.getObjectDefinitionPoint()
 
+                sourcePathAndLine = self.extractSourcePathAndLine(implval)
+                
                 lexicalMembers = implval.objectLexicalMembers
                 for memberAndBindingSequence in lexicalMembers.iteritems():
                     #if the binding sequence is empty, then this binding refers to 'self'
@@ -816,12 +830,12 @@ class Converter(object):
                     om = om['classMetadata']
                 om = om['sourceText'].objectMetadata
 
-                sourceFileId = transformFile(defPoint.defPoint.asExternal.paths[0], om.pyval)
+                sourceFileId = transformFile(sourcePathAndLine[1], sourcePathAndLine[0])
                 
                 stream.defineClass( 
                     objId,
                     sourceFileId,
-                    defPoint.range.start.line,
+                    sourcePathAndLine[2],
                     members,
                     #this is a little wrong. When going python->binary, we would have
                     #a list of base classes. When going pyfora->binary, we're holding the

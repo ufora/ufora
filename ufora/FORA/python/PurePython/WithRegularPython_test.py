@@ -107,6 +107,19 @@ class WithRegularPython_test(unittest.TestCase):
             result = z.toLocal().result()
             self.assertEqual(result, 205)
 
+    def test_basic_out_of_process_list_comp(self):
+        with self.create_executor() as fora:
+            x = [1,2,3,4,5]
+
+            with fora.remotely.downloadAll():
+                def g(x):
+                    return x + 1
+
+                with helpers.python:
+                    x = [g(i) for i in x]
+
+            self.assertEqual(x, [2,3,4,5,6])
+
     def test_exception_marshalling(self):
         with self.assertRaises(UserWarning):
             with self.create_executor() as fora:

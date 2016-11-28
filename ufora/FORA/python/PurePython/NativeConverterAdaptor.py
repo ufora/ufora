@@ -333,8 +333,10 @@ class NativeConverterAdaptor(object):
         sourceText = objectIdToObjectDefinition[classOrFunctionDefinition.sourceFileId].text
 
         newMetadata = ForaNative.CreateNamedTuple(
-            (ForaNative.encodeImplvalAsEmptyObjectMetadata(ForaNative.ImplValContainer(sourceText)),),
-            ("sourceText",)
+            (ForaNative.encodeImplvalAsEmptyObjectMetadata(ForaNative.ImplValContainer(sourceText)),
+             ForaNative.ImplValContainer(sourcePath),
+             ForaNative.ImplValContainer(pyAst.extent.start.line)),
+            ("sourceText","sourcePath","sourceLine")
             )
 
         tr = None
@@ -566,8 +568,10 @@ class NativeConverterAdaptor(object):
         sourceText = objectIdToObjectDefinition[withBlockDescription.sourceFileId].text
 
         newMetadata = ForaNative.CreateNamedTuple(
-            (ForaNative.encodeImplvalAsEmptyObjectMetadata(ForaNative.ImplValContainer(sourceText)),),
-            ("sourceText",)
+            (ForaNative.encodeImplvalAsEmptyObjectMetadata(ForaNative.ImplValContainer(sourceText)),
+             ForaNative.ImplValContainer(sourcePath),
+             ForaNative.ImplValContainer(withBlockDescription.lineNumber)),
+            ("sourceText","sourcePath","sourceLine")
             )
 
         foraFunctionExpression = \
