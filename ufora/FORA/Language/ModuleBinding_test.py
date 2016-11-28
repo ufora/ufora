@@ -116,7 +116,7 @@ class ModuleBindingTest(unittest.TestCase):
         result = parser.parse(
             tree,
             True,
-            ForaNative.CodeDefinitionPoint.ExternalFromStringList([])
+            ForaNative.CodeDefinitionPoint.ExternalFromStringList(["dummy"])
             )
 
         return parser.bind(result, freeVars, performDecomposition)

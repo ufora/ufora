@@ -19,25 +19,11 @@ import ufora.FORA.python.FORA as Fora
 import ufora.FORA.FORAValuePrinting.FORAValuePrinter_test as ForaValuePrintingTest
 from ufora.FORA.python.ParseException import ParseException
 
-# known bug: the whitespace inserter messes up triple quotes (doesn't indent properly)
-def generateTestExpressions():
-    def isOk(s):
-        return '"""' not in s and "'''" not in s
-
-    testFunctions = ForaValuePrintingTest.generateTestFunctions()
-    reprSymbol = Fora.makeSymbol("ParsableRepresentation")
-    tr = [reprSymbol(testFun) for testFun in testFunctions]
-
-    return [x for x in tr if isOk(x)]
-
 class ParserTest(unittest.TestCase):
-    def setUp(self):
-        self.whitespaceInserter = ForaNative.RandomWhitespaceInserter(42)
-
     def assertValidParse(self, foraExpressionText):
         result = ForaNative.parseStringToExpression(
             foraExpressionText,
-            ForaNative.CodeDefinitionPoint.ExternalFromStringList([]),
+            ForaNative.CodeDefinitionPoint.ExternalFromStringList(["dummy"]),
             ""
             )
         self.assertTrue(isinstance(result, ForaNative.Expression),
@@ -47,7 +33,7 @@ class ParserTest(unittest.TestCase):
     def assertInvalidParse(self, foraExpressionText):
         result = ForaNative.parseStringToExpression(
             foraExpressionText,
-            ForaNative.CodeDefinitionPoint.ExternalFromStringList([]),
+            ForaNative.CodeDefinitionPoint.ExternalFromStringList(["dummy"]),
             ""
             )
         self.assertTrue(isinstance(result, ForaNative.FunctionParseError),
@@ -126,30 +112,4 @@ class ParserTest(unittest.TestCase):
             ForaNative.CodeDefinitionPoint(),
             "<eval>"
             )
-
-    def insertRandomWhitespace(self, string):
-        simpleParse = ForaNative.SimpleParseNode.parse(string)
-        return \
-            self.whitespaceInserter.stringifyWithRandomWhitespaceAndComments(
-            simpleParse
-            )
-
-    def assertInsensitivityToWhitespace(self, exprStr):
-        expr1 = self.parseStringToExpression(exprStr)
-
-        for ix in xrange(25):
-            exprStrWithWhitespace = self.insertRandomWhitespace(exprStr)
-
-            expr2 = self.parseStringToExpression(exprStrWithWhitespace)
-
-            self.assertEqual(
-                expr1, expr2, "expressions did not parse equally!\n" +
-                str(exprStr) + "\n\nvs\n\n" + str(exprStrWithWhitespace) +
-                "\nresults: expr1 = " + str(expr1) + "\n\nvs\n\nexpr2 = " + str(expr2)
-                )
-
-    def test_insensitivityToWhitespace(self):
-        testExprs = generateTestExpressions()
-        for testExpr in testExprs:
-            self.assertInsensitivityToWhitespace(testExpr)
 

@@ -26,7 +26,7 @@ class TestFORA(unittest.TestCase):
 
     def assertFreeVarsAre(self, toParse, freeVars):
         """assert that if you parse 'toParse', it has free variables 'freeVars'"""
-        defPoint = FORANative.CodeDefinitionPoint.ExternalFromStringList([])
+        defPoint = FORANative.CodeDefinitionPoint.ExternalFromStringList(["dummy"])
         expr = Expression.Expression.parse(toParse, defPoint)
         self.assertEqual(expr.freeVariables, freeVars)
         for f in freeVars:
@@ -37,7 +37,7 @@ class TestFORA(unittest.TestCase):
 
     def assertAssignedVarsAre(self, toParse, assigned):
         """assert that if you parse 'toParse', it has free variables 'freeVars'"""
-        defPoint = FORANative.CodeDefinitionPoint.ExternalFromStringList([])
+        defPoint = FORANative.CodeDefinitionPoint.ExternalFromStringList(["dummy"])
         expr = Expression.Expression.parse(toParse, defPoint)
         self.assertEqual(expr.assignedVariables, assigned)
         for a in assigned:
@@ -101,7 +101,7 @@ class TestFORA(unittest.TestCase):
             self.assertTrue(e.trace is not None)
             self.assertTrue(isinstance(e.trace, list))
             for l in e.trace:
-                assert isinstance(l, HashNative.Hash)
+                assert isinstance(l, FORANative.CodeLocation)
 
         self.assertEqual(locals, {'x':10})
 

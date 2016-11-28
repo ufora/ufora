@@ -123,7 +123,7 @@ class UnimplementedValuesTestCases(object):
                           + "\\s*y = x\n" \
                           + "UnconvertibleValueError: " \
                           + "Pyfora didn't know how to convert x"
-                self.assertIsNotNone(re.match(pattern, tracebackString, re.DOTALL))
+                self.assertIsNotNone(re.match(pattern, tracebackString, re.DOTALL), tracebackString)
                 self.assertEqual("Pyfora didn't know how to convert x", str(e))
 
     def test_typeWeCantTranslateYet_raise_2(self):
@@ -144,7 +144,7 @@ class UnimplementedValuesTestCases(object):
                       + ".*\\s*throw UnconvertibleValueError\\(\n" \
                       + ".*, in f\n" \
                       + "\\s*return x"
-            self.assertIsNotNone(re.match(pattern, str(e)))
+            self.assertIsNotNone(re.match(pattern, str(e)), str(e))
             self.assertIsInstance(
                 e.remoteException,
                 Exceptions.UnconvertibleValueError

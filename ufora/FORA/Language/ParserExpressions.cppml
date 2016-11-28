@@ -22,7 +22,6 @@
 #include "Parser.hppml"
 #include "ParserOperators.hppml"
 #include "ParserPatterns.hppml"
-#include "ExpressionLocationTagging.hppml"
 #include "../../core/SimpleParse/SimpleParse.hppml"
 
 #include "../Core/Type.hppml"
@@ -257,6 +256,14 @@ bool ParserExpressions::isValidVariableName(const SimpleParseNode& node)
 			&& isValidVariableName(node.getIdentifier().val());
 	}
 
+Nullable<CodeLocation> ParserExpressions::codeLocationFor(const SimpleParseRange& extent) const
+	{
+	if (codeDefPoint() == CodeDefinitionPoint())
+		return null();
+
+	return null() << CodeLocation(codeDefPoint(), extent);
+	}
+
 Nullable<pair<PatternWithName, NodeList> >
 			ParserExpressions::getAssignment(const NodeList& nodes) const
 	{
@@ -272,19 +279,9 @@ Nullable<pair<PatternWithName, NodeList> >
 					nodes.slice(0, k)
 					);
 
-			p = ExpressionLocationTagging::setCodeLocation(
-				p,
-				CodeLocation(
-					codeDefPoint(),
-					nodes[0].extent()
-					)
-				);
+			p.locationMetadata() = codeLocationFor(nodes[0].extent());
 
-			return null() <<
-				make_pair(
-					p,
-					nodes.slice(k+1)
-					);
+			return null() << make_pair(p, nodes.slice(k+1));
 			}
 
 	return null();
@@ -556,15 +553,15 @@ ParserExpressions::parseConcatSeqToStatementInner(const NodeList& nodes) const
 						lassert(nodes.size() > 3);
 
 						return null() << make_pair(
-							ExpressionLocationTagging::setCodeLocation(
-								Expression::Pull(Symbol(id), tail.first),
-								CodeLocation(
-									codeDefPoint(),
+							Expression::Pull(
+								codeLocationFor(
 									SimpleParseRange(
 										nodes[0].extent().start(),
 										nodes[3].extent().stop()
 										)
-									)
+									),
+								Symbol(id), 
+								tail.first
 								),
 							tail.second
 							);
@@ -572,18 +569,15 @@ ParserExpressions::parseConcatSeqToStatementInner(const NodeList& nodes) const
 					//'pull' without 'with';
 					//'pull id' => 'pull id with nothing'
 					return null() << make_pair(
-						ExpressionLocationTagging::setCodeLocation(
-							Expression::Pull(
-								Symbol(id),
-								Expression::Constant(CSTValue())
-								),
-							CodeLocation(
-								codeDefPoint(),
+						Expression::Pull(
+							codeLocationFor(
 								SimpleParseRange(
 									nodes[0].extent().start(),
 									nodes[1].extent().stop()
 									)
-								)
+								),
+							Symbol(id),
+							Expression::Constant(CSTValue())
 							),
 						nodes.slice(2)
 						);
@@ -597,12 +591,9 @@ ParserExpressions::parseConcatSeqToStatementInner(const NodeList& nodes) const
 	if (nodes[0] == "break")
 		{
 		return null() << make_pair(
-				//FunctionValidation::checkForOrphanBreaks requires this be tagged
-				//so it can report the location of orphan breaks.
-				ExpressionLocationTagging::setCodeLocation(
-					Expression::Break(),
-					CodeLocation(codeDefPoint(), nodes[0].extent())
-					),
+			//FunctionValidation::checkForOrphanBreaks requires this be tagged
+			//so it can report the location of orphan breaks.
+			Expression::Break(codeLocationFor(nodes[0].extent())),
 			nodes.slice(1)
 			);
 		}
@@ -666,17 +657,15 @@ ParserExpressions::parseConcatSeqToStatementInner(const NodeList& nodes) const
 				);
 
 		auto exprWithLocInfo =
-			ExpressionLocationTagging::setCodeLocation(
-				Expression::Foreach(
-					ListComprehensionChain::Term(
-						p,
-						condition,
-						process.first,
-						ListComprehensionChain::Leaf(body.first)
-						)
-					),
-				CodeLocation(codeDefPoint(), nodes[1].extent())
-			);
+			Expression::Foreach(
+				codeLocationFor(nodes[1].extent()),
+				ListComprehensionChain::Term(
+					p,
+					condition,
+					process.first,
+					ListComprehensionChain::Leaf(body.first)
+					)
+				);
 
 		return null() <<
 			make_pair(
@@ -698,13 +687,7 @@ ParserExpressions::parseConcatSeqToStatementInner(const NodeList& nodes) const
 
 		PatternWithName p = ParserPatterns(*this).parseConcatSeqToNamedPattern(nodes.slice(0, 1));
 
-		p = ExpressionLocationTagging::setCodeLocation(
-			p,
-			CodeLocation(
-				codeDefPoint(),
-				nodes[0].extent()
-				)
-			);
+		p.locationMetadata() = codeLocationFor(nodes[0].extent());
 
 		pair<Expression, NodeList> e =
 			parseConcatSeqToStatementOrElseError(
@@ -718,12 +701,10 @@ ParserExpressions::parseConcatSeqToStatementInner(const NodeList& nodes) const
 				//We apologize for this hack.
 				//FunctionValidation::checkExpressionForNonLocalAssignments
 				//requires this location information for helpful error messages.
-				ExpressionLocationTagging::setCodeLocation(
-					Expression::Assign(p, e.first),
-					CodeLocation(
-						codeDefPoint(),
-						eqPos
-						)
+				Expression::Assign(
+					codeLocationFor(eqPos), 
+					p, 
+					e.first
 					),
 				e.second
 				);
@@ -775,7 +756,7 @@ ParserExpressions::parseConcatSeqToExpressionInner(const NodeList& nodes, bool e
 	if (!nodes.size())
 		return null();
 
-	ImmutableTreeVector<ParserOperators::OpOrExpression> ops;
+	ImmutableTreeVector<OpOrExpression> ops;
 	NodeList	remainder = nodes;
 	bool	done = false;
 	while (remainder.size() && !done)
@@ -798,7 +779,7 @@ ParserExpressions::parseConcatSeqToExpressionInner(const NodeList& nodes, bool e
 				;
 
 			ops = ops +
-				ParserOperators::OpOrExpression::Op(
+				OpOrExpression::Op(
 					remainder[0].extent(),
 					opSymbol
 					);
@@ -823,7 +804,7 @@ ParserExpressions::parseConcatSeqToExpressionInner(const NodeList& nodes, bool e
 					);
 				//yes - add it to the list and continue
 				ops = ops +
-					ParserOperators::OpOrExpression::Expr(
+					OpOrExpression::Expr(
 						SimpleParseRange(
 							remainder[0].extent().start(),
 							e->second.size() ?
@@ -859,8 +840,10 @@ ParserExpressions::parseConcatSeqToExpressionInner(const NodeList& nodes, bool e
 	if (onlyOps)
 		throw FunctionParseError("expected expression", nodes.back());
 
+	ParserOperators operators(codeDefPoint());
+
 	return null() << make_pair(
-		ParserOperators::collapseOpExpressionSeq(ops),
+		operators.collapseOpExpressionSeq(ops),
 		remainder
 		);
 	}
@@ -1065,18 +1048,18 @@ ParserExpressions::parseConcatSeqToOpExpressionAtomInner(const NodeList& nodes) 
 
 		pair<Function, NodeList> res = extractFunction(nodes.slice(3, nodes.size()), true);
 
-		lassert(res.first.locationMetadata().isWithSimpleParseRange());
-
 		return null() << parseOpAtomExprAndConcatSeqToOpAtomExpr(
-			ExpressionLocationTagging::setCodeLocation(
-				Expression::Match(parseCallArguments(nodes[1], false), res.first),
-				CodeLocation(
-					codeDefPoint(),
-					SimpleParseRange(
-					  	nodes[0].extent().start(),
-					  	res.first.locationMetadata().getWithSimpleParseRange().simpleParseRange().stop()
-					 	)
-					)
+			Expression::Match(
+				res.first.locationMetadata() ? 
+					codeLocationFor(
+						SimpleParseRange(
+						  	nodes[0].extent().start(),
+						  	res.first.locationMetadata()->range().stop()
+						 	)
+						)
+				: Nullable<CodeLocation>(),
+				parseCallArguments(nodes[1], false), 
+				res.first
 				),
 			res.second,
 			nodes
@@ -1277,13 +1260,12 @@ ParserExpressions::parseSingleNodeToToExpressionOrNullInner(const SimpleParseNod
 						return null() <<
 							//FunctionValidation requires this info so
 							//it can report the location of orphan breaks.
-							ExpressionLocationTagging::setCodeLocation(
-								Expression::Break(),
-								CodeLocation(
-									codeDefPoint(),
+							Expression::Break(
+								codeLocationFor(
 									node.extent()
 									)
-								);
+								)
+							;
 
 					if (!isValidVariableName(i))
 						return null();
@@ -1341,16 +1323,13 @@ ParserExpressions::parseSingleNodeToToExpressionOrNullInner(const SimpleParseNod
 							}
 						-|	Term() ->> {
 							listComprehension =
-								ExpressionLocationTagging::setCodeLocation(
-									Expression::ListComprehension(
-										chain,
-										false
-										),
-									CodeLocation(
-										codeDefPoint(),
+								Expression::ListComprehension(
+									codeLocationFor(
 										nodes[2].extent()
-										)
-									);
+										),
+									chain,
+									false
+									)
 							}
 					}
 				catch(FunctionParseError& e)
@@ -2472,10 +2451,9 @@ void ParserExpressions::parseClassDefinitionTerm(
 				pair<CSTValue, ClassDefinitionTerm> member =
 					bindExpressionToClassDefinitionTerm(
 						nodes[0],
-						ExpressionLocationTagging::setCodeLocation(
+						::CPPML::replaceCommonData(
 							expr,
-							CodeLocation(
-								codeDefPoint(),
+							codeLocationFor(
 								nodes[1].extent()
 								)
 							),
@@ -2576,7 +2554,7 @@ Expression	ParserExpressions::objectTermsAndMetadataToObjectExpression(
 
 	CSTValue finalMetadata = packageObjectOrClassMetadata(inMetadata, terms, additionalMetas);
 
-	ObjectDefinition obj(f, selfName, ExpressionLocationMetadata::Empty());
+	ObjectDefinition obj(f, selfName, null());
 
 	FunctionValidation::checkObjectDefinitionForOrphanBreaks(obj);
 
@@ -2609,7 +2587,7 @@ Expression	ParserExpressions::objectTermsAndMetadataToClassExpression(
 
 	CSTValue finalMetadata = packageObjectOrClassMetadata(inMetadata, terms, additionalMetas);
 
-	ClassDefinition obj(f, className, selfName, ExpressionLocationMetadata::Empty());
+	ClassDefinition obj(f, className, selfName, null());
 
 	FunctionValidation::checkClassDefinitionForOrphanBreaks(obj);
 
@@ -3078,12 +3056,12 @@ Expression ParserExpressions::parseToExpressionInner(
 	return tr;
 	}
 
-ImmutableTreeVector<Alternative<pair<StatementTerm, CodeLocation>, FunctionParseError> >
+ImmutableTreeVector<Alternative<pair<StatementTerm, Nullable<CodeLocation> >, FunctionParseError> >
 			ParserExpressions::unpackNodeToStatementTermsOrParseErrors(
 										const SimpleParseNode& inNode
 										) const
 	{
-	ImmutableTreeVector<Alternative<pair<StatementTerm, CodeLocation>, FunctionParseError> > terms;
+	ImmutableTreeVector<Alternative<pair<StatementTerm, Nullable<CodeLocation> >, FunctionParseError> > terms;
 
 	@match SimpleParseNode(inNode)
 		-|	Empty() ->> {;}
@@ -3126,7 +3104,7 @@ ImmutableTreeVector<Alternative<pair<StatementTerm, CodeLocation>, FunctionParse
 					parseSingleNodeToToExpressionOrNull(inNode);
 
 				if (!e)
-					terms = terms + Alternative<pair<StatementTerm, CodeLocation>, FunctionParseError>(
+					terms = terms + Alternative<pair<StatementTerm, Nullable<CodeLocation> >, FunctionParseError>(
 						FunctionParseError("expected expression", inNode)
 						);
 				else
@@ -3136,12 +3114,12 @@ ImmutableTreeVector<Alternative<pair<StatementTerm, CodeLocation>, FunctionParse
 							inNode.extent()
 							);
 
-					terms = terms + Alternative<pair<StatementTerm, CodeLocation>, FunctionParseError>(
+					terms = terms + Alternative<pair<StatementTerm, Nullable<CodeLocation> >, FunctionParseError>(
 						make_pair(
 							StatementTerm::Expr(
 								exprWithLocationInfo
 								),
-							CodeLocation(codeDefPoint(), inNode.extent())
+							codeLocationFor(inNode.extent())
 							)
 						);
 					}
@@ -3157,7 +3135,7 @@ ImmutableTreeVector<StatementTerm> ParserExpressions::unpackNodeToStatementTerms
 	{
 	ImmutableTreeVector<StatementTerm> terms;
 
-	ImmutableTreeVector<Alternative<pair<StatementTerm, CodeLocation>, FunctionParseError> > termOrErrors;
+	ImmutableTreeVector<Alternative<pair<StatementTerm, Nullable<CodeLocation> >, FunctionParseError> > termOrErrors;
 
 	for (auto termOrError: unpackNodeToStatementTermsOrParseErrors(inNode))
 		if (termOrError.isLeft())
@@ -3266,7 +3244,7 @@ ImmutableTreeVector<StatementTerm>
 	{
 	ImmutableTreeVector<StatementTerm> terms;
 
-	ImmutableTreeVector<Alternative<pair<StatementTerm, CodeLocation>, FunctionParseError> > termOrErrors;
+	ImmutableTreeVector<Alternative<pair<StatementTerm, Nullable<CodeLocation> >, FunctionParseError> > termOrErrors;
 
 	for (auto termOrError: unpackConcatSeqToStatementTermsOrParseErrors(nodes))
 		if (termOrError.isLeft())
@@ -3277,7 +3255,7 @@ ImmutableTreeVector<StatementTerm>
 	return terms;
 	}
 
-ImmutableTreeVector<Alternative<pair<StatementTerm, CodeLocation>, FunctionParseError> >
+ImmutableTreeVector<Alternative<pair<StatementTerm, Nullable<CodeLocation> >, FunctionParseError> >
 		ParserExpressions::unpackConcatSeqToStatementTermsOrParseErrors(
 				const NodeList& nodes
 				) const
@@ -3304,7 +3282,7 @@ ImmutableTreeVector<Alternative<pair<StatementTerm, CodeLocation>, FunctionParse
 				Nullable<pair<PatternWithName, NodeList> > a = getAssignment(remaining);
 
 				if (!a)
-					return emptyTreeVec() + Alternative<pair<StatementTerm, CodeLocation>, FunctionParseError>(
+					return emptyTreeVec() + Alternative<pair<StatementTerm, Nullable<CodeLocation> >, FunctionParseError>(
 						FunctionParseError("expected pattern", remaining)
 						);
 
@@ -3332,15 +3310,14 @@ ImmutableTreeVector<Alternative<pair<StatementTerm, CodeLocation>, FunctionParse
 
 			validateLetStatementTerm(terms, nodes.slice(0, nodes.size() - remaining.size()));
 
-			pair<StatementTerm, CodeLocation> term(
+			pair<StatementTerm, Nullable<CodeLocation> > term(
 				StatementTerm::Let(terms),
-				CodeLocation(
-					codeDefPoint(),
+				codeLocationFor(
 					SimpleParseRange(nodes.slice(0, nodes.size() - remaining.size()))
 					)
 				);
 
-			return Alternative<pair<StatementTerm, CodeLocation>, FunctionParseError>(term) +
+			return Alternative<pair<StatementTerm, Nullable<CodeLocation> >, FunctionParseError>(term) +
 				unpackConcatSeqToStatementTermsOrParseErrors(remaining);
 			}
 
@@ -3353,13 +3330,12 @@ ImmutableTreeVector<Alternative<pair<StatementTerm, CodeLocation>, FunctionParse
 				);
 
 		return
-			Alternative<pair<StatementTerm, CodeLocation>, FunctionParseError>(
+			Alternative<pair<StatementTerm, Nullable<CodeLocation> >, FunctionParseError>(
 				make_pair(
 					StatementTerm::Expr(
 						exprWithLocationInfo
 						),
-					CodeLocation(
-						codeDefPoint(),
+					codeLocationFor(
 						SimpleParseRange(nodes.slice(0, nodes.size() - res.second.size()))
 						)
 					)
@@ -3369,7 +3345,7 @@ ImmutableTreeVector<Alternative<pair<StatementTerm, CodeLocation>, FunctionParse
 		}
 	catch (FunctionParseError error)
 		{
-		return emptyTreeVec() + Alternative<pair<StatementTerm, CodeLocation>, FunctionParseError>(error);
+		return emptyTreeVec() + Alternative<pair<StatementTerm, Nullable<CodeLocation> >, FunctionParseError>(error);
 		}
 	}
 
@@ -3476,10 +3452,10 @@ Expression ParserExpressions::tagExpression(const Expression& e, const NodeList&
 	if (nodes.size() == 0)
 		return e;
 
-	if (e.locationMetadata().isEmpty())
+	if (!e.locationMetadata())
 		return CPPML::replaceCommonData(
 			e,
-			ExpressionLocationMetadata::WithSimpleParseRange(
+			codeLocationFor(
 				SimpleParseRange(
 					nodes[0].extent().start(),
 					nodes.back().extent().stop()
@@ -3494,10 +3470,10 @@ Expression ParserExpressions::tagExpression(const Expression& e, const NodeList&
 Expression ParserExpressions::tagExpression(const Expression& e,
 											const SimpleParseNode& node) const
 	{
-	if (e.locationMetadata().isEmpty())
+	if (!e.locationMetadata())
 		return CPPML::replaceCommonData(
 			e,
-			ExpressionLocationMetadata::WithSimpleParseRange(
+			codeLocationFor(
 				node.extent()
 				)
 			);
@@ -3508,10 +3484,10 @@ Expression ParserExpressions::tagExpression(const Expression& e,
 Expression ParserExpressions::tagExpression(const Expression& e,
 											const SimpleParseRange& node) const
 	{
-	if (e.locationMetadata().isEmpty())
+	if (!e.locationMetadata())
 		return CPPML::replaceCommonData(
 			e,
-			ExpressionLocationMetadata::WithSimpleParseRange(
+			codeLocationFor(
 				node
 				)
 			);
@@ -3522,10 +3498,10 @@ Expression ParserExpressions::tagExpression(const Expression& e,
 											const SimpleParseNode& nodeStart,
 											const SimpleParseNode& nodeStop) const
 	{
-	if (e.locationMetadata().isEmpty())
+	if (!e.locationMetadata())
 		return CPPML::replaceCommonData(
 			e,
-			ExpressionLocationMetadata::WithSimpleParseRange(
+			codeLocationFor(
 				SimpleParseRange(
 					nodeStart.extent().start(),
 					nodeStop.extent().stop()
@@ -3542,10 +3518,10 @@ Function ParserExpressions::tagFunction(
 		const SimpleParseRange& range
 		) const
 	{
-	if (f.locationMetadata().isEmpty())
+	if (!f.locationMetadata())
 		return CPPML::replaceCommonData(
 			f,
-			ExpressionLocationMetadata::WithSimpleParseRange(
+			codeLocationFor(
 				range
 				)
 			);
@@ -3560,10 +3536,10 @@ Function ParserExpressions::tagFunction(
 		const SimpleParseNode& nodeStop
 		) const
 	{
-	if (f.locationMetadata().isEmpty())
+	if (!f.locationMetadata())
 		return CPPML::replaceCommonData(
 			f,
-			ExpressionLocationMetadata::WithSimpleParseRange(
+			codeLocationFor(
 				SimpleParseRange(
 					nodeStart.extent().start(),
 					nodeStop.extent().stop()

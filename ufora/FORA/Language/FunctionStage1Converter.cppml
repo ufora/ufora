@@ -158,7 +158,7 @@ Expression modifyApplyOperationOnly(
 				const Expression& inExpr,
 				const func_type& inFun,
 				const VariableAllocator& allocator,
-				const Nullable<hash_type>& curCodeHash
+				const Nullable<CodeLocation>& curCodeHash
 				)
 	{
 	target::Expression agent = inExpr.getApply().agent();
@@ -407,7 +407,7 @@ target::Expression Converter::throwConstantExpressionWithoutStacktrace(
 
 target::Expression Converter::throwConstantWithStacktrace(
 											const CSTValue& val,
-											const Nullable<hash_type>& curCodeHash
+											const Nullable<CodeLocation>& curCodeHash
 											) const
 	{
 	return target::Expression::Throw(
@@ -512,10 +512,13 @@ Converter::addRethrowFunction(const target::Function& fun, variable_index_type s
 
 target::Expression Converter::createAugmentExceptionCall(
 							const target::Expression& inExpr,
-							const Nullable<hash_type>& curCodeHash,
+							const Nullable<CodeLocation>& curCodeHash,
 							bool isRawExceptionValue
 							) const
 	{
+	if (disallowStackTraceAugmentation())
+		return inExpr;
+
 	return
 		target::Expression::Apply(
 			symExpr("AugmentException"),
@@ -525,9 +528,12 @@ target::Expression Converter::createAugmentExceptionCall(
 				applyArg(
 					target::Expression::Constant(
 						CSTValue(
-							ForaStackTrace::StackTrace(
-								emptyTreeVec() + (curCodeHash ? *curCodeHash : CodeLocationId())
-								)
+							!curCodeHash || *curCodeHash == CodeLocation() ? 
+								ForaStackTrace::StackTrace(emptyTreeVec())
+							:
+								ForaStackTrace::StackTrace(
+									emptyTreeVec() + *curCodeHash
+									)
 							)
 						)
 					)
@@ -536,9 +542,12 @@ target::Expression Converter::createAugmentExceptionCall(
 
 target::Expression	Converter::wrapExpressionInStackTraceAugment(
 			const target::Expression& inExpr,
-			const Nullable<hash_type>& curHash
+			const Nullable<CodeLocation>& curHash
 			) const
 	{
+	if (disallowStackTraceAugmentation())
+		return inExpr;
+
 	variable_index_type var = allocator().get();
 
 	return target::Expression::Try(
@@ -652,7 +661,7 @@ target::Expression  Converter::convert(
 	try {
 		return CPPML::replaceCommonData(
 			convertInner(inExpr),
-			inExpr.codeLocationIdOrNull()
+			inExpr.locationMetadata()
 			);
 		}
 	catch(...)
@@ -821,7 +830,7 @@ target::Expression	Converter::convertInner(
 								this, _1, _2
 								),
 							allocator(),
-							pattern.codeLocationIdOrNull()
+							pattern.locationMetadata()
 							)
 						)
 					)
@@ -846,7 +855,7 @@ target::Expression	Converter::convertInner(
 						emptyTreeVec() + target::ApplyArgument::Normal(
 							modifyApplyOperationOnly(
 								target::Expression::Apply(
-									inExpr.codeLocationIdOrNull(),
+									inExpr.locationMetadata(),
 									target::Expression::Variable(iterVar),
 									emptyTreeVec()
 										+ target::ApplyArgument::Constant(CSTValue(Symbol("Next")))
@@ -857,7 +866,7 @@ target::Expression	Converter::convertInner(
 									this, _1, _2
 									),
 								allocator(),
-								inExpr.codeLocationIdOrNull()
+								inExpr.locationMetadata()
 								)
 							),
 						target::Function::Term(
@@ -874,7 +883,7 @@ target::Expression	Converter::convertInner(
                                     this, _1, _2
                                     ),
                                 allocator(),
-                                inExpr.codeLocationIdOrNull()
+                                inExpr.locationMetadata()
                                 ),
 							target::Function::Term(
 								target::TuplePattern(emptyTreeVec()
@@ -892,7 +901,7 @@ target::Expression	Converter::convertInner(
 										target::Expression::Variable(nextIterVar),
 										throwConstantWithStacktrace(
 											CSTValue("internal error: pull codegen messed up"),
-											inExpr.codeLocationIdOrNull()
+											inExpr.locationMetadata()
 											)
 										),
 									target::Expression::Variable(elemVar)
@@ -901,7 +910,7 @@ target::Expression	Converter::convertInner(
 									allocator().get(),
 									throwConstantWithStacktrace(
 										CSTValue("internal error: malformed `Next output"),
-										inExpr.codeLocationIdOrNull()
+										inExpr.locationMetadata()
 										)
 									)
 								)
@@ -925,7 +934,7 @@ target::Expression	Converter::convertInner(
 				tr = target::Expression::Branch(
 					convert(lhs, rhs.freeVariables()),
 					target::Expression::Branch(
-						inExpr.codeLocationIdOrNull(),
+						inExpr.locationMetadata(),
 						convert(rhs),
 						target::Expression::Constant(CSTValue(true)),
 						target::Expression::Constant(CSTValue(false))
@@ -947,7 +956,7 @@ target::Expression	Converter::convertInner(
 					convert(lhs, rhs.freeVariables()),
 					target::Expression::Constant(CSTValue(true)),
 					target::Expression::Branch(
-						inExpr.codeLocationIdOrNull(),
+						inExpr.locationMetadata(),
 						convert(rhs),
 						target::Expression::Constant(CSTValue(true)),
 						target::Expression::Constant(CSTValue(false))
@@ -972,7 +981,7 @@ target::Expression	Converter::convertInner(
 				tr =
 				target::Expression::Branch(
 					target::Expression::Apply(
-						inExpr.codeLocationIdOrNull(),
+						inExpr.locationMetadata(),
 						convert(rhs, lhs.freeVariables()),
 						emptyTreeVec() +
 							target::ApplyArgument::Constant(
@@ -997,7 +1006,7 @@ target::Expression	Converter::convertInner(
 				tr =
 				target::Expression::Branch(
 					target::Expression::Is(
-						inExpr.codeLocationIdOrNull(),
+						inExpr.locationMetadata(),
 						convert(lhs, rhs.freeVariables()),
 						convert(rhs)
 						),
@@ -1087,7 +1096,7 @@ target::Expression	Converter::convertInner(
 
 				tr = target::Expression::Try(
 					target::Expression::While(
-						inExpr.codeLocationIdOrNull(),
+						inExpr.locationMetadata(),
 						withBreakTarget(breakTarget)
 							.convert(condition, condition.freeVariables() + updater.freeVariables()),
 						withBreakTarget(breakTarget)
@@ -1139,7 +1148,7 @@ target::Expression	Converter::convertInner(
 				if (stacktrace)
 					tr = target::Expression::Throw(
 						target::Expression::CreateTuple(
-							inExpr.codeLocationIdOrNull(),
+							inExpr.locationMetadata(),
 							emptyTreeVec() +
 								applyArg(convert(exception, stacktrace->freeVariables())) +
 								applyArg(convert(*stacktrace))
@@ -1150,7 +1159,7 @@ target::Expression	Converter::convertInner(
 					tr = target::Expression::Throw(
 						createAugmentExceptionCall(
 							convert(exception),
-							inExpr.codeLocationIdOrNull(),
+							inExpr.locationMetadata(),
 							true
 							),
 						null()
@@ -1176,7 +1185,7 @@ target::Expression	Converter::convertInner(
 								target::Pattern::Anything(exception_var)
 								),
 							target::Expression::Match(
-								inExpr.codeLocationIdOrNull(),
+								inExpr.locationMetadata(),
 								emptyTreeVec() +
 									applyArg(
 										target::Expression::Variable(
@@ -1222,7 +1231,7 @@ target::Expression	Converter::convertInner(
 									)
 								),
 							target::Expression::Match(
-								inExpr.codeLocationIdOrNull(),
+								inExpr.locationMetadata(),
 								emptyTreeVec() +
 								applyArg(
 									target::Expression::Variable(
@@ -1250,7 +1259,7 @@ target::Expression	Converter::convertInner(
 								),
 								target::Expression::Return(
 									target::Expression::Apply(
-										inExpr.codeLocationIdOrNull(),
+										inExpr.locationMetadata(),
 										target::Expression::Constant(
 											CSTValue(Symbol("ConvertYieldToIter"))
 											),
@@ -1291,7 +1300,7 @@ target::Expression	Converter::convertInner(
 
 				tr = target::Expression::Try(
 					withBreakTarget(breakTarget)
-						.evaluateChainDirectly(chain, inExpr.codeLocationIdOrNull()),
+						.evaluateChainDirectly(chain, inExpr.locationMetadata()),
 					null() << breakTarget,
 					target::Function::Empty(
 						allocator().get(),
@@ -1319,7 +1328,7 @@ target::Expression	Converter::convertInner(
 								this, _1, _2
 								),
 							allocator(),
-							inExpr.codeLocationIdOrNull()
+							inExpr.locationMetadata()
 							)
 						)
 					);
@@ -1365,7 +1374,7 @@ target::Expression	Converter::convertInner(
 
 				for (long k = 0; k < exprs.size(); k++)
 					e = target::Expression::Apply(
-						inExpr.codeLocationIdOrNull(),
+						inExpr.locationMetadata(),
 						e,
 						emptyTreeVec() +
 							symArg("Operator") +
@@ -1416,7 +1425,7 @@ target::Expression	Converter::convertInner(
 								symArg("Call") +
 								applyArg(
 									target::Expression::Apply(
-										inExpr.codeLocationIdOrNull(),
+										inExpr.locationMetadata(),
 										evaluateChainToProcess(
 											chain,
 											inExpr.locationMetadata()
@@ -1430,7 +1439,7 @@ target::Expression	Converter::convertInner(
 					}
 				}
 			-|	NoStackTraceAugmentations(e) ->> {
-				tr = withoutStackTraceAugmentation().convert(e);
+				return withoutStackTraceAugmentation().convert(e);
 				}
 			;
 
@@ -1452,7 +1461,7 @@ target::Expression	Converter::convertInner(
 					tr,
 					bind(&Converter::wrapExpressionInStackTraceAugment, this, _1, _2),
 					allocator(),
-					inExpr.codeLocationIdOrNull()
+					inExpr.locationMetadata()
 					);
 				}
 			}
@@ -1485,7 +1494,7 @@ Converter::convert(const source::PatternWithName& in) const
 
 		return make_pair(
 				target::Pattern::Anything(
-					in.codeLocationIdOrNull(),
+					in.locationMetadata(),
 					boundVar
 					),
 				toMap
@@ -1497,7 +1506,7 @@ Converter::convert(const source::PatternWithName& in) const
 
 	tr.first = CPPML::replaceCommonData(
 		tr.first,
-		in.codeLocationIdOrNull()
+		in.locationMetadata()
 		);
 
 	if (in.name())
@@ -1570,7 +1579,7 @@ Converter::convert(const source::Pattern& inExpr) const
 						matchApply,
 						bind(&Converter::wrapExpressionInStackTraceAugment, this, _1, _2),
 						allocator(),
-						matcherExpr.codeLocationIdOrNull()
+						matcherExpr.locationMetadata()
 						);
 					}
 
@@ -1886,7 +1895,7 @@ target::Expression Converter::evaluateChainToProcess(
 
 target::Expression Converter::evaluateChainToProcess(
 				const source::ListComprehensionChain& inChain,
-				const ExpressionLocationMetadata& locationMetadata
+				const Nullable<CodeLocation>& locationMetadata
 				) const
 	{
 	source::Function fun =
@@ -1914,7 +1923,7 @@ target::Expression Converter::evaluateChainToProcess(
 
 target::Expression Converter::evaluateChainDirectly(
 				const source::ListComprehensionChain& inChain,
-				const Nullable<hash_type>& curCodeHash
+				const Nullable<CodeLocation>& curCodeHash
 				) const
 	{
 	@match source::ListComprehensionChain(inChain)
@@ -1967,7 +1976,7 @@ target::Expression Converter::evaluateChainDirectly(
 				return target::Expression::Let(
 					procVar,
 					convert(proc),
-					evaluateForLoop(procVar, innerFun, proc.codeLocationIdOrNull())
+					evaluateForLoop(procVar, innerFun, proc.locationMetadata())
 					);
 				}
 		;
@@ -1976,7 +1985,7 @@ target::Expression Converter::evaluateChainDirectly(
 target::Expression	Converter::evaluateForLoop(
 						variable_index_type iterableVar,
 						const target::Function& innerFun,
-						const Nullable<hash_type>& curCodeHash
+						const Nullable<CodeLocation>& curCodeHash
 						) const
 	{
 	/*************************
@@ -2324,7 +2333,7 @@ target::Expression Converter::expandRecursiveLet(
 				"self",
 				freeVars + boundVars
 				),
-			ExpressionLocationMetadata::Empty()
+			null()
 			);
 
 		target::Expression expr =

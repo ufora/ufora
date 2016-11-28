@@ -30,7 +30,7 @@ from collections import namedtuple
 
 ImplValObjectAndMemberToObjectIdMap = namedtuple('ImplValObjectAndMemberToObjectIdMap',
                                                  ['implVal', 'memberToObjectIdMap'])
-emptyCodeDefinitionPoint = ForaNative.CodeDefinitionPoint.ExternalFromStringList([])
+emptyCodeDefinitionPoint = ForaNative.CodeDefinitionPoint.ExternalFromStringList(["dummy"])
 empytObjectExpression = ForaNative.parseStringToExpression(
     "object {}",
     emptyCodeDefinitionPoint,
