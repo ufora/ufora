@@ -15,19 +15,11 @@
 import ufora.FORA.python.PurePython.InMemorySimulationExecutorFactory as \
     InMemorySimulationExecutorFactory
 import ufora.distributed.S3.ActualS3Interface as ActualS3Interface
-import pyfora.RemotePythonObject as RemotePythonObject
-import pyfora.Exceptions as Exceptions
-import pyfora.pure_modules.pure_pandas as PurePandas
 import pyfora.helpers as helpers
 import pyfora
 
-import sys
 import unittest
-import traceback
-import pandas
 import os
-import numpy
-import resource
 import boto
 
 class OutOfProcPythonTest(unittest.TestCase):
