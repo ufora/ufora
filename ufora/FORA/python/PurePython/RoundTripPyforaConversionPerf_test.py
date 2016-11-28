@@ -164,6 +164,13 @@ class RoundTripPyforaConversionTest(unittest.TestCase):
             "pyfora.RoundTripConversion.tuples_10k"
             )
 
+    def test_conversion_performance_dicts_100k(self):
+        dicts = [ {ix: -ix for ix in xrange(n % 10)} for n in xrange(100000)]
+        self.roundtripConvert(
+            dicts,
+            "pyfora.RoundTripConversion.dicts_100k"
+            )
+
     def test_conversion_performance_small_lists(self):
         small_lists = [range(ix % 10) for ix in xrange(10000)]
         self.roundtripConvert(
