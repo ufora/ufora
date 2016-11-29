@@ -25,7 +25,7 @@ RUN apt-get update && apt-get install -y \
     clang-3.8 \
     llvm-3.5 \
     libclang-3.5 \
-    libclang-3.8-dev \
+    libclang-3.5-dev \
     curl \
     gdb \
     gfortran \
@@ -56,7 +56,7 @@ RUN apt-get build-dep -y python2.7 && \
     wget -nv https://www.python.org/ftp/python/2.7.9/Python-2.7.9.tar.xz && \
     tar xf Python-2.7.9.tar.xz
 RUN cd /tmp/Python-2.7.9 && \
-    CC=gcc CXX=g++ ./configure --prefix=/usr/local --enable-shared --with-libs='-ltcmalloc' --with-system-ffi --enable-ipv6 --enable-unicode=ucs4 --with-ensurepip=upgrade && \
+    CC=clang CXX=clang++ ./configure --prefix=/usr/local --enable-shared --with-libs='-ltcmalloc' --with-system-ffi --enable-ipv6 --enable-unicode=ucs4 --with-ensurepip=upgrade && \
     make && make install && ldconfig && \
     /usr/local/bin/python -m ensurepip && \
     rm -rf /tmp/Python-2.7.9*
@@ -88,13 +88,6 @@ RUN apt-get install -y nodejs build-essential && \
     npm install -g coffee-script@1.10.0 mocha@2.3.3 forever@0.14.1
 
 
-RUN echo "ccache -M 10G" >> /etc/bash.bashrc
-ENV CCACHE_DIR /volumes/ccache
-ENV CCACHE_COMPILERCHECK content
-
-
-RUN mkdir /var/core
-
 #install CUDA
 RUN wget http://developer.download.nvidia.com/compute/cuda/repos/ubuntu1604/x86_64/cuda-repo-ubuntu1604_8.0.44-1_amd64.deb
 
@@ -114,5 +107,11 @@ RUN apt-get update \
         cuda-drivers=367.48-1          \
         cuda-nvrtc-8-0=8.0.44-1        \
         libcuda1-367=367.48-0ubuntu1
+
+RUN echo "ccache -M 10G" >> /etc/bash.bashrc
+ENV CCACHE_DIR /volumes/ccache
+ENV CCACHE_COMPILERCHECK content
+
+RUN mkdir /var/core
 
 ENV SHELL bash
