@@ -81,7 +81,7 @@ private:
     void _registerTypeOrBuiltinFunctionNamedSingleton(int64_t objectId,
                                                       PyObject* pyObject) const;
     void _registerStackTraceAsJson(int64_t objectId, const PyObject* pyobject) const;
-    void _registerWithBlock(int64_t objectId, PyObject* pyObject);
+    void _registerPyforaWithBlock(int64_t objectId, PyObject* pyObject);
     void _registerTuple(int64_t objectId, PyObject* pyTuple);
     void _registerList(int64_t objectId, PyObject* pyList);
     void _registerListOfPrimitives(int64_t objectId, PyObject* pyList) const;
@@ -144,7 +144,7 @@ private:
     void _initRemotePythonObjectClass();
     void _initPackedHomogenousDataClass();
     void _initFutureClass();
-    void _initWithBlockClass();
+    void _initPyforaWithBlockClass();
     void _initUnconvertibleClass();
     void _initPyforaConnectHack();
 
@@ -158,7 +158,7 @@ private:
     PyObject* mExcludePredicateFun;
     PyObject* mExcludeList;
     PyObject* mTerminalValueFilter;
-    PyObject* mWithBlockClass;
+    PyObject* mPyforaWithBlockClass;
     PyObject* mUnconvertibleClass;
     PyObject* mPyforaConnectHack;
     PyObject* mTracebackType;
