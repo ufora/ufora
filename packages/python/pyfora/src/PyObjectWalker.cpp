@@ -72,7 +72,7 @@ PyObjectWalker::PyObjectWalker(
             mExcludePredicateFun(excludePredicateFun),
             mExcludeList(excludeList),
             mTerminalValueFilter(terminalValueFilter),
-            mWithBlockClass(nullptr),
+            mPyforaWithBlockClass(nullptr),
             mUnconvertibleClass(nullptr),
             mPyforaConnectHack(nullptr),
             mTracebackType(traceback_type),
@@ -84,27 +84,27 @@ PyObjectWalker::PyObjectWalker(
     _initRemotePythonObjectClass();
     _initPackedHomogenousDataClass();
     _initFutureClass();
-    _initWithBlockClass();
+    _initPyforaWithBlockClass();
     _initUnconvertibleClass();
     _initPyforaConnectHack();
     }
 
 
-void PyObjectWalker::_initWithBlockClass()
+void PyObjectWalker::_initPyforaWithBlockClass()
     {
     PyObject* withBlockModule = PyImport_ImportModule("pyfora.PyforaWithBlock");
     if (withBlockModule == nullptr) {
         throw std::runtime_error(
-            "py err in PyObjectWalker::_initWithBlockClass: " +
+            "py err in PyObjectWalker::_initPyforaWithBlockClass: " +
             PyObjectUtils::exc_string()
             );
         }
 
-    mWithBlockClass = PyObject_GetAttrString(withBlockModule, "PyforaWithBlock");
+    mPyforaWithBlockClass = PyObject_GetAttrString(withBlockModule, "PyforaWithBlock");
     Py_DECREF(withBlockModule);
-    if (mWithBlockClass == nullptr) {
+    if (mPyforaWithBlockClass == nullptr) {
         throw std::runtime_error(
-            "py err in PyObjectWalker::_initWithBlockClass: " +
+            "py err in PyObjectWalker::_initPyforaWithBlockClass: " +
             PyObjectUtils::exc_string()
             );
         }
@@ -285,7 +285,7 @@ PyObjectWalker::~PyObjectWalker()
     Py_XDECREF(mTracebackType);
     Py_XDECREF(mPyforaConnectHack);
     Py_XDECREF(mUnconvertibleClass);
-    Py_XDECREF(mWithBlockClass);
+    Py_XDECREF(mPyforaWithBlockClass);
     Py_XDECREF(mTerminalValueFilter);
     Py_XDECREF(mExcludeList);
     Py_XDECREF(mExcludePredicateFun);
@@ -418,9 +418,9 @@ void PyObjectWalker::_walkPyObject(PyObject* pyObject, int64_t objectId) {
         {
         _registerStackTraceAsJson(objectId, pyObject);
         }
-    else if (PyObject_IsInstance(pyObject, mWithBlockClass))
+    else if (PyObject_IsInstance(pyObject, mPyforaWithBlockClass))
         {
-        _registerWithBlock(objectId, pyObject);
+        _registerPyforaWithBlock(objectId, pyObject);
         }
     else if (PyObject_IsInstance(pyObject, mUnconvertibleClass))
         {
@@ -716,7 +716,7 @@ int64_t _getWithBlockLineNumber(PyObject* withBlock)
     int64_t lineno;
     PyObject* pyLineNumber = PyObject_GetAttrString(withBlock, "lineNumber");
     if (pyLineNumber == nullptr) {
-        throw std::runtime_error("error getting lineNumber attr in _registerWithBlock");
+        throw std::runtime_error("error getting lineNumber attr in _registerPyforaWithBlock");
         }
     if (not PyInt_Check(pyLineNumber)) {
         throw std::runtime_error(
@@ -813,7 +813,7 @@ PyObjectWalker::_registerStackTraceAsJson(int64_t objectId,
     }
 
 
-void PyObjectWalker::_registerWithBlock(int64_t objectId, PyObject* pyObject)
+void PyObjectWalker::_registerPyforaWithBlock(int64_t objectId, PyObject* pyObject)
     {
     int64_t lineno = _getWithBlockLineNumber(pyObject);
 
@@ -821,7 +821,7 @@ void PyObjectWalker::_registerWithBlock(int64_t objectId, PyObject* pyObject)
     if (withBlockFun == nullptr) {
         throw std::runtime_error(
             "error getting with block ast functionDef"
-            " in PyObjectWalker::_registerWithBlock: " +
+            " in PyObjectWalker::_registerPyforaWithBlock: " +
             PyObjectUtils::exc_string());
         }
     if (mPyAstUtilModule.hasReturnInOuterScope(withBlockFun)) {
@@ -850,7 +850,7 @@ void PyObjectWalker::_registerWithBlock(int64_t objectId, PyObject* pyObject)
         Py_DECREF(withBlockFun);
         throw std::runtime_error(
             "py error getting freeMemberAccessChainsWithPositions "
-            "in PyObjectWalker::_registerWithBlock: "+
+            "in PyObjectWalker::_registerPyforaWithBlock: "+
             PyObjectUtils::exc_string());
         }
 
@@ -859,7 +859,7 @@ void PyObjectWalker::_registerWithBlock(int64_t objectId, PyObject* pyObject)
         Py_DECREF(chainsWithPositions);
         Py_DECREF(withBlockFun);
         throw std::runtime_error(
-            "py err in PyObjectWalker::_registerWithBlock: " +
+            "py err in PyObjectWalker::_registerPyforaWithBlock: " +
             PyObjectUtils::exc_string()
             );
         }
@@ -877,7 +877,7 @@ void PyObjectWalker::_registerWithBlock(int64_t objectId, PyObject* pyObject)
         Py_DECREF(boundVariables);
         Py_DECREF(chainsWithPositions);
         throw std::runtime_error(
-            "py err in PyObjectWalker::_registerWithBlock: " +
+            "py err in PyObjectWalker::_registerPyforaWithBlock: " +
             PyObjectUtils::exc_string()
             );
         }
@@ -897,7 +897,7 @@ void PyObjectWalker::_registerWithBlock(int64_t objectId, PyObject* pyObject)
         Py_XDECREF(resolutions);
         throw std::runtime_error(
             "py error getting sourceFileName attr "
-            "in PyObjectWalker::_registerWithBlock: "
+            "in PyObjectWalker::_registerPyforaWithBlock: "
             + PyObjectUtils::exc_string()
             );
         }
