@@ -307,3 +307,17 @@ class WithRegularPython_test(unittest.TestCase):
                     outX = x
         
         self.assertTrue(outX.y.z == 20)
+
+    def test_unbound_locals_in_regular_python(self):
+        with self.create_executor() as e:
+            with e.remotely.downloadAll():
+                with helpers.python:
+                    if True:
+                        x = 1
+                    else:
+                        y = 2
+        
+        self.assertEqual(x, 1)
+
+        with self.assertRaises(UnboundLocalError):
+            self.assertEqual(y, 2)

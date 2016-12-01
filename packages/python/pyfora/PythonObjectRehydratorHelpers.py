@@ -197,7 +197,9 @@ class PythonObjectRehydratorHelpers(object):
         self.importModuleMagicVariables(globalScope, filename)
 
         try:
-            moduleAst = updatePyAstMemberChains(ast.Module([classAst]), tuple(globalScope.keys()), isClassContext=False)
+            moduleAst = updatePyAstMemberChains(ast.Module([classAst]),
+                                                tuple(globalScope.keys()),
+                                                isClassContext=False)
 
             code = compile(moduleAst, filename, 'exec')
 
@@ -300,12 +302,17 @@ class PythonObjectRehydratorHelpers(object):
 
             bound_variables = PyAstFreeVariableAnalyses.collectBoundValuesInScope(expr)
 
+            return_dict_list_src = "[" + ",".join("'%s'" % k for k in bound_variables) + "]"            
+            return_dict_expr_src = "{{k: __locals[k] for k in {return_dict_list_src} if k in __locals}}".format(
+                return_dict_list_src=return_dict_list_src)
+            return_dict_expr_src = "(lambda __locals: {return_dict_expr_src})(dict(locals()))".format(
+                return_dict_expr_src=return_dict_expr_src)
+
+            return_dict_expr = ast.parse(return_dict_expr_src).body[0].value
+
             return_statement = ast.Return(
                     ast.Tuple([
-                        ast.Dict(
-                            keys=[ast.Str(x) for x in bound_variables],
-                            values=[ast.Name(x, ast.Load()) for x in bound_variables],
-                            ),
+                        return_dict_expr,
                         ast.Num(0),
                         ast.Num(0)
                         ],
@@ -315,10 +322,7 @@ class PythonObjectRehydratorHelpers(object):
 
             return_statement_exception = ast.Return(
                     ast.Tuple([
-                        ast.Dict(
-                            keys=[ast.Str(x) for x in bound_variables],
-                            values=[ast.Name(x, ast.Load()) for x in bound_variables],
-                            ),
+                        return_dict_expr,
                         ast.Call(ast.Name("__pyfora_get_exception_traceback__", ast.Load()), [],[],None,None),
                         ast.Name("__pyfora_exception_var__", ast.Load())
                         ],
