@@ -50,7 +50,8 @@ class Converter(object):
                  singletonAndExceptionConverter=None,
                  vdmOverride=None,
                  purePythonModuleImplVal=None,
-                 foraBuiltinsImplVal=None):
+                 foraBuiltinsImplVal=None,
+                 computationFactory=None):
         self.convertedValues = {}
 
         self.singletonAndExceptionConverter = singletonAndExceptionConverter
@@ -69,7 +70,8 @@ class Converter(object):
             nativeListConverter=nativeListConverter,
             vdmOverride=vdmOverride,
             builtinMemberMapping=builtinMemberMapping,
-            purePythonModuleImplVal=purePythonModuleImplVal)
+            purePythonModuleImplVal=purePythonModuleImplVal,
+            computationFactory=computationFactory)
 
         self.convertedStronglyConnectedComponents = set()
 

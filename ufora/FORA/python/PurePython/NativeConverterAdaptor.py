@@ -60,7 +60,8 @@ class NativeConverterAdaptor(object):
                  nativeListConverter,
                  vdmOverride,
                  builtinMemberMapping,
-                 purePythonModuleImplVal):
+                 purePythonModuleImplVal,
+                 computationFactory):
         self.boundExpressions = {}
 
         self.constantConverter = ConstantConverter.ConstantConverter(
@@ -70,6 +71,7 @@ class NativeConverterAdaptor(object):
         self.nativeTupleConverter = nativeTupleConverter
         self.nativeListConverter = nativeListConverter
         self.vdm_ = vdmOverride
+        self.computationFactory = computationFactory
 
         self.nativeConverter = ForaNative.makePythonAstConverter(
             nativeConstantConverter,
@@ -168,7 +170,7 @@ class NativeConverterAdaptor(object):
             classOrFunctionDefinition,
             objectIdToObjectDefinition,
             convertedValues):
-                
+
 
         foraExpression = self._convertPyClassOrFunctionDefinitionToForaFunctionExpression(
             classOrFunctionDefinition,
@@ -344,7 +346,7 @@ class NativeConverterAdaptor(object):
                 objectIdToFreeVar[baseId].split('.')
                 for baseId in classOrFunctionDefinition.baseClassIds
                 ]
-            
+
             tr = self.nativeConverter.convertPythonAstClassDefToForaOrParseError(
                 pyAst.asClassDef,
                 pyAst.extent,
@@ -438,8 +440,8 @@ class NativeConverterAdaptor(object):
         return expr, renamedVariableMapping
 
     def _specializeFreeVariableMemberAccessChainsAndEvaluate(self,
-                                                            foraExpression,
-                                                            renamedVariableMapping):
+                                                             foraExpression,
+                                                             renamedVariableMapping):
         foraExpression, renamedVariableMapping = \
             self._reduceFreeVariableMemberAccessChains(
                 foraExpression,
@@ -451,10 +453,23 @@ class NativeConverterAdaptor(object):
             renamedVariableMapping
             )
 
-        return self._specializeFreeVariablesAndEvaluate(
-            foraExpression,
-            renamedVariableMapping
-            )
+        areAllIvc = all(isinstance(v, ForaNative.ImplValContainer)
+                        for v in renamedVariableMapping.itervalues())
+        if areAllIvc:
+            return self._specializeFreeVariablesAndEvaluate(
+                foraExpression,
+                renamedVariableMapping
+                )
+        else:
+            #function that evaluates the CreateObject.
+            #Args are the free variables, in lexical order
+            expressionAsIVC = foraExpression.toFunctionImplval(False)
+
+            args = tuple(renamedVariableMapping[f] for f in foraExpression.freeVariables)
+            return self.computationFactory(
+                (expressionAsIVC, Symbol_Call) + args
+                )
+
 
     def _handleUnconvertibleValuesInExpression(
             self,
@@ -462,7 +477,7 @@ class NativeConverterAdaptor(object):
             renamedVariableMapping
             ):
         unconvertibles = [
-            k for k, v in renamedVariableMapping.iteritems() \
+            k for k, v in renamedVariableMapping.iteritems()
             if v == Symbol_unconvertible
             ]
 
@@ -478,60 +493,41 @@ class NativeConverterAdaptor(object):
             foraExpression,
             renamedVariableMapping
             ):
-        allAreIVC = True
-        for _, v in renamedVariableMapping.iteritems():
-            if not isinstance(v, ForaNative.ImplValContainer):
-                allAreIVC = False
+        missingVariableDefinitions = [
+            x for x in foraExpression.freeVariables if x not in renamedVariableMapping
+            ]
 
-        if allAreIVC:
-            missingVariableDefinitions = [
-                x for x in foraExpression.freeVariables if x not in renamedVariableMapping
-                ]
+        if missingVariableDefinitions:
+            raise pyfora.PythonToForaConversionError(
+                ("An internal error occurred: we didn't provide a " +
+                    "definition for the following variables: %s" % missingVariableDefinitions +
+                    ". Most likely, there is a mismatch between our analysis of the "
+                    "python code and the generated FORA code underneath. Please file a bug report."
+                ))
 
-            if missingVariableDefinitions:
-                raise pyfora.PythonToForaConversionError(
-                    ("An internal error occurred: we didn't provide a " +
-                     "definition for the following variables: %s" % missingVariableDefinitions +
-                     ". Most likely, there is a mismatch between our analysis of the "
-                     "python code and the generated FORA code underneath. Please file a bug report."
-                    ))
+        #we need to determine whether we should bind the free variables in this expression as constants
+        #inline in the code, or as class members. Binding them as constants speeds up the compiler,
+        #but if we have the same function bound repeatedly with many constants, we'll end up
+        #producing far too much code. This algorithm binds as constants the _First_ time we bind
+        #a given expression with given arguments, and as members any future set of times. This
+        #should cause it to bind modules and classes that don't have any data flowing through them
+        #as constants, and closures and functions we're calling repeatedly using class members.
+        shouldMapArgsAsConstants = True
 
-            #we need to determine whether we should bind the free variables in this expression as constants
-            #inline in the code, or as class members. Binding them as constants speeds up the compiler,
-            #but if we have the same function bound repeatedly with many constants, we'll end up
-            #producing far too much code. This algorithm binds as constants the _First_ time we bind
-            #a given expression with given arguments, and as members any future set of times. This
-            #should cause it to bind modules and classes that don't have any data flowing through them
-            #as constants, and closures and functions we're calling repeatedly using class members.
-            shouldMapArgsAsConstants = True
-
-            boundValues = tuple(renamedVariableMapping[k].hash for k in sorted(renamedVariableMapping))
-            if foraExpression.hash() not in self.boundExpressions:
-                self.boundExpressions[foraExpression.hash()] = boundValues
-            else:
-                bound = self.boundExpressions[foraExpression.hash()]
-                if boundValues != bound:
-                    shouldMapArgsAsConstants = False
-
-            return ForaNative.evaluateRootLevelCreateObjectExpression(
-                foraExpression,
-                renamedVariableMapping,
-                shouldMapArgsAsConstants
-                )
+        boundValues = tuple(renamedVariableMapping[k].hash for k in sorted(renamedVariableMapping))
+        if foraExpression.hash() not in self.boundExpressions:
+            self.boundExpressions[foraExpression.hash()] = boundValues
         else:
-            #function that evaluates the CreateObject.
-            #Args are the free variables, in lexical order
-            expressionAsIVC = foraExpression.toFunctionImplval(False)
+            bound = self.boundExpressions[foraExpression.hash()]
+            if boundValues != bound:
+                shouldMapArgsAsConstants = False
 
-            args = []
-            for f in foraExpression.freeVariables:
-                args.append(renamedVariableMapping[f])
+        return ForaNative.evaluateRootLevelCreateObjectExpression(
+            foraExpression,
+            renamedVariableMapping,
+            shouldMapArgsAsConstants
+            )
 
-            res = ComputedValue.ComputedValue(
-                args=(expressionAsIVC, Symbol_Call) + tuple(args)
-                )
-
-            return res
 
     def _getFunctionExpressionFromWithBlockDescription(self,
                                                       withBlockDescription,

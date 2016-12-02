@@ -17,6 +17,7 @@ import logging
 import threading
 
 from ufora.BackendGateway import tuple_it
+import ufora.BackendGateway.SubscribableWebObjects.Computation as Computation
 import ufora.FORA.python.ForaValue as ForaValue
 import ufora.native.Cumulus as CumulusNative
 import ufora.native.FORA as ForaNative
@@ -47,7 +48,7 @@ class Computations(object):
             if cumulus_id not in self.computation_results:
                 future = Future(lambda: self.cancel(cumulus_id))
                 self.computation_results[cumulus_id] = (future, False)
-            assert comp_id not in self.computation_states
+            assert comp_id not in self.computation_states, comp_id
             self.computation_states[comp_id] = state
 
         return cumulus_id
@@ -63,6 +64,7 @@ class Computations(object):
             if is_started:
                 return future
 
+            self.computation_results[cumulus_id] = (future, True)
             self.cumulus_gateway.setComputationPriority(
                 cumulus_id,
                 CumulusNative.ComputationPriority(self.priority_allocator.next())
@@ -127,6 +129,10 @@ class Computations(object):
             elif isinstance(a, ImplValContainer_):
                 terms.append(CumulusNative.ComputationDefinitionTerm.Value(a, None))
             else:
+                if isinstance(a, Computation.Computation):
+                    a = a.computation_definition
+                    assert a != None, "dependent computation must already have a definition"
+
                 terms.append(CumulusNative.ComputationDefinitionTerm.Subcomputation(
                     a.asRoot.terms
                     ))

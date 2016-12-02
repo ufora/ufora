@@ -235,7 +235,7 @@ class Connection(object):
         assert isinstance(fn, RemotePythonObject.RemotePythonObject)
         assert all([isinstance(arg, RemotePythonObject.RemotePythonObject) for arg in args])
 
-        computation = self.webObjectFactory.RootComputation({
+        computation = self.webObjectFactory.Computation({
             'arg_ids': (fn._pyforaComputedValueArg(), ) + tuple(
                 arg._pyforaComputedValueArg() for arg in args
                 )
@@ -307,6 +307,7 @@ class Connection(object):
             'onFailure': callback
             })
 
+
     @staticmethod
     def cancelComputation(computedValue):
         """Cancel a computation."""
@@ -318,7 +319,7 @@ class Connection(object):
         })
 
 
-    def expandComputedValueToDictOfAssignedVarsToProxyValues(self, computedValue, onExpanded):
+    def expandComputedValueToDictOfAssignedVarsToProxyValues(self, computation, onExpanded):
         """Given a computedValue that should represent a dictionary,
         expand it to a dictionary of ComputedValues.
 
@@ -338,14 +339,9 @@ class Connection(object):
                         )
                     )
 
-        computedValue.increaseRequestCount(
-            {},
-            {'onSuccess': lambda *args: None, 'onFailure': lambda *args: None}
-            )
-        computedValue.subscribe_pyforaDictToAssignedVarsToComputedValues({
+        computation.get_as_dictionary({
             'onSuccess': onResult,
-            'onFailure': onFailure,
-            'onChanged': onResult
+            'onFailure': onFailure
             })
 
 
@@ -366,13 +362,12 @@ class Connection(object):
 
         computation.get_as_tuple({
             'onSuccess': onResult,
-            'onFailure': onFailure,
-            'onChanged': onResult
+            'onFailure': onFailure
             })
 
 
 
-    def _subscribeToComputationStatus(self, computedValue, onCompletedCallback, onFailedCallback):
+    def _subscribeToComputationStatus(self, computation, onCompletedCallback, onFailedCallback):
         def statusChanged(jsonStatus):
             if not self.closed:
                 if jsonStatus is not None:
@@ -385,7 +380,7 @@ class Connection(object):
             if not self.closed:
                 onFailedCallback(Exceptions.PyforaError(err))
 
-        computedValue.subscribe_computation_status({
+        computation.subscribe_computation_status({
             'onSuccess': statusChanged,
             'onFailure': onFailure,
             'onChanged': statusChanged
@@ -424,11 +419,10 @@ class Connection(object):
                     'onFailure': onFailure
                     })
 
-        computation.subscribe_computation_status({
-            'onSuccess': resultStatusChanged,
-            'onFailure': onFailure,
-            'onChanged': resultStatusChanged
-            })
+        self._subscribeToComputationStatus(computation,
+                                           resultStatusChanged,
+                                           onFailure)
+
 
     def close(self):
         self.closed = True

@@ -278,10 +278,10 @@ class WithBlockExecutor(object):
 
             policyInstances = {}
 
-            for keyname in list(globalsToSet.keys()):
+            for keyname in list(globalsToSet.iterkeys()):
                 policyInstances[keyname] = self.downloadPolicy.initiatePolicyCheck(keyname, globalsToSet[keyname])
 
-            for k, _ in globalsToSet.iteritems():
+            for k in globalsToSet.iterkeys():
                 f_locals[k] = self.downloadPolicy.resolveToFinalValue(policyInstances[k])
         except (Exceptions.PythonToForaConversionError, Exceptions.ForaToPythonConversionError) as err:
             frame.f_lineno = frame.f_lineno - 1

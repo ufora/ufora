@@ -21,8 +21,9 @@ import ufora.FORA.python.ModuleDirectoryStructure as MDS
 
 
 class ObjectConverter(object):
-    def __init__(self, vdm):
+    def __init__(self, vdm, computation_factory):
         self.vdm = vdm
+        self.computation_factory = computation_factory
         self.converter = None
         self.object_registry = None
         self.converted_objects = {}
@@ -92,7 +93,8 @@ class ObjectConverter(object):
                     singletonAndExceptionConverter=singletonAndExceptionConverter,
                     vdmOverride=self.vdm,
                     purePythonModuleImplVal=purePythonModuleImplval,
-                    foraBuiltinsImplVal=foraBuiltinsImplVal
+                    foraBuiltinsImplVal=foraBuiltinsImplVal,
+                    computationFactory=self.computation_factory
                     )
         except:
             logging.critical("Failed to initialize the ObjectConverter: %s",

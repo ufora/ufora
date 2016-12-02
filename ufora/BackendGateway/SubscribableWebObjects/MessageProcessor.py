@@ -27,6 +27,7 @@ import ufora.BackendGateway.ObjectConverter as ObjectConverter
 
 import ufora.BackendGateway.SubscribableWebObjects.AllObjectClassesToExpose \
     as AllObjectClassesToExpose
+import ufora.BackendGateway.SubscribableWebObjects.Computation as Computation
 import ufora.BackendGateway.SubscribableWebObjects.Exceptions as Exceptions
 import ufora.BackendGateway.SubscribableWebObjects.SubscribableObject as SubscribableObject
 import ufora.BackendGateway.SubscribableWebObjects.Subscriptions as Subscriptions
@@ -180,7 +181,8 @@ class MessageProcessor(object):
     def __init__(self, cumulus_gateway, cache_loader):
         self.cumulus_gateway = cumulus_gateway
         self.cache_loader = cache_loader
-        self.object_converter = ObjectConverter.ObjectConverter(cache_loader.vdm)
+        self.object_converter = ObjectConverter.ObjectConverter(cache_loader.vdm,
+                                                                self.computation_from_apply_tuple)
         self.computations = Computations.Computations(cumulus_gateway,
                                                       cache_loader.vdm,
                                                       self.object_converter)
@@ -202,15 +204,6 @@ class MessageProcessor(object):
 
         self.outgoingObjectCache = OutgoingObjectCache()
 
-        #self.VDM = VectorDataManager.constructVDM(callbackScheduler)
-        #self.VDM.setDropUnreferencedPagesWhenFull(True)
-        #logging.info("created a VDM")
-
-        #with self.graph:
-            #self.computedValueGateway = computedValueGatewayFactory()
-            #self.cumulusGatewayRemote = self.computedValueGateway.cumulusGateway
-
-
         self.outstandingMessagesById = {}
         self.expectedMessageId = 0
 
@@ -224,6 +217,12 @@ class MessageProcessor(object):
         self.pendingObjectQueue = []
 
         self.subscriptions = Subscriptions.Subscriptions()
+
+
+    def computation_from_apply_tuple(self, apply_tuple):
+        return Computation.Computation(
+            *self.computation_args_tuple(None, {'apply_tuple': apply_tuple})
+            )
 
 
     def handleIncomingMessage(self, message):
@@ -319,6 +318,7 @@ class MessageProcessor(object):
             "responseType": "OK"
             }]
 
+
     def extractObjectDefinition(self, objDefJson, objectId=None):
         if 'objectId_' in objDefJson or 'objectDefinition_' in objDefJson:
             return self.convertObjectArgs(objDefJson)
@@ -336,20 +336,25 @@ class MessageProcessor(object):
 
         try:
             objectCls = AllObjectClassesToExpose.classMap[objType]
-            result = objectCls(objectId if objectId is not None else uuid.uuid4().hex,
-                               SubscribableObject.CumulusEnvironment(
-                                   self.cumulus_gateway,
-                                   self.cache_loader,
-                                   self.computations,
-                                   self.object_converter
-                                   ),
-                               objectArgs)
+            result = objectCls(*self.computation_args_tuple(objectId, objectArgs))
             result.__dict__['objectDefinition_'] = objDefJson
             self.active_objects[result.id] = result
 
             return result
         except Exceptions.SubscribableWebObjectsException as e:
             raise InvalidObjectDefinitionException(e.message)
+
+
+    def computation_args_tuple(self, id, args):
+        return (id if id is not None else uuid.uuid4().hex,
+                SubscribableObject.CumulusEnvironment(
+                    self.cumulus_gateway,
+                    self.cache_loader,
+                    self.computations,
+                    self.object_converter
+                    ),
+                args)
+
 
     def convertObjectArgs(self, objectArgs):
         if isinstance(objectArgs, list):
@@ -374,6 +379,7 @@ class MessageProcessor(object):
             return tr
 
         return objectArgs
+
 
     def getFieldExtractorForReadMessage(self, jsonMessage, objectToRead):
         if 'field' not in jsonMessage:

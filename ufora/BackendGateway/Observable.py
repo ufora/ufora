@@ -13,6 +13,7 @@
 #   limitations under the License.
 import collections
 from functools import wraps
+import threading
 
 
 def observable(f):
@@ -31,17 +32,22 @@ def observable(f):
 class Observable(object):
     def __init__(self):
         self.observers = collections.defaultdict(set)
+        self._lock = threading.Lock()
 
 
     def observe(self, name, observer):
-        self.observers[name].add(observer)
+        with self._lock:
+            self.observers[name].add(observer)
 
 
     def unobserve(self, name, observer):
-        self.observers[name].remove(observer)
+        with self._lock:
+            self.observers[name].remove(observer)
 
 
     def notify(self, name, new_value, old_value):
-        for observer in list(self.observers[name]):
+        with self._lock:
+            observers = list(self.observers[name])
+        for observer in observers:
             observer(self, name, new_value, old_value)
 

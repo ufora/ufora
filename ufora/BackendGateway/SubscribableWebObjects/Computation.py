@@ -35,6 +35,7 @@ class ComputationState(object):
         self.stats = None
         self.json_result = None
         self.comp_id = None
+        self.parent_comp_id = None
         self._cumulus_id = None
 
 
@@ -50,15 +51,14 @@ class ComputationState(object):
 
 
 
-class Computation(SubscribableObject):
+class ComputationBase(SubscribableObject):
     def __init__(self, id, cumulus_env, args):
-        super(Computation, self).__init__(id, cumulus_env)
         comp_id = tuple_it(args.get('comp_id')) if 'comp_id' in args else None
-        logging.info("New computation with comp_id: %s", comp_id)
         self._state = (
             ComputationState(args) if comp_id is None
-            else self.computations.get_computation_state(comp_id)
+            else cumulus_env.computations.get_computation_state(comp_id)
             )
+        super(ComputationBase, self).__init__(id, cumulus_env)
 
 
     @ExposedProperty
@@ -100,7 +100,7 @@ class Computation(SubscribableObject):
 
 
     @ExposedFunction
-    def start(self, _):
+    def start(self, _=None):
         future = self.computations.start_computation(self.cumulus_id)
         future.add_done_callback(self.on_computation_result)
         return True
@@ -200,8 +200,8 @@ class Computation(SubscribableObject):
 
 
     @property
-    def ivc(self):
-        return self._state.result
+    def computation_definition(self):
+        return self._state.computation_definition
 
 
     def exception_code_locations_as_json(self):
@@ -287,19 +287,39 @@ class Computation(SubscribableObject):
 
 
 
-class RootComputation(Computation):
+class Computation(ComputationBase):
     def __init__(self, id, cumulus_env, args):
-        super(RootComputation, self).__init__(id, cumulus_env, args)
+        super(Computation, self).__init__(id, cumulus_env, args)
+        if 'comp_id' in args:
+            return
+
         if 'arg_ids' in self.args:
             assert 'comp_id' not in self.args
             self._state.computation_definition = self.computations.create_computation_definition(
                 self.computations.create_apply_tuple(self.args['arg_ids'])
                 )
-            self._state.cumulus_id = self.computations.create_computation(
-                self._state
+        elif 'apply_tuple' in self.args:
+            self._state.computation_definition = self.computations.create_computation_definition(
+                self.args['apply_tuple']
                 )
-        else:
-            assert 'comp_id' in self.args, self.args
+        elif 'parent_id' in self.args:
+            # this is a collection element
+            parent_state = self.computations.get_computation_state(self.args['parent_id'])
+            if 'index' in self.args:
+                get_element_symbol = 'RawGetItemByInt'
+                element_id = self.args['index']
+            elif 'key' in self.args:
+                get_element_symbol = 'RawGetItemByString'
+                element_id = self.args['key']
+            else:
+                assert False, "Unknown collection element. Args: %s" % self.args
+            self._state.computation_definition = self.computations.create_computation_definition((
+                parent_state.computation_definition,
+                ForaNative.makeSymbol(get_element_symbol),
+                ForaNative.ImplValContainer(element_id)
+                ))
+
+        self._state.cumulus_id = self.computations.create_computation(self._state)
 
 
     @ExposedProperty
@@ -313,33 +333,45 @@ class RootComputation(Computation):
         tuple_ivc = self.object_converter.converter.unwrapPyforaTupleToTuple(self.as_result)
         assert isinstance(tuple_ivc, tuple)
         tuple_elements = [
-            TupleElement(uuid.uuid4().hex,
-                         self.cumulus_env,
-                         {
-                             'parent_id': self.computation_id,
-                             'index': ix
-                         })
+            Computation(uuid.uuid4().hex,
+                        self.cumulus_env,
+                        {
+                            'parent_id': self.computation_id,
+                            'index': ix
+                        })
             for ix in xrange(len(tuple_ivc))
             ]
+        [c.start() for c in tuple_elements]
         return {
             'isException': False,
             'tupleOfComputedValues': tuple(e.computation_id for e in tuple_elements)
             }
 
 
+    @ExposedProperty
+    def as_dictionary(self):
+        if not self.is_completed:
+            return None
 
-class TupleElement(Computation):
-    def __init__(self, id, cumulus_env, args):
-        super(TupleElement, self).__init__(id, cumulus_env, args)
-        if 'comp_id' not in args:
-            self.parent_comp_id = args['parent_id']
-            self.index = args['index']
-            parent_state = self.computations.get_computation_state(self.parent_comp_id)
-            self._state.computation_definition = self.computations.create_computation_definition((
-                parent_state.computation_definition,
-                ForaNative.makeSymbol("RawGetItemByInt"),
-                ForaNative.ImplValContainer(self.index)
-                ))
-            self._state.cumulus_id = self.computations.create_computation(
-                self._state
-                )
+        if self.is_exception:
+            return self.request_result(max_byte_count=None)
+
+        dict_ivc = self.object_converter.converter.unwrapPyforaDictToDictOfAssignedVars(
+            self.as_result
+            )
+        assert isinstance(dict_ivc, dict)
+        dict_elements = {
+            k: Computation(uuid.uuid4().hex,
+                           self.cumulus_env,
+                           {
+                            'parent_id': self.computation_id,
+                            'key': k
+                           })
+            for k in dict_ivc
+            }
+        [c.start() for c in dict_elements.itervalues()]
+        return {
+            'isException': False,
+            'dictOfProxies':  {k: v.computation_id for k, v in dict_elements.iteritems()}
+            }
+

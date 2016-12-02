@@ -44,6 +44,11 @@ class WebObjectBase(object):
             "args": inArgs if inArgs is not None else {}
         }
 
+    def __str__(self):
+        return "%s(objectId: %s, args: %s)" % (type(self),
+                                               self.objectId_,
+                                               self.objectDefinition_['args'])
+
     def toJSONWireFormat(self):
         self.sessionState.isConvertingToWireFormat = True
         memoizedJson = self.toMemoizedJSON()

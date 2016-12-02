@@ -370,8 +370,8 @@ class Executor(object):
                 else:
                     assert isinstance(jsonResult['dictOfProxies'], dict)
                     result = {
-                        k: RemotePythonObject.ComputedRemotePythonObject(v, self, False)
-                        for k, v in jsonResult['dictOfProxies'].iteritems()
+                        k: self._remoteObjectFromComputationId(comp_id, is_exception=False)
+                        for k, comp_id in jsonResult['dictOfProxies'].iteritems()
                         }
             self._resolve_future(future, result)
 
