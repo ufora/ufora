@@ -100,7 +100,7 @@ if [ -z $NESTED_TESTS_GUARD ]; then
     while [ $failed -ne 0 ]; do    
         pip install -e $WORKSPACE/packages/python
         failed=$?
-        if [ $failed -ne 0]; then
+        if [ $failed -ne 0 ]; then
             sleep 2
         fi
     done
