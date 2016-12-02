@@ -73,7 +73,8 @@ RUN pip install --allow-unverified pyodbc\
     scipy \
     wsaccel \
     psutil \
-    jupyter
+    jupyter \
+    websocket==0.37.0
 
 
 # NodeJS
