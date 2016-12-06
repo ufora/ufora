@@ -41,7 +41,19 @@ class ModuleLevelObjectIndex(object):
 
 
     def getObjectFromPath(self, path, ifNotFound=None):
+        if path is not None and len(path) > 1 and path[0] == 'modules':
+            if path[1] not in self.modulesVisited:
+                self.importModule(path[1])
+
         return self.module_objects_by_name.get(path, ifNotFound)
+
+    def importModule(self, moduleName):
+        try:
+            module = __import__(moduleName)
+            self.loadModule(moduleName, module)
+        except ImportError:
+            self.modulesVisited.add(moduleName)
+            return
 
     @staticmethod
     def singleton():
