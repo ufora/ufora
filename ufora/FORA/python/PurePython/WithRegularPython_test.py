@@ -17,7 +17,7 @@ import ufora.FORA.python.PurePython.InMemorySimulationExecutorFactory as \
 import pyfora.Exceptions as Exceptions
 import pyfora.helpers as helpers
 import traceback
-
+import resource
 import unittest
 import numpy
 import sys

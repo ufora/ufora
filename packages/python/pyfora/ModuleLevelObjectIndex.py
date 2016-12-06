@@ -1,7 +1,19 @@
 import sys
 import os
+import logging
 
 singleton = [None]
+
+class NamedObjectNotFoundAsModuleLevelObject:
+    """A singleton instance used as a token to indicate that we couldn't find the object."""
+    def __init__(self, path):
+        self.path = path
+
+    def __repr__(self):
+        return "NamedObjectNotFoundAsModuleLevelObject(%s)" % (self.path,)
+
+    def __str__(self):
+        return repr(self)
 
 class ModuleLevelObjectIndex(object):
     """Indexes all the objects that are accessible from modules in sys.modules"""
@@ -9,12 +21,15 @@ class ModuleLevelObjectIndex(object):
         self.modulesVisited = set()
         self.module_objects_by_name = {}
         self.modules_and_names_by_object = {}
+        self.size_of_sys_at_last_load = 0
 
         self.loadModules()
 
     def loadModules(self):
-        for modulename, module in dict(sys.modules).iteritems():
-            self.loadModule(modulename, module)
+        if len(sys.modules) != self.size_of_sys_at_last_load:
+            self.size_of_sys_at_last_load = len(sys.modules)
+            for modulename, module in dict(sys.modules).iteritems():
+                self.loadModule(modulename, module)
 
     def loadModule(self, modulename, module):
         if modulename in self.modulesVisited:
@@ -32,20 +47,24 @@ class ModuleLevelObjectIndex(object):
         if module is not None:
             d = dict(module.__dict__)
             for leafItemName, leafItemValue in d.iteritems():
-
                 self.module_objects_by_name["modules", modulename, leafItemName] = leafItemValue
                 self.modules_and_names_by_object[id(leafItemValue)] = ("modules", modulename, leafItemName)
+            self.modules_and_names_by_object[id(module)] = ("modules", modulename)
+            self.module_objects_by_name["modules", modulename] = module
 
     def getPathToObject(self, obj, ifNotFound=None):
+        self.loadModules()
         return self.modules_and_names_by_object.get(id(obj), ifNotFound)
 
-
-    def getObjectFromPath(self, path, ifNotFound=None):
+    def getObjectFromPath(self, path):
         if path is not None and len(path) > 1 and path[0] == 'modules':
             if path[1] not in self.modulesVisited:
                 self.importModule(path[1])
 
-        return self.module_objects_by_name.get(path, ifNotFound)
+        if path not in self.module_objects_by_name:
+            return NamedObjectNotFoundAsModuleLevelObject(path)
+
+        return self.module_objects_by_name[path]
 
     def importModule(self, moduleName):
         try:

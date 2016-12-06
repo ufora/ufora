@@ -78,6 +78,19 @@ class OutOfProcPythonTest(unittest.TestCase):
 
         self.assertTrue('connect_s3' in result, result)
 
+    def test_using_fake_module_doesnt_work(self):
+        module_type = type(boto)
+        notreal_module = module_type("notreal_module")
+        notreal_module.__file__ = '/this/path/does/not/exist'
+
+        sys.modules['notreal_module'] = notreal_module
+
+        with self.assertRaises(pyfora.InvalidPyforaOperation):
+            with self.create_executor() as fora:
+                with fora.remotely:
+                    with helpers.python:
+                        result = str(notreal_module)
+
 if __name__ == "__main__":
     import ufora.config.Mainline as Mainline
     Mainline.UnitTestMainline([])

@@ -37,8 +37,19 @@ collectBoundVariablesInScope(astNode):
 collectBoundNamesInScope(astNode)
     same as `collectBoundValuesInScope, but only returns names (i.e.,
     function or class declarations) .
+
+collapseFreeVariableMemberAccessChains(astNode, chain_to_name, isClassContext)
+    modify the AST to find dot-chain accesses (e.g. 'x.y.z') and replace them
+    with a single variable lookup. 
+    chain_to_name: a dict from tuple of string to string.
+
+replaceUsesWithCalls(astNode, names, isClassContext)
+    modify the AST to find all references to 'x' and replace with 'x()'.
+    names: a set of strings containing names
+
 """
 import ast
+import logging
 import collections
 import pyfora.pyAst.NodeVisitorBases as NodeVisitorBases
 import pyfora.Exceptions as Exceptions
@@ -288,12 +299,7 @@ class _FreeVariableMemberAccessChainsCollapsingTransformer(_FreeVariableMemberAc
             chain = tuple(chainOrNone)
             identifier = chain[0]
             if chain in self.chain_to_new_name and self.isFree(identifier):
-                return ast.fix_missing_locations(
-                            ast.copy_location(
-                                ast.Name(self.chain_to_new_name[chain], node.ctx),
-                                node
-                                )
-                            )
+                return ast.Name(self.chain_to_new_name[chain], node.ctx)
         return self.generic_visit(node)
 
 
@@ -335,4 +341,34 @@ def collapseFreeVariableMemberAccessChains(pyAstNode,
                                       ):
     pyAstNode = PyAstUtil.getRootInContext(pyAstNode, isClassContext)
     vis = _FreeVariableMemberAccessChainsCollapsingTransformer(chain_to_name)
-    return vis.visit(pyAstNode)
+    return ast.fix_missing_locations(vis.visit(pyAstNode))
+
+class _NameToNameCallTransformer(_FreeVariableMemberAccessChainsTransvisitor):
+    """Find free variables from within a set and replace them with calls to same."""
+    def __init__(self, names_to_replace):
+        super(_NameToNameCallTransformer, self).__init__()
+        self.names_to_replace = names_to_replace
+
+    def visit_Attribute(self, node, allow_recursion=True):
+        return self.generic_visit(node)
+
+    def visit_Name(self, node):
+        _FreeVariableMemberAccessChainsTransvisitor.visit_Name(self, node)
+
+        identifier = node.id
+        
+        if identifier in self.names_to_replace and self.isFree(identifier):
+            return ast.Call(
+                ast.Name(identifier, node.ctx),
+                [],
+                [],
+                None,
+                None
+                )
+        
+        return self.generic_visit(node)
+
+def replaceUsesWithCalls(pyAstNode, names, isClassContext):
+    pyAstNode = PyAstUtil.getRootInContext(pyAstNode, isClassContext)
+    vis = _NameToNameCallTransformer(names)
+    return ast.fix_missing_locations(vis.visit(pyAstNode))

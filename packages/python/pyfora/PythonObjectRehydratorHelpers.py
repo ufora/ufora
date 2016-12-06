@@ -23,12 +23,11 @@ import pyfora.pyAst.PyAstUtil as PyAstUtil
 import pyfora.PyforaInspect as PyforaInspect
 import pyfora.Exceptions as Exceptions
 import pyfora.pyAst.PyAstFreeVariableAnalyses as PyAstFreeVariableAnalyses
+import pyfora.ModuleLevelObjectIndex as ModuleLevelObjectIndex
 import pyfora
-
 
 def noConversion(*args):
     assert False, "Not implemented yet"
-
 
 def sanitizeModulePath(pathToModule):
     res = os.path.abspath(pathToModule)
@@ -36,9 +35,15 @@ def sanitizeModulePath(pathToModule):
         res = res[:-1]
     return res
 
+def raiseInvalidObject(path):
+    def raiser():
+        ex = Exceptions.InvalidPyforaOperation("Object referenced on client at %s wasn't available on the worker." % (path,))
+        logging.error("raising: %s", ex)
+        raise ex
+    return raiser
 
 @PyAstUtil.CachedByArgs
-def updatePyAstMemberChains(pyAst, variablesInScope, isClassContext):
+def updatePyAstVariableUsages(pyAst, variablesInScope, varsToTurnIntoCalls, isClassContext):
     #in the variables we've been handed, every member access chain 'x.y.z' has been
     #replaced with an actual variable lookup of the form 'x.y.z'. We need to perform
     #this same replacement in the actual python source code we're running, since
@@ -53,13 +58,34 @@ def updatePyAstMemberChains(pyAst, variablesInScope, isClassContext):
     #slice of a cached tree.
     pyAst = ast.fix_missing_locations(copy.deepcopy(pyAst))
 
+    if varsToTurnIntoCalls:
+        pyAst = PyAstFreeVariableAnalyses.replaceUsesWithCalls(pyAst, set(varsToTurnIntoCalls), isClassContext)
+
     pyAst = PyAstFreeVariableAnalyses.collapseFreeVariableMemberAccessChains(
         pyAst,
         replacements,
-        isClassContext=isClassContext)
+        isClassContext=isClassContext
+        )
 
     return ast.fix_missing_locations(pyAst)
 
+def updatePyAstMemberChains(pyAst, variablesInScope, isClassContext):
+    """Take all in 'variablesInScope' that look like 'x.y.z' and make the python code
+    read from variables _named_ 'x.y.z' instead of insisting that such an object
+    exists. Also, any variables mapped to 
+        ModuleLevelObjectIndex.NamedObjectNotFoundAsModuleLevelObject
+    get replaced with a call to something that throws an InvalidPyforaException.
+
+    This function updates 'variablesInScope'.
+    """
+    varsToReplaceWithCalls = set()
+
+    for var, value in variablesInScope.iteritems():
+        if isinstance(value, ModuleLevelObjectIndex.NamedObjectNotFoundAsModuleLevelObject):
+            variablesInScope[var] = raiseInvalidObject(value.path)
+            varsToReplaceWithCalls.add(var)
+
+    return updatePyAstVariableUsages(pyAst, tuple(sorted(variablesInScope.keys())), tuple(sorted(varsToReplaceWithCalls)), isClassContext)
 
 class PythonObjectRehydratorHelpers(object):
     """
@@ -198,7 +224,7 @@ class PythonObjectRehydratorHelpers(object):
 
         try:
             moduleAst = updatePyAstMemberChains(ast.Module([classAst]),
-                                                tuple(globalScope.keys()),
+                                                globalScope,
                                                 isClassContext=False)
 
             code = compile(moduleAst, filename, 'exec')
@@ -275,7 +301,7 @@ class PythonObjectRehydratorHelpers(object):
             return_statement = ast.Return(functionAst)
             expr.body = [return_statement]
 
-            expr = updatePyAstMemberChains(ast.Module([expr], lineno=1,col_offset=0), tuple(globalScope.keys()), isClassContext=True)
+            expr = updatePyAstMemberChains(ast.Module([expr], lineno=1,col_offset=0), globalScope, isClassContext=True)
 
             code = compile(expr, filename, 'exec')
 
@@ -356,7 +382,7 @@ class PythonObjectRehydratorHelpers(object):
 
             expr = updatePyAstMemberChains(
                 expr,
-                tuple(globalScope.keys()),
+                globalScope,
                 isClassContext=True)
 
             ast.fix_missing_locations(expr)
@@ -376,7 +402,7 @@ class PythonObjectRehydratorHelpers(object):
                 ast.Module(
                     [functionAst],
                     lineno=1,col_offset=0),
-                tuple(globalScope.keys()),
+                globalScope,
                 isClassContext=False)
 
             code = compile(functionAst, filename, 'exec')
