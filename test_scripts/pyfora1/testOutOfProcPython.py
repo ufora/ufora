@@ -28,6 +28,7 @@ import pandas
 import os
 import numpy
 import resource
+import boto
 
 class OutOfProcPythonTest(unittest.TestCase):
     def create_executor(self, **kwds):
@@ -68,6 +69,14 @@ class OutOfProcPythonTest(unittest.TestCase):
                 with fora.remotely:
                     with helpers.python:
                         os._exit(0)
+
+    def test_using_boto_in_external_works(self):
+        with self.create_executor() as fora:
+            with fora.remotely.downloadAll():
+                with helpers.python:
+                    result = str(boto.connect_s3)
+
+        self.assertTrue('connect_s3' in result, result)
 
 if __name__ == "__main__":
     import ufora.config.Mainline as Mainline
