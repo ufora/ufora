@@ -61,6 +61,13 @@ class ComputationBase(SubscribableObject):
         super(ComputationBase, self).__init__(id, cumulus_env)
 
 
+    def serialize_args(self):
+        if self._state.comp_id:
+            return {'comp_id': self._state.comp_id}
+
+        return self._state.args
+
+
     @ExposedProperty
     def computation_id(self):
         return self._state.comp_id
@@ -304,7 +311,7 @@ class Computation(ComputationBase):
                 )
         elif 'parent_id' in self.args:
             # this is a collection element
-            parent_state = self.computations.get_computation_state(self.args['parent_id'])
+            parent_state = self.computations.get_computation_state(tuple_it(self.args['parent_id']))
             if 'index' in self.args:
                 get_element_symbol = 'RawGetItemByInt'
                 element_id = self.args['index']
@@ -344,7 +351,7 @@ class Computation(ComputationBase):
         [c.start() for c in tuple_elements]
         return {
             'isException': False,
-            'tupleOfComputedValues': tuple(e.computation_id for e in tuple_elements)
+            'tupleOfComputedValues': tuple_elements
             }
 
 
@@ -372,6 +379,6 @@ class Computation(ComputationBase):
         [c.start() for c in dict_elements.itervalues()]
         return {
             'isException': False,
-            'dictOfProxies':  {k: v.computation_id for k, v in dict_elements.iteritems()}
+            'dictOfProxies':  dict_elements
             }
 

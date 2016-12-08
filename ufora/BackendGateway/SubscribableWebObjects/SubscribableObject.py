@@ -34,17 +34,25 @@ class SubscribableObject(Observable.Observable):
         self.id = id
         self.cumulus_env = cumulus_env
 
+
+    def serialize_args(self):
+        raise NotImplementedError("Must be implemented by derived classes")
+
+
     @property
     def cumulus_gateway(self):
         return self.cumulus_env.cumulus_gateway
+
 
     @property
     def cache_loader(self):
         return self.cumulus_env.cache_loader
 
+
     @property
     def computations(self):
         return self.cumulus_env.computations
+
 
     @property
     def object_converter(self):

@@ -370,7 +370,7 @@ class Executor(object):
                 else:
                     assert isinstance(jsonResult['dictOfProxies'], dict)
                     result = {
-                        k: self._remoteObjectFromComputationId(comp_id, is_exception=False)
+                        k: self._remoteObjectFromComputation(comp_id, is_exception=False)
                         for k, comp_id in jsonResult['dictOfProxies'].iteritems()
                         }
             self._resolve_future(future, result)
@@ -397,8 +397,8 @@ class Executor(object):
                 else:
                     assert isinstance(jsonResult['tupleOfComputedValues'], tuple)
                     result = tuple(
-                        self._remoteObjectFromComputationId(comp_id, is_exception=False)
-                        for comp_id in jsonResult['tupleOfComputedValues']
+                        self._remoteObjectFromComputation(computation, is_exception=False)
+                        for computation in jsonResult['tupleOfComputedValues']
                         )
 
             self._resolve_future(future, result)
@@ -407,8 +407,7 @@ class Executor(object):
         return future
 
 
-    def _remoteObjectFromComputationId(self, comp_id, is_exception):
-        computation = self.connection.computation_from_id(comp_id)
+    def _remoteObjectFromComputation(self, computation, is_exception):
         return RemotePythonObject.ComputedRemotePythonObject(computation, self, is_exception)
 
 

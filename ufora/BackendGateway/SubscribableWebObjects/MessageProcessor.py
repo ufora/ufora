@@ -73,6 +73,32 @@ def unexpectedExceptionJson(jsonMessage, message):
         }
 
 
+class IncomingObjectCache(object):
+    def __init__(self):
+        self.objectIdCache_ = {}
+        self.objectToIdCache_ = {}
+        self.objectIdList_ = []
+
+    def lookupObjectById(self, id):
+        if id not in self.objectIdCache_:
+            raise MalformedMessageException("Object with ID %s unknown" % id)
+        return self.objectIdCache_[id]
+
+    def addObjectById(self, id, objectDefinition):
+        if id in self.objectIdCache_:
+            raise MalformedMessageException("ObjectID already defined")
+
+        self.objectIdCache_[id] = objectDefinition
+        self.objectIdList_.append(id)
+
+    def flushIdsBelow(self, threshold):
+        self.objectIdList_ = sorted(self.objectIdList_)
+
+        while self.objectIdList_ and self.objectIdList_[0] < threshold:
+            del self.objectIdCache_[self.objectIdList_[0]]
+            self.objectIdList_.pop(0)
+
+
 class OutgoingObjectCache(object):
     def __init__(self):
         self.objectIdCache_ = {}
@@ -127,32 +153,33 @@ class OutgoingObjectCache(object):
 
                 return newDict
 
-            #objDefPopulated = False
-            #try:
-                #if ComputedGraph.isLocation(jsonCandidate):
-                    #if jsonCandidate in self.objectToIdCache_:
-                        #objDef = {
-                            #'objectId_': self.lookupObjectId(jsonCandidate)
-                            #}
-                    #else:
-                        #objDef = {
-                            #"objectId_": self.lookupObjectId(jsonCandidate),
-                            #"objectDefinition_": {
-                                #'type': AllObjectClassesToExpose.typenameFromType(
-                                    #ComputedGraph.getLocationTypeFromLocation(jsonCandidate)
-                                    #),
-                                #'args': jsonCandidate.__reduce__()[1][0]
-                                #}
-                            #}
-                    #objDefPopulated = True
-                #else:
-                    #objDef = jsonCandidate.objectDefinition_
-                    #objDefPopulated = True
-            #except AttributeError:
-                #objDefPopulated = False
+            objDefPopulated = False
+            try:
+                if isinstance(jsonCandidate, SubscribableObject.SubscribableObject):
+                    if jsonCandidate in self.objectToIdCache_:
+                        objDef = {
+                            'objectId_': self.lookupObjectId(jsonCandidate)
+                            }
+                    else:
+                        objDef = {
+                            "objectId_": self.lookupObjectId(jsonCandidate),
+                            "objectDefinition_": {
+                                'type': AllObjectClassesToExpose.typenameFromType(
+                                    type(jsonCandidate)
+                                    ),
+                                'args': jsonCandidate.serialize_args()
+                                }
+                            }
+                    objDefPopulated = True
+                else:
+                    assert False, "We only expect to serialize instances of SubscribableObject: %s" % type(jsonCandidate)
+                    objDef = jsonCandidate.objectDefinition_
+                    objDefPopulated = True
+            except AttributeError:
+                objDefPopulated = False
 
-            #if objDefPopulated:
-                #return self.convertResponseToJson(objDef)
+            if objDefPopulated:
+                return self.convertResponseToJson(objDef)
 
             raiseException()
         except:
@@ -192,7 +219,6 @@ class MessageProcessor(object):
 
         self.resultsById_ = {}
         self.eventsById_ = {}
-        self.active_objects = {}
 
         Runtime.initialize()
         logging.info("Runtime initialized")
@@ -202,6 +228,7 @@ class MessageProcessor(object):
 
         Fora._builtin = ForaValue.FORAValue(ModuleImporter.builtinModuleImplVal())
 
+        self.incomingObjectCache = IncomingObjectCache()
         self.outgoingObjectCache = OutgoingObjectCache()
 
         self.outstandingMessagesById = {}
@@ -221,7 +248,7 @@ class MessageProcessor(object):
 
     def computation_from_apply_tuple(self, apply_tuple):
         return Computation.Computation(
-            *self.computation_args_tuple(None, {'apply_tuple': apply_tuple})
+            *self.computation_args_tuple({'apply_tuple': apply_tuple})
             )
 
 
@@ -275,8 +302,7 @@ class MessageProcessor(object):
 
             obj = None
             if incomingJsonMessage["messageType"] != "ServerFlushObjectIdsBelow":
-                obj = self.extractObjectDefinition(incomingJsonMessage['objectDefinition'],
-                                                   incomingJsonMessage.get("objectId_"))
+                obj = self.extractObjectDefinition(incomingJsonMessage['objectDefinition'])
 
             return self.messageTypeHandlers[incomingJsonMessage["messageType"]](incomingJsonMessage,
                                                                                 obj)
@@ -294,12 +320,13 @@ class MessageProcessor(object):
 
 
     def flushIdsBelow(self, threshold):
-        object_ids = sorted(self.active_objects.keys())
+        self.incomingObjectCache.flushIdsBelow(threshold)
+        #object_ids = sorted(self.active_objects.keys())
 
-        while object_ids and object_ids[0] < threshold:
-            del self.active_objects[object_ids[0]]
-            self.subscriptions.removeAllSubscriptionsForObject(object_ids[0])
-            object_ids.pop(0)
+        #while object_ids and object_ids[0] < threshold:
+            #del self.active_objects[object_ids[0]]
+            #self.subscriptions.removeAllSubscriptionsForObject(object_ids[0])
+            #object_ids.pop(0)
 
 
     def handleFlushObjectIds(self, incomingJsonMessage, obj):
@@ -319,7 +346,7 @@ class MessageProcessor(object):
             }]
 
 
-    def extractObjectDefinition(self, objDefJson, objectId=None):
+    def extractObjectDefinition(self, objDefJson):
         if 'objectId_' in objDefJson or 'objectDefinition_' in objDefJson:
             return self.convertObjectArgs(objDefJson)
 
@@ -336,17 +363,16 @@ class MessageProcessor(object):
 
         try:
             objectCls = AllObjectClassesToExpose.classMap[objType]
-            result = objectCls(*self.computation_args_tuple(objectId, objectArgs))
+            result = objectCls(*self.computation_args_tuple(objectArgs))
             result.__dict__['objectDefinition_'] = objDefJson
-            self.active_objects[result.id] = result
 
             return result
         except Exceptions.SubscribableWebObjectsException as e:
             raise InvalidObjectDefinitionException(e.message)
 
 
-    def computation_args_tuple(self, id, args):
-        return (id if id is not None else uuid.uuid4().hex,
+    def computation_args_tuple(self, args):
+        return (uuid.uuid4().hex,
                 SubscribableObject.CumulusEnvironment(
                     self.cumulus_gateway,
                     self.cache_loader,
@@ -362,14 +388,13 @@ class MessageProcessor(object):
 
         if isinstance(objectArgs, dict):
             if 'objectDefinition_' in objectArgs:
-                return self.extractObjectDefinition(objectArgs['objectDefinition_'],
-                                                    objectArgs.get('objectId_'))
+                obj = self.extractObjectDefinition(objectArgs['objectDefinition_'])
+                if 'objectId_' in objectArgs:
+                    self.incomingObjectCache.addObjectById(objectArgs['objectId_'], obj)
+                return obj
 
             if 'objectId_' in objectArgs:
-                obj_id = objectArgs['objectId_']
-                obj = self.active_objects.get(obj_id)
-                if obj is None:
-                    raise MalformedMessageException("Object with ID %s unknown" % obj_id)
+                obj = self.incomingObjectCache.lookupObjectById(objectArgs['objectId_'])
                 return obj
 
             tr = {}

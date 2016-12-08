@@ -284,13 +284,6 @@ class Connection(object):
             })
 
 
-    def computation_from_id(self, computation_id):
-        return self.webObjectFactory.Computation(
-            {
-                'comp_id': computation_id
-            })
-
-
     def triggerCompilationOnComputation(self, computation, onCompleted):
         """Trigger compilation of the code underlying a computation.
 
