@@ -329,3 +329,38 @@ class WithRegularPython_test(unittest.TestCase):
                     with helpers.python:
                         res = unresolved_free_variable + 1
 
+    def test_boto_access_1(self):
+        import boto
+        bucketName = 'ufora-test-data'
+
+        with self.create_executor() as e:
+            with e.remotely:
+                with helpers.python:
+                    conn = boto.connect_s3()
+                    bucket = conn.get_bucket(bucketName)
+                    key = bucket.get_key("trip_data_1.csv")
+
+                    res = key.md5
+
+        assert False, res.toLocal().result()
+
+    def test_boto_access_2(self):
+        import boto
+        
+        with self.create_executor() as e:
+            with e.remotely.downloadAll():
+                with helpers.python:
+                    res = str(boto)
+
+        self.assertTrue(res.startswith("<module 'boto'"))
+
+    def test_boto_access_3(self):
+        import boto
+
+        with self.create_executor() as e:
+            with e.remotely:
+                with helpers.python:
+                    conn = boto.connect_s3()
+                    res = str(conn)
+
+        assert False, res
