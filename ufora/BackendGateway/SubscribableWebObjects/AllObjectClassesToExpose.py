@@ -39,6 +39,8 @@ classMap = {
     "PyforaObjectConverter": PyforaObjectConverter.PyforaObjectConverter,
     #"PyforaComputedValue": PyforaComputedValue.PyforaComputedValue,
     "Computation": Computation.Computation,
+    "TupleElement": Computation.TupleElement,
+    "DictElement": Computation.DictElement,
     "ViewOfEntireCumulusSystem": ViewOfEntireCumulusSystem.ViewOfEntireCumulusSystem,
     #"WriteToS3Task": WriteToS3Task.WriteToS3Task,
     #"PyforaDictionaryElement": PyforaComputedValue.PyforaDictionaryElement,

@@ -166,6 +166,60 @@ class ComputationBase(SubscribableObject):
         return as_json
 
 
+    @ExposedProperty
+    def as_tuple(self):
+        if not self.is_completed:
+            return None
+
+        if self.is_exception:
+            return self.request_result(max_byte_count=None)
+
+        tuple_ivc = self.object_converter.converter.unwrapPyforaTupleToTuple(self.as_result)
+        assert isinstance(tuple_ivc, tuple)
+        tuple_elements = [
+            TupleElement(uuid.uuid4().hex,
+                        self.cumulus_env,
+                        {
+                            'parent_id': self.computation_id,
+                            'index': ix
+                        })
+            for ix in xrange(len(tuple_ivc))
+            ]
+        [c.start() for c in tuple_elements]
+        return {
+            'isException': False,
+            'tupleOfComputedValues': tuple_elements
+            }
+
+
+    @ExposedProperty
+    def as_dictionary(self):
+        if not self.is_completed:
+            return None
+
+        if self.is_exception:
+            return self.request_result(max_byte_count=None)
+
+        dict_ivc = self.object_converter.converter.unwrapPyforaDictToDictOfAssignedVars(
+            self.as_result
+            )
+        assert isinstance(dict_ivc, dict)
+        dict_elements = {
+            k: DictElement(uuid.uuid4().hex,
+                           self.cumulus_env,
+                           {
+                            'parent_id': self.computation_id,
+                            'key': k
+                           })
+            for k in dict_ivc
+            }
+        [c.start() for c in dict_elements.itervalues()]
+        return {
+            'isException': False,
+            'dictOfProxies':  dict_elements
+            }
+
+
     @property
     def args(self):
         return self._state.args
@@ -309,76 +363,34 @@ class Computation(ComputationBase):
             self._state.computation_definition = self.computations.create_computation_definition(
                 self.args['apply_tuple']
                 )
-        elif 'parent_id' in self.args:
-            # this is a collection element
-            parent_state = self.computations.get_computation_state(tuple_it(self.args['parent_id']))
-            if 'index' in self.args:
-                get_element_symbol = 'RawGetItemByInt'
-                element_id = self.args['index']
-            elif 'key' in self.args:
-                get_element_symbol = 'RawGetItemByString'
-                element_id = self.args['key']
-            else:
-                assert False, "Unknown collection element. Args: %s" % self.args
-            self._state.computation_definition = self.computations.create_computation_definition((
-                parent_state.computation_definition,
-                ForaNative.makeSymbol(get_element_symbol),
-                ForaNative.ImplValContainer(element_id)
-                ))
 
         self._state.cumulus_id = self.computations.create_computation(self._state)
 
 
-    @ExposedProperty
-    def as_tuple(self):
-        if not self.is_completed:
-            return None
-
-        if self.is_exception:
-            return self.request_result(max_byte_count=None)
-
-        tuple_ivc = self.object_converter.converter.unwrapPyforaTupleToTuple(self.as_result)
-        assert isinstance(tuple_ivc, tuple)
-        tuple_elements = [
-            Computation(uuid.uuid4().hex,
-                        self.cumulus_env,
-                        {
-                            'parent_id': self.computation_id,
-                            'index': ix
-                        })
-            for ix in xrange(len(tuple_ivc))
-            ]
-        [c.start() for c in tuple_elements]
-        return {
-            'isException': False,
-            'tupleOfComputedValues': tuple_elements
-            }
 
 
-    @ExposedProperty
-    def as_dictionary(self):
-        if not self.is_completed:
-            return None
 
-        if self.is_exception:
-            return self.request_result(max_byte_count=None)
+class CollectionElement(ComputationBase):
+    def __init__(self, id, cumulus_env, args, element_key_arg, get_element_symbol):
+        super(CollectionElement, self).__init__(id, cumulus_env, args)
+        assert 'parent_id' in self.args
+        assert element_key_arg in self.args, "Missing arg: " + element_key_arg
+        parent_state = self.computations.get_computation_state(tuple_it(self.args['parent_id']))
+        self._state.computation_definition = self.computations.create_computation_definition((
+            parent_state.computation_definition,
+            ForaNative.makeSymbol(get_element_symbol),
+            ForaNative.ImplValContainer(self.args[element_key_arg])
+            ))
+        self._state.cumulus_id = self.computations.create_computation(self._state)
 
-        dict_ivc = self.object_converter.converter.unwrapPyforaDictToDictOfAssignedVars(
-            self.as_result
-            )
-        assert isinstance(dict_ivc, dict)
-        dict_elements = {
-            k: Computation(uuid.uuid4().hex,
-                           self.cumulus_env,
-                           {
-                            'parent_id': self.computation_id,
-                            'key': k
-                           })
-            for k in dict_ivc
-            }
-        [c.start() for c in dict_elements.itervalues()]
-        return {
-            'isException': False,
-            'dictOfProxies':  dict_elements
-            }
 
+
+class TupleElement(CollectionElement):
+    def __init__(self, id, cumulus_env, args):
+        super(TupleElement, self).__init__(id, cumulus_env, args, 'index', 'RawGetItemByInt')
+
+
+
+class DictElement(CollectionElement):
+    def __init__(self, id, cumulus_env, args):
+        super(DictElement, self).__init__(id, cumulus_env, args, 'key', 'RawGetItemByString')
