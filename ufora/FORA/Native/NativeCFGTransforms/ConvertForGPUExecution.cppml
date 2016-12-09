@@ -2,12 +2,11 @@
 #include "../NativeCode.hppml"
 #include "../NativeTypeFor.hpp"
 #include "../NativeVariable.hppml"
+#include "../../CUDA/CUDAVectorRecord.hpp"
 #include "../../TypedFora/ABI/VectorRecord.hpp"
 #include "../../TypedFora/ABI/VectorRecordCodegen.hppml"
 #include "../../../core/cppml/CPPMLTransform.hppml"
 #include "../../../core/Logging.hpp"
-
-#include "../../CUDA/CUDAVectorRecord.hpp"
 
 namespace NativeCFGTransforms {
 
@@ -44,11 +43,13 @@ public:
 
 	//strip out the callback variables and replace with 'nothing'
 	//won't be a problem unless they get used
-	NativeVariable 		processDown(const NativeVariable& t, bool& cont) const
+	NativeVariable 		processDown(const NativeVariable& var, bool& cont) const
 		{
-		if (isRuntimeCallbackType(t.type()))
-			return NativeVariable(t.varID(), NativeType::Nothing());
-		return t;
+		if (isRuntimeCallbackType(var.type()))
+			{
+			return NativeVariable(var.varID(), NativeType::Nothing());
+			}
+		return var;
 		}
 
 	NativeExpression	processDown(const NativeExpression& inExp, bool& ioCont) const
@@ -94,22 +95,15 @@ public:
 				}
 
 			-|	Tagged(e, HomogenousVectorLookup(vectorRecord, index, type)) ->> {
-				lassert(vectorRecord.isVariable());
-				NativeVariable vrv = vectorRecord.getVariable().var();
-				lassert(vrv.type().isComposite());
-				auto comp = vrv.type().getComposite();
-				lassert(comp.elements().size()==4);
-				vrv.type().getComposite().elements() =
-						emptyTreeVec() + type.ptr()
-							+ comp.elements().slice(1, comp.elements().size());
-
-				return NativeExpression::BinaryOp(
+				auto res = NativeExpression::BinaryOp(
 								NativeBinaryOpcode::Add(),
 								NativeExpression::ValueExtract(
 										emptyTreeVec() + (uword_t)0,
-										vectorRecord),
+										vectorRecord).cast(type.ptr(), false),
 								index
 								);
+				lassert(e.type() == res.type());
+				return res;
 				}
 
 			-|	_ ->> {
@@ -134,8 +128,10 @@ public:
 	VectorRecordForGpuTransformer() {
 		mVectorDataType = NativeTypeFor<TypedFora::Abi::VectorRecord>::get();
 		lassert(mVectorDataType.isComposite());
+
 		NativeType_CompositeType comp = mVectorDataType.getComposite();
 		lassert(comp.elements().size()==4);
+
 		mGpuVectorDataType = NativeTypeFor<CUDAVectorRecord>::get();
 		}
 
@@ -256,10 +252,13 @@ NativeCFG convertForGpuExecution(const NativeCFG& in, unsigned int resultPartSiz
 	// 1. Convert VectorRecords to GPU VectorRecords.
 	cfg = transform(cfg, VectorRecordForGpuTransformer());
 	LOG_DEBUG << "convertForGpuExecution: after VectorRecord transformer";
+
 	// 2. Add a Nothing as the first return type, update continuations,
 	//    and remove some runtime stuff
+	LOG_DEBUG << "convertForGpuExecution: before ReturnIndex transformer. resultPartSize=" << resultPartSize;
 	cfg = transform(cfg, IncrementReturnIndexTransformer(resultPartSize));
 	LOG_DEBUG << "convertForGpuExecution: after ReturnIndex transformer";
+
 	// 3. Remove unsupported code and rewire it to return to that 1st 'Nothing'
 	//    type which we added in an earlier pass
 	cfg = transform(cfg, StripIncompatibleForGpuTransformer());

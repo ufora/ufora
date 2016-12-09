@@ -331,3 +331,29 @@ class GpuFeatureTestCases:
         vectorExpr = "Vector.range(mat_d * mat_d, fun(offset) { convert_1d2d(offset) })"
 
         self.compareCudaToCPU(functionExpr, vectorExpr, captureExpr)
+
+    def test_vec_of_vec_sum(self):
+        captureExpr = """
+                let mat_d = 20;
+                let mat = Vector.range(mat_d, fun(x){Vector.range(mat_d, fun(y){(x*mat_d + y) * 1.0})});
+                """
+        # FIXME: in the function below, the arg of the sequence is the constant 20 but we want
+        # it to be the captured variable mat_d. If we use that however, the reasoner cannot
+        # exclude the possibility that the loop is never taken, in which case the function
+        # returns the constant 0, and we don't yet have proper support for constants.
+        functionExpr = """
+                fun(x) {
+                  let sum = 0;
+                  for y in sequence(20) {
+                    sum = sum + mat[x][y]
+                  }
+                  sum
+                }"""
+
+        vectorExpr = "Vector.range(mat_d)"
+
+        print "CapEx: ", captureExpr
+        print "FunEx: ", functionExpr
+        print "VecEx: ", vectorExpr
+
+        self.compareCudaToCPU(functionExpr, vectorExpr, captureExpr)
