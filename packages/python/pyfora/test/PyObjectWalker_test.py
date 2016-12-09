@@ -19,6 +19,7 @@ from pyfora.PyObjectWalker import PyObjectWalker
 import pyfora.NamedSingletons as NamedSingletons
 
 import ast
+import gc
 import unittest
 
 
@@ -42,7 +43,7 @@ class PyObjectWalkerTest(unittest.TestCase):
         self.excludePredicateFun = is_pureMapping_call
 
         self.mappings = PureImplementationMappings.PureImplementationMappings()
-
+    
     def test_cant_provide_mapping_for_named_singleton(self):
         #empty mappings work
         PyObjectWalker(
@@ -63,7 +64,7 @@ class PyObjectWalkerTest(unittest.TestCase):
             )
 
         self.assertTrue(UserWarning in NamedSingletons.pythonSingletonToName)
-
+    
     def test_PyObjectWalker_TypeErrors(self):
         mappings = PureImplementationMappings.PureImplementationMappings()
 
@@ -71,6 +72,16 @@ class PyObjectWalkerTest(unittest.TestCase):
             not_an_objectregistry = 2
             PyObjectWalker(mappings, not_an_objectregistry)
 
+    def test_PyObjectWalker_refcount_on_objectRegistry(self):
+        walker = PyObjectWalker(
+            self.mappings,
+            BinaryObjectRegistry()
+            )
+
+        # just check that the folling calls succeeed (see github #289
+        gc.collect()
+        walker.walkPyObject(1)
+        
 
 if __name__ == "__main__":
     unittest.main()

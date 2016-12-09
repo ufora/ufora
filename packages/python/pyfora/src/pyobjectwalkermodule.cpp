@@ -35,7 +35,7 @@ cribbed off https://docs.python.org/2.7/extending/newtypes.html
 
 typedef struct {
     PyObject_HEAD
-    PyObjectWalker* binaryObjectRegistry;
+    PyObject* binaryObjectRegistry;
     PyObjectWalker* nativePyObjectWalker;
 } PyObjectWalkerStruct;
 
@@ -48,8 +48,8 @@ PyObjectWalkerStruct_new(PyTypeObject* type, PyObject* args, PyObject* kwds)
     PyObjectWalkerStruct* self;
 
     self = (PyObjectWalkerStruct*)type->tp_alloc(type, 0);
-    self->binaryObjectRegistry = 0;
-    self->nativePyObjectWalker = 0;
+    self->binaryObjectRegistry = nullptr;
+    self->nativePyObjectWalker = nullptr;
 
     return (PyObject*) self;
     }
@@ -58,8 +58,8 @@ PyObjectWalkerStruct_new(PyTypeObject* type, PyObject* args, PyObject* kwds)
 static void
 PyObjectWalkerStruct_dealloc(PyObjectWalkerStruct* self)
     {
+    Py_XDECREF(self->binaryObjectRegistry);
     delete self->nativePyObjectWalker;
-    self->nativePyObjectWalker = 0;
     self->ob_type->tp_free((PyObject*)self);
     }
 
@@ -202,6 +202,8 @@ PyObjectWalkerStruct_init(PyObjectWalkerStruct* self, PyObject* args, PyObject* 
         Py_DECREF(binaryObjectRegistryClass);
         return -1;
         }
+
+    Py_INCREF(self->binaryObjectRegistry);
 
     Py_DECREF(binaryObjectRegistryClass);
     
