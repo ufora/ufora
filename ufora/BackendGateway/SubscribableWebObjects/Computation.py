@@ -200,7 +200,6 @@ class ComputationBase(SubscribableObject):
                 else:
                     result = {'maxBytesExceeded': True, 'isException': False}
 
-            logging.info("return result: %s", result)
             self.result = result
             return self.result
 
