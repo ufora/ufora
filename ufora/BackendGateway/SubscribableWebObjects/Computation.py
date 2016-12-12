@@ -19,7 +19,7 @@ import uuid
 
 from ufora.BackendGateway import tuple_it
 from ufora.BackendGateway.SubscribableWebObjects.ObjectClassesToExpose.PyforaToJsonTransformer \
-    import PyforaToJsonTransformer
+    import PyforaToJsonTransformer, HaltTransformationException
 from ufora.BackendGateway.SubscribableWebObjects.SubscribableObject \
     import SubscribableObject, ExposedFunction, ExposedProperty, observable
 import ufora.FORA.python.ForaValue as ForaValue
@@ -144,8 +144,8 @@ class ComputationBase(SubscribableObject):
         return True
 
 
-    @ExposedFunction
-    def request_result(self, max_byte_count):
+    @ExposedFunction(expandArgs=True)
+    def request_result(self, maxBytecount):
         import pyfora
         if self.is_failure:
             return None
@@ -157,7 +157,7 @@ class ComputationBase(SubscribableObject):
         vector_extractor = [None]
         def transform_to_json():
             assert vector_extractor[0] is not None
-            transformer = PyforaToJsonTransformer(max_byte_count)
+            transformer = PyforaToJsonTransformer(maxBytecount)
             result = None
             try:
                 res = self.object_converter.transformPyforaImplval(
@@ -189,6 +189,18 @@ class ComputationBase(SubscribableObject):
                     result = {
                         'foraToPythonConversionError': e.message
                         }
+            except HaltTransformationException:
+                logging.info('max byte exceeded')
+                if self.is_exception:
+                    result = {
+                        'maxBytesExceeded': True,
+                        'isException': True,
+                        'trace': self.exception_code_locations_as_json()
+                        }
+                else:
+                    result = {'maxBytesExceeded': True, 'isException': False}
+
+            logging.info("return result: %s", result)
             self.result = result
             return self.result
 
@@ -203,7 +215,7 @@ class ComputationBase(SubscribableObject):
             return None
 
         if self.is_exception:
-            return self.request_result(max_byte_count=None)
+            return self.request_result(maxBytecount=None)
 
         tuple_ivc = self.object_converter.converter.unwrapPyforaTupleToTuple(self.as_result)
         assert isinstance(tuple_ivc, tuple)
@@ -229,7 +241,7 @@ class ComputationBase(SubscribableObject):
             return None
 
         if self.is_exception:
-            return self.request_result(max_byte_count=None)
+            return self.request_result(maxBytecount=None)
 
         dict_ivc = self.object_converter.converter.unwrapPyforaDictToDictOfAssignedVars(
             self.as_result
