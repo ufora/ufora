@@ -17,8 +17,8 @@ from ufora.BackendGateway.Observable import Observable, observable
 
 
 class Foo(Observable):
-    def __init__(self, id):
-        super(Foo, self).__init__(id)
+    def __init__(self):
+        super(Foo, self).__init__()
         self._value = None
         self.foo = 1
 
@@ -42,13 +42,12 @@ class Foo(Observable):
 
 class TestObservable(unittest.TestCase):
     def test_observe_property(self):
-        obj_id = 1
         value_to_set = 2
-        f = Foo(obj_id)
+        f = Foo()
 
         observed = [False]
-        def observer(id, name, new_value, old_value):
-            self.assertEqual(id, obj_id)
+        def observer(observable, name, new_value, old_value):
+            self.assertEqual(observable, f)
             self.assertEqual(name, 'value')
             self.assertEqual(new_value, value_to_set)
             self.assertIsNone(old_value)
@@ -60,13 +59,12 @@ class TestObservable(unittest.TestCase):
 
 
     def test_observe_method(self):
-        obj_id = 2
         value_to_set = 3
-        f = Foo(obj_id)
+        f = Foo()
 
         observed = [False]
-        def observer(id, name, new_value, old_value):
-            self.assertEqual(id, obj_id)
+        def observer(observable, name, new_value, old_value):
+            self.assertEqual(observable, f)
             self.assertEqual(name, 'foo')
             self.assertEqual(new_value, value_to_set)
             self.assertEqual(old_value, 1)
@@ -78,16 +76,15 @@ class TestObservable(unittest.TestCase):
 
 
     def test_multiple_observations(self):
-        obj_id = 3
         values_to_set = [4, 5]
         previous_value = None
-        f = Foo(obj_id)
+        f = Foo()
 
         observations = [0]
 
-        def observer(id, name, new_value, old_value):
+        def observer(observable, name, new_value, old_value):
             current_observation = observations[0]
-            self.assertEqual(id, obj_id)
+            self.assertEqual(observable, f)
             self.assertEqual(name, 'value')
             self.assertEqual(new_value, values_to_set[current_observation])
             self.assertEqual(
@@ -105,12 +102,11 @@ class TestObservable(unittest.TestCase):
 
 
     def test_unobserve(self):
-        obj_id = 4
         value_to_set = 5
-        f = Foo(obj_id)
+        f = Foo()
 
         observations = [0]
-        def observer(id, name, new_value, old_value):
+        def observer(observable, name, new_value, old_value):
             observations[0] += 1
 
         f.observe('value', observer)
