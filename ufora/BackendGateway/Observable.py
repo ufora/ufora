@@ -30,8 +30,8 @@ def observable(f):
 
 
 class Observable(object):
-    def __init__(self):
-        self.observers = collections.defaultdict(set)
+    def __init__(self, observers=None):
+        self.observers = observers if observers is not None else collections.defaultdict(set)
         self._lock = threading.Lock()
 
 

@@ -13,6 +13,7 @@
 #   limitations under the License.
 
 
+import collections
 import logging
 import uuid
 
@@ -27,7 +28,7 @@ import ufora.native.FORA as ForaNative
 
 
 class ComputationState(object):
-    def __init__(self, args):
+    def __init__(self, args, cumulus_id):
         self.args = args
         self.computation_definition = None
         self.result = None
@@ -37,6 +38,8 @@ class ComputationState(object):
         self.comp_id = None
         self.parent_comp_id = None
         self._cumulus_id = None
+        self.observers = collections.defaultdict(set)
+        self.cumulus_id = cumulus_id
 
 
     @property
@@ -53,12 +56,40 @@ class ComputationState(object):
 
 class ComputationBase(SubscribableObject):
     def __init__(self, id, cumulus_env, args):
-        comp_id = tuple_it(args.get('comp_id')) if 'comp_id' in args else None
-        self._state = (
-            ComputationState(args) if comp_id is None
-            else cumulus_env.computations.get_computation_state(comp_id)
-            )
-        super(ComputationBase, self).__init__(id, cumulus_env)
+        self._state = None
+        if 'comp_id' in args:
+            self._state = self._retrieve_state(cumulus_env.computations, args['comp_id'])
+        if not self._state:
+            computation_definition = self._create_computation_definition(cumulus_env, args)
+            cumulus_id = cumulus_env.computations.cumulus_gateway.getComputationIdForDefinition(
+                computation_definition
+                )
+            comp_id = tuple_it(cumulus_id)
+            self._state = self._retrieve_state(cumulus_env.computations, comp_id)
+        if not self._state:
+            self._state = ComputationState(args, cumulus_id)
+            self._state.computation_definition = computation_definition
+
+        super(ComputationBase, self).__init__(id, cumulus_env, self._state.observers)
+        self.computations.create_computation(self._state)
+        self._subscribe_to_computation_result()
+
+
+    @staticmethod
+    def _create_computation_definition(cumulus_env, args):
+        raise NotImplementedError("Must be implemented by derived classes")
+
+
+    def _retrieve_state(self, computations, comp_id):
+        comp_id = tuple_it(comp_id)
+        return computations.get_computation_state(comp_id) if comp_id else None
+
+
+    def _subscribe_to_computation_result(self):
+        cumulus_id = self._state.cumulus_id
+        if self.computations.is_started(cumulus_id):
+            future = self.computations.get_computation_result(cumulus_id)
+            future.add_done_callback(self.on_computation_result)
 
 
     def serialize_args(self):
@@ -351,43 +382,39 @@ class ComputationBase(SubscribableObject):
 class Computation(ComputationBase):
     def __init__(self, id, cumulus_env, args):
         super(Computation, self).__init__(id, cumulus_env, args)
-        if 'comp_id' in args:
-            return
-
-        if 'arg_ids' in self.args:
-            assert 'comp_id' not in self.args
-            self._state.computation_definition = self.computations.create_computation_definition(
-                self.computations.create_apply_tuple(self.args['arg_ids'])
-                )
-        elif 'apply_tuple' in self.args:
-            self._state.computation_definition = self.computations.create_computation_definition(
-                self.args['apply_tuple']
-                )
-
-        self._state.cumulus_id = self.computations.create_computation(self._state)
 
 
+    @staticmethod
+    def _create_computation_definition(cumulus_env, args):
+        apply_tuple = args.get('apply_tuple') or cumulus_env.computations.create_apply_tuple(
+            args['arg_ids']
+            )
+        return cumulus_env.computations.create_computation_definition(apply_tuple)
 
 
 
 class CollectionElement(ComputationBase):
     def __init__(self, id, cumulus_env, args, element_key_arg, get_element_symbol):
+        self.element_key_arg = element_key_arg
+        self.get_element_symbol = get_element_symbol
         super(CollectionElement, self).__init__(id, cumulus_env, args)
-        assert 'parent_id' in self.args
-        assert element_key_arg in self.args, "Missing arg: " + element_key_arg
-        parent_state = self.computations.get_computation_state(tuple_it(self.args['parent_id']))
-        self._state.computation_definition = self.computations.create_computation_definition((
+
+
+    def _create_computation_definition(self, cumulus_env, args):
+        assert 'parent_id' in args
+        assert self.element_key_arg in args, "Missing arg: " + self.element_key_arg
+        parent_state = cumulus_env.computations.get_computation_state(tuple_it(args['parent_id']))
+        return cumulus_env.computations.create_computation_definition((
             parent_state.computation_definition,
-            ForaNative.makeSymbol(get_element_symbol),
-            ForaNative.ImplValContainer(self.args[element_key_arg])
+            ForaNative.makeSymbol(self.get_element_symbol),
+            ForaNative.ImplValContainer(args[self.element_key_arg])
             ))
-        self._state.cumulus_id = self.computations.create_computation(self._state)
 
 
 
 class TupleElement(CollectionElement):
-    def __init__(self, id, cumulus_env, args):
-        super(TupleElement, self).__init__(id, cumulus_env, args, 'index', 'RawGetItemByInt')
+    def __init__(self, _id, cumulus_env, args):
+        super(TupleElement, self).__init__(_id, cumulus_env, args, 'index', 'RawGetItemByInt')
 
 
 

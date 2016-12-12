@@ -29,8 +29,8 @@ CumulusEnvironment = collections.namedtuple(
 
 
 class SubscribableObject(Observable.Observable):
-    def __init__(self, id, cumulus_env):
-        super(SubscribableObject, self).__init__()
+    def __init__(self, id, cumulus_env, observers=None):
+        super(SubscribableObject, self).__init__(observers)
         self.id = id
         self.cumulus_env = cumulus_env
 

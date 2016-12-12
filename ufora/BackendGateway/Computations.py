@@ -42,16 +42,14 @@ class Computations(object):
 
 
     def create_computation(self, state):
-        cumulus_id = self.cumulus_gateway.getComputationIdForDefinition(state.computation_definition)
-        comp_id = tuple_it(cumulus_id.toSimple())
+        cumulus_id = state.cumulus_id
+        comp_id = state.comp_id
         with self.lock_:
             if cumulus_id not in self.computation_results:
                 future = Future(lambda: self.cancel(cumulus_id))
                 self.computation_results[cumulus_id] = (future, False)
             if comp_id not in self.computation_states:
                 self.computation_states[comp_id] = state
-
-        return cumulus_id
 
 
     def start_computation(self, cumulus_id):
@@ -70,6 +68,17 @@ class Computations(object):
                 CumulusNative.ComputationPriority(self.priority_allocator.next())
                 )
         return future
+
+
+    def is_started(self, cumulus_id):
+        return cumulus_id in self.computation_results and self.computation_results[cumulus_id][1]
+
+
+    def get_computation_result(self, cumulus_id):
+        result_tuple = self.computation_results.get(cumulus_id)
+        if result_tuple:
+            return result_tuple[0]
+        return None
 
 
     def cancel(self, cumulus_id):
