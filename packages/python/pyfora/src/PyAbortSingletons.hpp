@@ -17,18 +17,16 @@
 
 #include <Python.h>
 
+#include "core/PyObjectPtr.hpp"
+
 #include <string>
 
 
 class PyAbortSingletons {
 public:
     PyAbortSingletons();
-    PyAbortSingletons(const PyAbortSingletons&);
-    ~PyAbortSingletons();
 
     PyObject* singletonNameToObject(const std::string& name) const;
 private:
-    void operator=(const PyAbortSingletons&) = delete;
-
-    PyObject* mSingletonNameToObject;
+    PyObjectPtr mSingletonNameToObject;
 };

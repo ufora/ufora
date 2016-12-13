@@ -19,23 +19,10 @@
 #include <stdexcept>
 
 
-NamedSingletons::NamedSingletons(const NamedSingletons& other)
-    : mSingletonNameToObjectDict(other.mSingletonNameToObjectDict)
-    {
-    Py_INCREF(mSingletonNameToObjectDict);
-    }
-
-
-NamedSingletons::~NamedSingletons()
-    {
-    Py_XDECREF(mSingletonNameToObjectDict);
-    }
-
-
 NamedSingletons::NamedSingletons()
-    : mSingletonNameToObjectDict(nullptr)
     {
-    PyObject* namedSingletonsModule = PyImport_ImportModule("pyfora.NamedSingletons");
+    PyObjectPtr namedSingletonsModule = PyObjectPtr::unincremented(
+        PyImport_ImportModule("pyfora.NamedSingletons"));
     if (namedSingletonsModule == nullptr) {
         throw std::runtime_error(
             "error getting pyfora.NamedSingletons: " +
@@ -43,17 +30,18 @@ NamedSingletons::NamedSingletons()
             );
         }
 
-    mSingletonNameToObjectDict = PyObject_GetAttrString(
-        namedSingletonsModule,
-        "singletonNameToObject");
+    mSingletonNameToObjectDict = PyObjectPtr::unincremented(
+        PyObject_GetAttrString(
+            namedSingletonsModule.get(),
+            "singletonNameToObject")
+        );
     if (mSingletonNameToObjectDict == nullptr) {
         throw std::runtime_error(
             "error getting pyfora.NamedSingletons.singletonNameToObject: " +
             PyObjectUtils::exc_string()
             );
         }
-    if (not PyDict_Check(mSingletonNameToObjectDict)) {
-        Py_DECREF(mSingletonNameToObjectDict);
+    if (not PyDict_Check(mSingletonNameToObjectDict.get())) {
         throw std::runtime_error(
             "expected pyfora.NamedSingletons.singletonNameToObject "
             " to be a dict"
@@ -65,7 +53,7 @@ NamedSingletons::NamedSingletons()
 PyObject* NamedSingletons::singletonNameToObject(const std::string& s) const
     {
     PyObject* tr = PyDict_GetItemString(
-        mSingletonNameToObjectDict,
+        mSingletonNameToObjectDict.get(),
         s.c_str()
         );
 

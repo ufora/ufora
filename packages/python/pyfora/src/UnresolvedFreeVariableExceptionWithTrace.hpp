@@ -17,6 +17,8 @@
 
 #include <Python.h>
 
+#include "core/PyObjectPtr.hpp"
+
 #include <stdexcept>
 
 
@@ -24,29 +26,15 @@ class UnresolvedFreeVariableExceptionWithTrace : public std::runtime_error {
 public:
     explicit UnresolvedFreeVariableExceptionWithTrace(PyObject* value)
         : std::runtime_error(""),
-          mPtr(value)
+          mPtr(PyObjectPtr::unincremented(value))
         {
-        }
-
-    ~UnresolvedFreeVariableExceptionWithTrace() noexcept {
-        Py_DECREF(mPtr);
-        }
-
-    UnresolvedFreeVariableExceptionWithTrace(
-            const UnresolvedFreeVariableExceptionWithTrace& e
-        ) : std::runtime_error(""),
-            mPtr(e.mPtr)
-        {
-        Py_INCREF(mPtr);
         }
 
     // returns a borrowed reference
     PyObject* value() const {
-        return mPtr;
+        return mPtr.get();
         }
 
 private:
-    PyObject* mPtr;
-
-    void operator=(const UnresolvedFreeVariableExceptionWithTrace&) = delete;
+    PyObjectPtr mPtr;
 };

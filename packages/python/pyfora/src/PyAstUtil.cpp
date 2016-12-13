@@ -22,25 +22,11 @@
 #include <stdexcept>
 
 
-PyAstUtil::PyAstUtil(const PyAstUtil& other)
-    : mPyAstUtilModule(other.mPyAstUtilModule),
-      mPyforaInspectModule(other.mPyforaInspectModule)
-    {
-    Py_INCREF(mPyAstUtilModule);
-    }    
-
-
-PyAstUtil::~PyAstUtil()
-    {
-    Py_XDECREF(mPyAstUtilModule);
-    }
-
-
 PyAstUtil::PyAstUtil() 
-    : mPyAstUtilModule(nullptr),
-      mPyforaInspectModule(PyforaInspect())
+    : mPyforaInspectModule(PyforaInspect())
     {
-    mPyAstUtilModule = PyImport_ImportModule("pyfora.pyAst.PyAstUtil");
+    mPyAstUtilModule = PyObjectPtr::unincremented(
+        PyImport_ImportModule("pyfora.pyAst.PyAstUtil"));
     if (mPyAstUtilModule == nullptr) {
         throw std::runtime_error(
             "py err in PyAstUtil::_initPyAstUtilModule(): " +
@@ -85,19 +71,17 @@ void PyAstUtil::_translateError() const
 PyObject*
 PyAstUtil::sourceFilenameAndText(const PyObject* pyObject) const
     {
-    PyObject* getSourceFilenameAndTextFun =
-        PyObject_GetAttrString(mPyAstUtilModule, "getSourceFilenameAndText");
+    PyObjectPtr getSourceFilenameAndTextFun = PyObjectPtr::unincremented(
+        PyObject_GetAttrString(mPyAstUtilModule.get(), "getSourceFilenameAndText"));
     if (getSourceFilenameAndTextFun == nullptr) {
         return nullptr;
         }
 
     PyObject* tr = PyObject_CallFunctionObjArgs(
-        getSourceFilenameAndTextFun,
+        getSourceFilenameAndTextFun.get(),
         pyObject,
         nullptr
         );
-
-    Py_DECREF(getSourceFilenameAndTextFun);
 
     if (tr == nullptr) {
         _translateError();
@@ -109,8 +93,8 @@ PyAstUtil::sourceFilenameAndText(const PyObject* pyObject) const
 
 long PyAstUtil::startingSourceLine(const PyObject* pyObject) const
     {
-    PyObject* getSourceLinesFun =
-        PyObject_GetAttrString(mPyAstUtilModule, "getSourceLines");
+    PyObjectPtr getSourceLinesFun = PyObjectPtr::unincremented(
+        PyObject_GetAttrString(mPyAstUtilModule.get(), "getSourceLines"));
     if (getSourceLinesFun == nullptr) {
         throw std::runtime_error(
             "error getting sourceLines fun in PyAstUtil::startingSourceLine: " +
@@ -118,38 +102,35 @@ long PyAstUtil::startingSourceLine(const PyObject* pyObject) const
             );
         }
 
-    PyObject* res = PyObject_CallFunctionObjArgs(
-        getSourceLinesFun,
-        pyObject,
-        nullptr
-        );
-    Py_DECREF(getSourceLinesFun);
+    PyObjectPtr res = PyObjectPtr::unincremented(
+        PyObject_CallFunctionObjArgs(
+            getSourceLinesFun.get(),
+            pyObject,
+            nullptr
+            ));
     if (res == nullptr) {
         throw CantGetSourceTextError(PyObjectUtils::exc_string());
         }
 
-    if (not PyTuple_Check(res)) {
+    if (not PyTuple_Check(res.get())) {
         throw std::runtime_error(
             "expected a tuple in calling getSourceLines: expected a tuple"
             );
         }
-    if (PyTuple_GET_SIZE(res) != 2) {
+    if (PyTuple_GET_SIZE(res.get()) != 2) {
         throw std::runtime_error(
             "we expected getSourceLines to return a tuple of length two"
             );
         }
 
     // borrowed reference -- don't need to decref
-    PyObject* startingSourceLine = PyTuple_GET_ITEM(res, 1);
+    PyObject* startingSourceLine = PyTuple_GET_ITEM(res.get(), 1);
     if (not PyInt_Check(startingSourceLine)) {
-        Py_DECREF(res);
         throw std::runtime_error(
             "expected PyforaInspect.getSourceLines to return an int");
         }
 
     long tr = PyInt_AS_LONG(startingSourceLine);
-
-    Py_DECREF(res);
 
     return tr;
     }
@@ -157,37 +138,31 @@ long PyAstUtil::startingSourceLine(const PyObject* pyObject) const
 
 PyObject* PyAstUtil::pyAstFromText(const std::string& fileText) const
     {
-    PyObject* pyString = PyString_FromStringAndSize(fileText.data(),
-                                                    fileText.size());
+    PyObjectPtr pyString = PyObjectPtr::unincremented(
+        PyString_FromStringAndSize(
+            fileText.data(),
+            fileText.size()));
     if (pyString == nullptr) {
         return nullptr;
         }
 
-    PyObject* res = pyAstFromText(pyString);
-
-    Py_DECREF(pyString);
-
-    return res;
+    return pyAstFromText(pyString.get());
     }
 
 
 PyObject* PyAstUtil::pyAstFromText(const PyObject* pyString) const
     {
-    PyObject* pyAstFromTextFun =
-        PyObject_GetAttrString(mPyAstUtilModule, "pyAstFromText");
+    PyObjectPtr pyAstFromTextFun = PyObjectPtr::unincremented(
+        PyObject_GetAttrString(mPyAstUtilModule.get(), "pyAstFromText"));
     if (pyAstFromTextFun == nullptr) {
         return nullptr;
         }    
 
-    PyObject* tr = PyObject_CallFunctionObjArgs(
-        pyAstFromTextFun,
+    return PyObject_CallFunctionObjArgs(
+        pyAstFromTextFun.get(),
         pyString,
         nullptr
         );
-
-    Py_DECREF(pyAstFromTextFun);
-
-    return tr;
     }
 
 
@@ -195,31 +170,27 @@ PyObject*
 PyAstUtil::functionDefOrLambdaAtLineNumber(const PyObject* pyObject,
                                            long sourceLine) const
     {
-    PyObject* pySourceLine = PyInt_FromLong(sourceLine);
+    PyObjectPtr pySourceLine = PyObjectPtr::unincremented(
+        PyInt_FromLong(sourceLine));
     if (pySourceLine == nullptr) {
         return nullptr;
         }
 
-    PyObject* functionDefOrLambdaAtLineNumberFun =
-        PyObject_GetAttrString(mPyAstUtilModule,
-                               "functionDefOrLambdaAtLineNumber");
+    PyObjectPtr functionDefOrLambdaAtLineNumberFun = PyObjectPtr::unincremented(
+        PyObject_GetAttrString(mPyAstUtilModule.get(),
+                               "functionDefOrLambdaAtLineNumber")
+        );
 
     if (functionDefOrLambdaAtLineNumberFun == nullptr) {
-        Py_DECREF(pySourceLine);
         return nullptr;
         }
 
-    PyObject* tr = PyObject_CallFunctionObjArgs(
-        functionDefOrLambdaAtLineNumberFun,
+    return PyObject_CallFunctionObjArgs(
+        functionDefOrLambdaAtLineNumberFun.get(),
         pyObject,
-        pySourceLine,
+        pySourceLine.get(),
         nullptr
         );
-
-    Py_DECREF(functionDefOrLambdaAtLineNumberFun);
-    Py_DECREF(pySourceLine);
-
-    return tr;
     }
 
 
@@ -227,79 +198,70 @@ PyObject*
 PyAstUtil::classDefAtLineNumber(const PyObject* pyObject,
                                 long sourceLine) const
     {
-    PyObject* pySourceLine = PyInt_FromLong(sourceLine);
+    PyObjectPtr pySourceLine = PyObjectPtr::unincremented(
+        PyInt_FromLong(sourceLine));
     if (pySourceLine == nullptr) {
         return nullptr;
         }
 
-    PyObject* classDefAtLineNumberFun =
-        PyObject_GetAttrString(mPyAstUtilModule,
-                               "classDefAtLineNumber");
+    PyObjectPtr classDefAtLineNumberFun = PyObjectPtr::unincremented(
+        PyObject_GetAttrString(mPyAstUtilModule.get(),
+                               "classDefAtLineNumber")
+        );
 
     if (classDefAtLineNumberFun == nullptr) {
-        Py_DECREF(pySourceLine);
         return nullptr;
         }
 
-    PyObject* tr = PyObject_CallFunctionObjArgs(
-        classDefAtLineNumberFun,
+    return PyObject_CallFunctionObjArgs(
+        classDefAtLineNumberFun.get(),
         pyObject,
-        pySourceLine,
+        pySourceLine.get(),
         nullptr
         );
-
-    Py_DECREF(classDefAtLineNumberFun);
-    Py_DECREF(pySourceLine);
-
-    return tr;
     }
 
 
 PyObject*
 PyAstUtil::withBlockAtLineNumber(const PyObject* pyObject, long sourceLine) const
     {
-    PyObject* pySourceLine = PyInt_FromLong(sourceLine);
+    PyObjectPtr pySourceLine = PyObjectPtr::unincremented(
+        PyInt_FromLong(sourceLine));
     if (pySourceLine == nullptr) {
         return nullptr;
         }
 
-    PyObject* withBlockAtLineNumberFun = PyObject_GetAttrString(
-        mPyAstUtilModule,
-        "withBlockAtLineNumber");
+    PyObjectPtr withBlockAtLineNumberFun = PyObjectPtr::unincremented(
+        PyObject_GetAttrString(
+            mPyAstUtilModule.get(),
+            "withBlockAtLineNumber"));
     if (withBlockAtLineNumberFun == nullptr) {
-        Py_DECREF(pySourceLine);
         return nullptr;
         }
     
-    PyObject* tr = PyObject_CallFunctionObjArgs(
-        withBlockAtLineNumberFun,
+    return PyObject_CallFunctionObjArgs(
+        withBlockAtLineNumberFun.get(),
         pyObject,
-        pySourceLine,
+        pySourceLine.get(),
         nullptr);
-    
-    Py_DECREF(withBlockAtLineNumberFun);
-    Py_DECREF(pySourceLine);
-
-    return tr;
     }
 
 
 PyObject* PyAstUtil::collectDataMembersSetInInit(PyObject* pyObject) const
     {
-    PyObject* collectDataMembersSetInInitFun = PyObject_GetAttrString(
-        mPyAstUtilModule,
-        "collectDataMembersSetInInit");
+    PyObjectPtr collectDataMembersSetInInitFun = PyObjectPtr::unincremented(
+        PyObject_GetAttrString(
+            mPyAstUtilModule.get(),
+            "collectDataMembersSetInInit"));
     if (collectDataMembersSetInInitFun == nullptr) {
         return nullptr;
         }
 
     PyObject* res = PyObject_CallFunctionObjArgs(
-        collectDataMembersSetInInitFun,
+        collectDataMembersSetInInitFun.get(),
         pyObject,
         nullptr
         );
-
-    Py_DECREF(collectDataMembersSetInInitFun);
 
     if (res == nullptr) {
         _translateError();
@@ -311,72 +273,65 @@ PyObject* PyAstUtil::collectDataMembersSetInInit(PyObject* pyObject) const
 
 bool PyAstUtil::hasReturnInOuterScope(const PyObject* pyAst) const
     {
-    PyObject* hasReturnInOuterScopeFun = PyObject_GetAttrString(
-        mPyAstUtilModule,
-        "hasReturnInOuterScope");
+    PyObjectPtr hasReturnInOuterScopeFun = PyObjectPtr::unincremented(
+        PyObject_GetAttrString(
+            mPyAstUtilModule.get(),
+            "hasReturnInOuterScope"));
     if (hasReturnInOuterScopeFun == nullptr) {
         throw std::runtime_error(
             "error getting hasReturnInOuterScope attr on PyAstUtil module");
         }
 
-    PyObject* pyBool = PyObject_CallFunctionObjArgs(
-        hasReturnInOuterScopeFun,
-        pyAst,
-        nullptr);
-    Py_DECREF(hasReturnInOuterScopeFun);
+    PyObjectPtr pyBool = PyObjectPtr::unincremented(
+        PyObject_CallFunctionObjArgs(
+            hasReturnInOuterScopeFun.get(),
+            pyAst,
+            nullptr));
     if (pyBool == nullptr) {
         throw std::runtime_error("error calling hasReturnInOuterScope");
         }
-    if (not PyBool_Check(pyBool)) {
-        Py_DECREF(pyBool);
+    if (not PyBool_Check(pyBool.get())) {
         throw std::runtime_error("expected a bool returned from hasReturnInOuterScope");
         }
 
-    bool tr = (pyBool == Py_True);
-
-    Py_DECREF(pyBool);
-
-    return tr;
+    return pyBool == Py_True;
     }
 
 
 bool PyAstUtil::hasYieldInOuterScope(const PyObject* pyAst) const
     {
-    PyObject* hasYieldInOuterScopeFun = PyObject_GetAttrString(
-        mPyAstUtilModule,
-        "hasYieldInOuterScope");
+    PyObjectPtr hasYieldInOuterScopeFun = PyObjectPtr::unincremented(
+        PyObject_GetAttrString(
+            mPyAstUtilModule.get(),
+            "hasYieldInOuterScope"));
     if (hasYieldInOuterScopeFun == nullptr) {
         throw std::runtime_error(
             "error getting hasYieldInOuterScope attr on PyAstUtil module");
         }
 
-    PyObject* pyBool = PyObject_CallFunctionObjArgs(
-        hasYieldInOuterScopeFun,
-        pyAst,
-        nullptr);
-    Py_DECREF(hasYieldInOuterScopeFun);
+    PyObjectPtr pyBool = PyObjectPtr::unincremented(
+        PyObject_CallFunctionObjArgs(
+            hasYieldInOuterScopeFun.get(),
+            pyAst,
+            nullptr));
     if (pyBool == nullptr) {
         throw std::runtime_error("error calling hasYieldInOuterScope");
         }
-    if (not PyBool_Check(pyBool)) {
-        Py_DECREF(pyBool);
+    if (not PyBool_Check(pyBool.get())) {
         throw std::runtime_error("expected a bool returned from hasYieldInOuterScope");
         }
 
-    bool tr = (pyBool == Py_True);
-
-    Py_DECREF(pyBool);
-
-    return tr;    
+    return pyBool == Py_True;
     }
 
 
 long PyAstUtil::getYieldLocationsInOuterScope(const PyObject* pyAstNode) const
     {
-    PyObject* getYieldLocationsInOuterScopeFun = PyObject_GetAttrString(
-        mPyAstUtilModule,
-        "getYieldLocationsInOuterScope"
-        );
+    PyObjectPtr getYieldLocationsInOuterScopeFun = PyObjectPtr::unincremented(
+        PyObject_GetAttrString(
+            mPyAstUtilModule.get(),
+            "getYieldLocationsInOuterScope"
+            ));
     if (getYieldLocationsInOuterScopeFun == nullptr) {
         throw std::runtime_error(
             "error getting getYieldLocationsInOuterScopeFun: " +
@@ -384,13 +339,12 @@ long PyAstUtil::getYieldLocationsInOuterScope(const PyObject* pyAstNode) const
             );
         }
 
-    PyObject* res = PyObject_CallFunctionObjArgs(
-        getYieldLocationsInOuterScopeFun,
-        pyAstNode,
-        nullptr
-        );
-    
-    Py_DECREF(getYieldLocationsInOuterScopeFun);
+    PyObjectPtr res = PyObjectPtr::unincremented(
+        PyObject_CallFunctionObjArgs(
+            getYieldLocationsInOuterScopeFun.get(),
+            pyAstNode,
+            nullptr
+            ));
 
     if (res == nullptr) {
         throw std::runtime_error(
@@ -398,45 +352,39 @@ long PyAstUtil::getYieldLocationsInOuterScope(const PyObject* pyAstNode) const
             PyObjectUtils::exc_string()
             );
         }
-    if (not PyList_Check(res)) {
-        Py_DECREF(res);
+    if (not PyList_Check(res.get())) {
         throw std::runtime_error(
             "expected return type of getYieldLocationsInOuterScope to be a list"
             );
         }
-    if (PyList_GET_SIZE(res) == 0) {
-        Py_DECREF(res);
+    if (PyList_GET_SIZE(res.get()) == 0) {
         throw std::runtime_error(
             "expected getYieldLocationsInOuterScope to return a list of length"
             " at least one"
             );
         }
 
-    PyObject* item = PyList_GET_ITEM(res, 0);
+    // borrowed reference
+    PyObject* item = PyList_GET_ITEM(res.get(), 0);
 
     if (not PyInt_Check(item)) {
-        Py_DECREF(res);
         throw std::runtime_error(
             "expected elements in returned list from getYieldLocationsInOuterScope"
             " to all be ints"
             );            
         }
     
-    long tr = PyInt_AS_LONG(item);
-
-    // don't need to decref item -- it's a borrowed reference
-    Py_DECREF(res);
-
-    return tr;
+    return PyInt_AS_LONG(item);
     }
 
 
 long PyAstUtil::getReturnLocationsInOuterScope(const PyObject* pyAstNode) const
     {
-    PyObject* getReturnLocationsInOuterScopeFun = PyObject_GetAttrString(
-        mPyAstUtilModule,
-        "getReturnLocationsInOuterScope"
-        );
+    PyObjectPtr getReturnLocationsInOuterScopeFun = PyObjectPtr::unincremented(
+        PyObject_GetAttrString(
+            mPyAstUtilModule.get(),
+            "getReturnLocationsInOuterScope"
+            ));
     if (getReturnLocationsInOuterScopeFun == nullptr) {
         throw std::runtime_error(
             "error getting getReturnLocationsInOuterScopeFun: " +
@@ -444,48 +392,40 @@ long PyAstUtil::getReturnLocationsInOuterScope(const PyObject* pyAstNode) const
             );
         }
 
-    PyObject* res = PyObject_CallFunctionObjArgs(
-        getReturnLocationsInOuterScopeFun,
-        pyAstNode,
-        nullptr
-        );
+    PyObjectPtr res = PyObjectPtr::unincremented(
+        PyObject_CallFunctionObjArgs(
+            getReturnLocationsInOuterScopeFun.get(),
+            pyAstNode,
+            nullptr
+            ));
     
-    Py_DECREF(getReturnLocationsInOuterScopeFun);
-
     if (res == nullptr) {
         throw std::runtime_error(
             "error calling getReturnLocationsInOuterScopeFun: " +
             PyObjectUtils::exc_string()
             );
         }
-    if (not PyList_Check(res)) {
-        Py_DECREF(res);
+    if (not PyList_Check(res.get())) {
         throw std::runtime_error(
             "expected return type of getReturnLocationsInOuterScope to be a list"
             );
         }
-    if (PyList_GET_SIZE(res) == 0) {
-        Py_DECREF(res);
+    if (PyList_GET_SIZE(res.get()) == 0) {
         throw std::runtime_error(
             "expected getReturnLocationsInOuterScope to return a list of length"
             " at least one"
             );
         }
 
-    PyObject* item = PyList_GET_ITEM(res, 0);
+    // borrowed reference
+    PyObject* item = PyList_GET_ITEM(res.get(), 0);
 
     if (not PyInt_Check(item)) {
-        Py_DECREF(res);
         throw std::runtime_error(
             "expected elements in returned list from getReturnLocationsInOuterScope"
             " to all be ints"
             );            
         }
     
-    long tr = PyInt_AS_LONG(item);
-
-    // don't need to decref item -- it's a borrowed reference
-    Py_DECREF(res);
-
-    return tr;
+    return PyInt_AS_LONG(item);
     }

@@ -20,51 +20,40 @@
 
 
 FreeVariableResolver::FreeVariableResolver(
-        PyObject* exclude_list,
-        PyObject* terminal_value_filter
+        const PyObjectPtr& exclude_list,
+        const PyObjectPtr& terminal_value_filter
         )
-    : mPureFreeVariableResolver(0),
-      exclude_list(exclude_list),
-      terminal_value_filter(terminal_value_filter)
+    : mExcludeList(exclude_list),
+      mTerminalValueFilter(terminal_value_filter)
     {
-    Py_INCREF(exclude_list);
-    Py_INCREF(terminal_value_filter);
     _initPureFreeVariableResolver();
-    }
-
-
-FreeVariableResolver::~FreeVariableResolver()
-    {
-    Py_XDECREF(mPureFreeVariableResolver);
-    Py_XDECREF(terminal_value_filter);
-    Py_XDECREF(exclude_list);
     }
 
 
 void FreeVariableResolver::_initPureFreeVariableResolver()
     {
-    PyObject* freeVariableResolverModule = PyImport_ImportModule("pyfora.FreeVariableResolver");
+    PyObjectPtr freeVariableResolverModule = PyObjectPtr::unincremented(
+        PyImport_ImportModule("pyfora.FreeVariableResolver"));
     if (freeVariableResolverModule == nullptr) {
         throw std::runtime_error(PyObjectUtils::exc_string());
         }
     
-    PyObject* freeVariableResolverClass = PyObject_GetAttrString(
-        freeVariableResolverModule,
-        "FreeVariableResolver"
-        );
+    PyObjectPtr freeVariableResolverClass = PyObjectPtr::unincremented(
+        PyObject_GetAttrString(
+            freeVariableResolverModule.get(),
+            "FreeVariableResolver"
+            ));
     if (freeVariableResolverClass == nullptr) {
-        Py_DECREF(freeVariableResolverModule);
         throw std::runtime_error(PyObjectUtils::exc_string());
         }
 
-    mPureFreeVariableResolver = PyObject_CallFunctionObjArgs(
-        freeVariableResolverClass,
-        exclude_list,
-        terminal_value_filter,
-        nullptr);
+    mPureFreeVariableResolver = PyObjectPtr::unincremented(
+        PyObject_CallFunctionObjArgs(
+            freeVariableResolverClass.get(),
+            mExcludeList.get(),
+            mTerminalValueFilter.get(),
+            nullptr));
     if (mPureFreeVariableResolver == nullptr) {
-        Py_DECREF(freeVariableResolverClass);
-        Py_DECREF(freeVariableResolverModule);
         throw std::runtime_error(PyObjectUtils::exc_string());
         }
     }
@@ -76,24 +65,21 @@ PyObject* FreeVariableResolver::resolveFreeVariableMemberAccessChainsInAst(
         const PyObject* freeMemberAccessChainsWithPositions,
         const PyObject* convertedObjectCache) const
     {
-    PyObject* resolveFreeVariableMemberAccessChainsInAstFun =
-        PyObject_GetAttrString(mPureFreeVariableResolver,
-                               "resolveFreeVariableMemberAccessChainsInAst");
+    PyObjectPtr resolveFreeVariableMemberAccessChainsInAstFun =
+        PyObjectPtr::unincremented(
+            PyObject_GetAttrString(mPureFreeVariableResolver.get(),
+                "resolveFreeVariableMemberAccessChainsInAst"));
     if (resolveFreeVariableMemberAccessChainsInAstFun == nullptr) {
         return nullptr;
         }
     
-    PyObject* res = PyObject_CallFunctionObjArgs(
-        resolveFreeVariableMemberAccessChainsInAstFun,
+    return PyObject_CallFunctionObjArgs(
+        resolveFreeVariableMemberAccessChainsInAstFun.get(),
         pyObject,
         pyAst,
         freeMemberAccessChainsWithPositions,
         convertedObjectCache,
         nullptr);
-    
-    Py_DECREF(resolveFreeVariableMemberAccessChainsInAstFun);
-
-    return res;
     }
 
 
@@ -102,23 +88,19 @@ PyObject* FreeVariableResolver::resolveFreeVariableMemberAccessChains(
         const PyObject* boundVariables,
         const PyObject* convertedObjectCache) const
     {
-    PyObject* resolveFreeVariableMemberAccessChainsFun = 
+    PyObjectPtr resolveFreeVariableMemberAccessChainsFun = PyObjectPtr::unincremented(
         PyObject_GetAttrString(
-            mPureFreeVariableResolver,
+            mPureFreeVariableResolver.get(),
             "resolveFreeVariableMemberAccessChains"
-            );
+            ));
     if (resolveFreeVariableMemberAccessChainsFun == nullptr) {
         return nullptr;
         }
 
-    PyObject* res = PyObject_CallFunctionObjArgs(
-        resolveFreeVariableMemberAccessChainsFun,
+    return PyObject_CallFunctionObjArgs(
+        resolveFreeVariableMemberAccessChainsFun.get(),
         freeMemberAccessChainsWithPositions,
         boundVariables,
         convertedObjectCache,
         nullptr);
-
-    Py_DECREF(resolveFreeVariableMemberAccessChainsFun);
-
-    return res;
     }

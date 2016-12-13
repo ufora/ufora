@@ -30,7 +30,6 @@ public:
     PyAbortExceptionTypeDescription(
         const std::string& typeName,
         int64_t argsId);
-    virtual ~PyAbortExceptionTypeDescription();
 
     virtual PyObject* transform(
         IRToPythonConverter& c,

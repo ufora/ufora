@@ -23,11 +23,6 @@ TupleTypeDescription::TupleTypeDescription(const std::vector<int64_t>& memberIds
     }
 
 
-TupleTypeDescription::~TupleTypeDescription()
-    {
-    }
-
-
 PyObject* TupleTypeDescription::transform(
         IRToPythonConverter& c,
         bool retainHomogenousListsAsNumpy

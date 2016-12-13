@@ -20,22 +20,9 @@
 #include <stdexcept>
 
 
-Json::Json(const Json& other)
-    : mJsonModule(other.mJsonModule)
-    {
-    Py_INCREF(mJsonModule);
-    }
-
-
-Json::~Json()
-    {
-    Py_XDECREF(mJsonModule);
-    }
-
-
-Json::Json() : mJsonModule(nullptr)
-    {
-    mJsonModule = PyImport_ImportModule("json");
+Json::Json()
+    : mJsonModule(PyObjectPtr::unincremented(PyImport_ImportModule("json")))
+    {    
     if (mJsonModule == nullptr) {
         throw std::runtime_error(PyObjectUtils::exc_string());
         }
@@ -43,58 +30,49 @@ Json::Json() : mJsonModule(nullptr)
 
 
 PyObject* Json::loads(const std::string& s) {
-    PyObject* loadsFun = PyObject_GetAttrString(mJsonModule, "loads");
+    PyObjectPtr loadsFun = PyObjectPtr::unincremented(
+        PyObject_GetAttrString(mJsonModule.get(), "loads"));
     if (loadsFun == nullptr) {
         return nullptr;
         }
 
-    PyObject* pyString = PyString_FromStringAndSize(s.data(), s.size());
+    PyObjectPtr pyString = PyObjectPtr::unincremented(
+        PyString_FromStringAndSize(s.data(), s.size()));
     if (pyString == nullptr) {
-        Py_DECREF(loadsFun);
         return nullptr;
         }
 
-    PyObject* res = PyObject_CallFunctionObjArgs(
-        loadsFun,
-        pyString,
+    return PyObject_CallFunctionObjArgs(
+        loadsFun.get(),
+        pyString.get(),
         nullptr);
-    
-    Py_DECREF(pyString);
-    Py_DECREF(loadsFun);
-
-    return res;
     }
 
 
 std::string Json::dumps(const PyObject* obj)
     {
-    PyObject* dumpsFun = PyObject_GetAttrString(mJsonModule, "dumps");
+    PyObjectPtr dumpsFun = PyObjectPtr::unincremented(
+        PyObject_GetAttrString(mJsonModule.get(), "dumps"));
     if (dumpsFun == nullptr) {
         throw std::runtime_error(PyObjectUtils::exc_string());
         }
 
-    PyObject* res = PyObject_CallFunctionObjArgs(
-        dumpsFun,
-        obj,
-        nullptr
+    PyObjectPtr res = PyObjectPtr::unincremented(
+        PyObject_CallFunctionObjArgs(
+            dumpsFun.get(),
+            obj,
+            nullptr
+            )
         );
-    
-    Py_DECREF(dumpsFun);
-
     if (res == nullptr) {
         throw std::runtime_error(PyObjectUtils::exc_string());
         }
-    if (not PyString_Check(res)) {
-        Py_DECREF(res);
+    if (not PyString_Check(res.get())) {
         throw std::runtime_error("expected json.dumps to return a string");
         }
 
-    std::string tr = std::string(
-        PyString_AS_STRING(res),
-        PyString_GET_SIZE(res)
+    return std::string(
+        PyString_AS_STRING(res.get()),
+        PyString_GET_SIZE(res.get())
         );
-
-    Py_DECREF(res);
-
-    return tr;
     }

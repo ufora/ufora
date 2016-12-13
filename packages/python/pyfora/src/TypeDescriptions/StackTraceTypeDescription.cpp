@@ -17,16 +17,9 @@
 #include "StackTraceTypeDescription.hpp"
 
 
-StackTraceTypeDescription::StackTraceTypeDescription(PyObject* stackTraceAsJson) :
-    mStackTraceAsJson(stackTraceAsJson)
+StackTraceTypeDescription::StackTraceTypeDescription(PyObject* stackTraceAsJson)
     {
-    Py_XINCREF(mStackTraceAsJson);
-    }
-
-
-StackTraceTypeDescription::~StackTraceTypeDescription()
-    {
-    Py_XDECREF(mStackTraceAsJson);
+    mStackTraceAsJson = PyObjectPtr::incremented(stackTraceAsJson);
     }
 
 
@@ -35,6 +28,6 @@ PyObject* StackTraceTypeDescription::transform(
         bool retainHomogenousListsAsNumpy
         )
     {
-    Py_XINCREF(mStackTraceAsJson);
-    return mStackTraceAsJson;
+    Py_XINCREF(mStackTraceAsJson.get());
+    return mStackTraceAsJson.get();
     }

@@ -17,14 +17,14 @@
 
 #include <Python.h>
 
+#include "core/PyObjectPtr.hpp"
+
 #include <string>
 
 
 class Json {
 public:
     Json();
-    Json(const Json&);
-    ~Json();
 
     std::string dumps(const PyObject* obj);
     PyObject* loads(const std::string& s);
@@ -32,5 +32,5 @@ public:
 private:
     void operator=(const Json&) = delete;
 
-    PyObject* mJsonModule;
+    PyObjectPtr mJsonModule;
 };

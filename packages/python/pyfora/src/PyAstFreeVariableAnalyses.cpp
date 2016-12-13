@@ -21,29 +21,7 @@
 #include <stdexcept>
 
 
-PyAstFreeVariableAnalyses::~PyAstFreeVariableAnalyses()
-    {
-    Py_XDECREF(mVarWithPosition);
-    Py_XDECREF(mGetFreeVariableMemberAccessChainsFun);
-    Py_XDECREF(mPyAstFreeVariableAnalysesModule);
-    }
-
-
-PyAstFreeVariableAnalyses::PyAstFreeVariableAnalyses(const PyAstFreeVariableAnalyses& other)
-    : mPyAstFreeVariableAnalysesModule(other.mPyAstFreeVariableAnalysesModule),
-      mGetFreeVariableMemberAccessChainsFun(other.mGetFreeVariableMemberAccessChainsFun),
-      mVarWithPosition(other.mVarWithPosition)
-    {
-    Py_INCREF(mPyAstFreeVariableAnalysesModule);
-    Py_INCREF(mGetFreeVariableMemberAccessChainsFun);
-    Py_INCREF(mVarWithPosition);
-    }
-
-
 PyAstFreeVariableAnalyses::PyAstFreeVariableAnalyses()
-    : mPyAstFreeVariableAnalysesModule(nullptr),
-      mGetFreeVariableMemberAccessChainsFun(nullptr),
-      mVarWithPosition(nullptr)
     {
     _initPyAstFreeVariableAnalysesModule();
     _initGetFreeVariableMemberAccessChainsFun();
@@ -53,8 +31,10 @@ PyAstFreeVariableAnalyses::PyAstFreeVariableAnalyses()
 
 void PyAstFreeVariableAnalyses::_initVarWithPosition()
     {
-    mVarWithPosition = PyObject_GetAttrString(mPyAstFreeVariableAnalysesModule,
-                                              "VarWithPosition");
+    mVarWithPosition = PyObjectPtr::unincremented(
+            PyObject_GetAttrString(mPyAstFreeVariableAnalysesModule.get(),
+                                   "VarWithPosition")
+        );
     if (mVarWithPosition == nullptr) {
         throw std::runtime_error("error getting VarWithPosition attr "
                                "on PyAstFreeVariableAnalyses module");
@@ -65,7 +45,8 @@ void PyAstFreeVariableAnalyses::_initVarWithPosition()
 void PyAstFreeVariableAnalyses::_initPyAstFreeVariableAnalysesModule()
     {
     mPyAstFreeVariableAnalysesModule = 
-        PyImport_ImportModule("pyfora.pyAst.PyAstFreeVariableAnalyses");
+        PyObjectPtr::unincremented(
+            PyImport_ImportModule("pyfora.pyAst.PyAstFreeVariableAnalyses"));
     if (mPyAstFreeVariableAnalysesModule == nullptr) {
         throw std::runtime_error(
             "py err in _initPyAstFreeVariableAnalysesModule: " +
@@ -77,9 +58,10 @@ void PyAstFreeVariableAnalyses::_initPyAstFreeVariableAnalysesModule()
 
 void PyAstFreeVariableAnalyses::_initGetFreeVariableMemberAccessChainsFun()
     {
-    mGetFreeVariableMemberAccessChainsFun =
-        PyObject_GetAttrString(mPyAstFreeVariableAnalysesModule,
-                               "getFreeVariableMemberAccessChains");
+    mGetFreeVariableMemberAccessChainsFun = PyObjectPtr::unincremented(
+        PyObject_GetAttrString(mPyAstFreeVariableAnalysesModule.get(),
+                               "getFreeVariableMemberAccessChains")
+        );
 
     if (mGetFreeVariableMemberAccessChainsFun == nullptr) {
         throw std::runtime_error(
@@ -96,52 +78,42 @@ PyObject* PyAstFreeVariableAnalyses::getFreeMemberAccessChainsWithPositions(
         bool getPositions,
         const PyObject* exclude_predicate) const
     {
-    PyObject* pyIsClassContext = PyBool_FromLong(isClassContext);
+    PyObjectPtr pyIsClassContext = PyObjectPtr::unincremented(
+        PyBool_FromLong(isClassContext));
     if (pyIsClassContext == nullptr) {
         return nullptr;
         }
 
-    PyObject* pyGetPositions = PyBool_FromLong(getPositions);
+    PyObjectPtr pyGetPositions = PyObjectPtr::unincremented(
+        PyBool_FromLong(getPositions));
     if (pyGetPositions == nullptr) {
-        Py_DECREF(pyIsClassContext);
         return nullptr;
         }
 
-    PyObject* kwds = Py_BuildValue("{s:O, s:O, s:O, s:O}",
-        "pyAstNode",
-        pyAst,
-        "isClassContext",
-        pyIsClassContext,
-        "getPositions",
-        pyGetPositions,
-        "exclude_predicate",
-        exclude_predicate
-        );
+    PyObjectPtr kwds = PyObjectPtr::unincremented(
+        Py_BuildValue("{s:O, s:O, s:O, s:O}",
+            "pyAstNode",
+            pyAst,
+            "isClassContext",
+            pyIsClassContext.get(),
+            "getPositions",
+            pyGetPositions.get(),
+            "exclude_predicate",
+            exclude_predicate
+            ));
     if (kwds == nullptr) {
-        Py_DECREF(pyGetPositions);
-        Py_DECREF(pyIsClassContext);
         return nullptr;
         }
 
-    PyObject* argsTuple = Py_BuildValue("()");
+    PyObjectPtr argsTuple = PyObjectPtr::unincremented(Py_BuildValue("()"));
     if (argsTuple == nullptr) {
-        Py_DECREF(kwds);
-        Py_DECREF(pyGetPositions);
-        Py_DECREF(pyIsClassContext);
         return nullptr;
         }
 
-    PyObject* res = PyObject_Call(
-        mGetFreeVariableMemberAccessChainsFun,
-        argsTuple,
-        kwds);
-
-    Py_DECREF(argsTuple);
-    Py_DECREF(kwds);
-    Py_DECREF(pyGetPositions);
-    Py_DECREF(pyIsClassContext);
-    
-    return res;
+    return PyObject_Call(
+        mGetFreeVariableMemberAccessChainsFun.get(),
+        argsTuple.get(),
+        kwds.get());
     }
 
 
@@ -150,47 +122,37 @@ PyObject* PyAstFreeVariableAnalyses::collectBoundValuesInScope(
         bool getPositions
         ) const
     {
-    PyObject* collectBoundValuesInScopeFun = PyObject_GetAttrString(
-        mPyAstFreeVariableAnalysesModule,
-        "collectBoundValuesInScope"
-        );
+    PyObjectPtr collectBoundValuesInScopeFun = PyObjectPtr::unincremented(
+        PyObject_GetAttrString(
+            mPyAstFreeVariableAnalysesModule.get(),
+            "collectBoundValuesInScope"
+            ));
     if (collectBoundValuesInScopeFun == nullptr) {
         return nullptr;
         }
 
-    // don't need to decref this creature since we're using it as a temporary
-    PyObject* pyBool = (getPositions ? Py_True : Py_False);
-    Py_INCREF(pyBool);
+    PyObject* pyBool = getPositions ? Py_True : Py_False;
 
-    PyObject* res = PyObject_CallFunctionObjArgs(
-        collectBoundValuesInScopeFun,
+    return PyObject_CallFunctionObjArgs(
+        collectBoundValuesInScopeFun.get(),
         pyAst,
         pyBool,
         nullptr
-        );
-    
-    Py_DECREF(pyBool);
-    Py_DECREF(collectBoundValuesInScopeFun);
-
-    return res;
+        );    
     }
 
 
 PyObject* PyAstFreeVariableAnalyses::varWithPosition(const PyObject* var,
                                                      const PyObject* pos) const
     {
-    PyObject* varTup = Py_BuildValue("(O)", var);
+    PyObjectPtr varTup = PyObjectPtr::unincremented(Py_BuildValue("(O)", var));
     if (varTup == nullptr) {
         return nullptr;
         }
 
-    PyObject* tr = PyObject_CallFunctionObjArgs(
-        mVarWithPosition,
-        varTup,
+    return PyObject_CallFunctionObjArgs(
+        mVarWithPosition.get(),
+        varTup.get(),
         pos,
         nullptr);
-
-    Py_DECREF(varTup);
-
-    return tr;
     }

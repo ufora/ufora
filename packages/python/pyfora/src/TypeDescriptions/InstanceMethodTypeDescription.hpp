@@ -32,7 +32,6 @@ public:
         int64_t instanceId,
         const std::string& methodName
         );
-    virtual ~InstanceMethodTypeDescription();
 
     virtual PyObject* transform(
         IRToPythonConverter& c,

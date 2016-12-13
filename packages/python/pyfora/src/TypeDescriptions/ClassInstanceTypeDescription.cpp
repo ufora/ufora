@@ -15,6 +15,7 @@
 ****************************************************************************/
 #include "../IRToPythonConverter.hpp"
 #include "../PythonObjectRehydrator.hpp"
+#include "../core/PyObjectPtr.hpp"
 #include "ClassInstanceTypeDescription.hpp"
 
 #include <stdexcept>
@@ -29,73 +30,58 @@ ClassInstanceTypeDescription::ClassInstanceTypeDescription(
     }
 
 
-ClassInstanceTypeDescription::~ClassInstanceTypeDescription()
-    {
-    }
-
-
 PyObject* ClassInstanceTypeDescription::transform(
         IRToPythonConverter& converter,
         bool retainHomogenousListsAsNumpy
         )
     {
-    PyObject* classObject = converter.convert(mClassId);
+    PyObjectPtr classObject = PyObjectPtr::unincremented(
+        converter.convert(mClassId));
     if (classObject == nullptr) {
         return nullptr;
         }
 
     if (converter.rehydrator().pureImplementationMappings()
-            .canInvertInstancesOf(classObject))
+        .canInvertInstancesOf(classObject.get()))
         {
-        PyObject* members = converter.convertDict(mClassMembers, true);
+        PyObjectPtr members = PyObjectPtr::unincremented(
+            converter.convertDict(mClassMembers, true));
         if (members == nullptr) {
-            Py_DECREF(classObject);
             return nullptr;
             }
 
-        PyObject* pureInstance =
+        PyObjectPtr pureInstance = PyObjectPtr::unincremented(
             converter.rehydrator().instantiateClass(
-                classObject,
-                members
-                );
-
-        Py_DECREF(members);
-        Py_DECREF(classObject);
+                classObject.get(),
+                members.get()
+                )
+            );
 
         if (pureInstance == nullptr) {
             return nullptr;
             }
 
-        PyObject* tr = converter.rehydrator()
+        return converter.rehydrator()
             .pureImplementationMappings()
-            .pureInstanceToMappable(pureInstance);
-
-        Py_DECREF(pureInstance);
-
-        return tr;
+            .pureInstanceToMappable(pureInstance.get());
         }
     else {
-        PyObject* members = converter.convertDict(mClassMembers, false);
+        PyObjectPtr members = PyObjectPtr::unincremented(
+            converter.convertDict(mClassMembers, false));
 
-        PyObject* instance =
+        PyObjectPtr instance = PyObjectPtr::unincremented(
             converter.rehydrator().instantiateClass(
-                classObject,
-                members
-                );
-
-        Py_DECREF(members);
-        Py_DECREF(classObject);
+                classObject.get(),
+                members.get()
+                )
+            );
 
         if (instance == nullptr) {
             return nullptr;
             }
 
-        PyObject* tr = converter.rehydrator()
-            .invertPureClassInstanceIfNecessary(instance);
-
-        Py_DECREF(instance);
-
-        return tr;
+        return converter.rehydrator()
+            .invertPureClassInstanceIfNecessary(instance.get());
         }
 
     throw std::runtime_error(

@@ -19,6 +19,7 @@
 
 #include "ModuleLevelObjectIndex.hpp"
 #include "PureImplementationMappings.hpp"
+#include "core/PyObjectPtr.hpp"
 
 #include <stdint.h>
 #include <string>
@@ -31,9 +32,8 @@ class PureImplementationMappings;
 class PythonObjectRehydrator {
 public:
     PythonObjectRehydrator(
-        PyObject* purePythonClassMapping,
+        const PyObjectPtr& purePythonClassMapping,
         bool allowUserCodeModuleLevelLookups);
-    ~PythonObjectRehydrator();
 
     PyObject* convertEncodedStringToPythonObject(
         const std::string& binarydata,
@@ -79,12 +79,12 @@ private:
 
     void _initNoConversionFunc();
     void _initPurePythonObjectRehydratorHelpers(
-        PyObject* purePythonClassMapping,
+        const PyObjectPtr& purePythonClassMapping,
         bool allowUserCodeModuleLevelLookups
         );
 
-    PyObject* mNoConversionFunc;
+    PyObjectPtr mNoConversionFunc;
     PureImplementationMappings mPureImplementationMappings;
-    PyObject* mPurePythonObjectRehydratorHelpers;
+    PyObjectPtr mPurePythonObjectRehydratorHelpers;
     ModuleLevelObjectIndex mModuleLevelObjectIndex;
 };

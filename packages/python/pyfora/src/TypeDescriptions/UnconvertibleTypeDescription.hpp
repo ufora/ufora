@@ -20,6 +20,7 @@
 #include <string>
 
 #include "TypeDescription.hpp"
+#include "../core/PyObjectPtr.hpp"
 
 
 class IRToPythonConverter;
@@ -29,8 +30,6 @@ public:
 
     explicit UnconvertibleTypeDescription(PyObject* stringTupleOrNone);
 
-    virtual ~UnconvertibleTypeDescription();
-
     virtual PyObject* transform(
         IRToPythonConverter& c,
         bool retainHomogenousListsAsNumpy=false
@@ -39,9 +38,6 @@ public:
     virtual std::string toString();
 
 private:
-    PyObject* mStringTupleOrNone;
-
-    UnconvertibleTypeDescription(const UnconvertibleTypeDescription&) = delete;
-    void operator=(UnconvertibleTypeDescription&) = delete;
+    PyObjectPtr mStringTupleOrNone;
 };
 

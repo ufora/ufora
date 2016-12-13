@@ -14,6 +14,7 @@
    limitations under the License.
 ****************************************************************************/
 #include "../IRToPythonConverter.hpp"
+#include "../core/PyObjectPtr.hpp"
 #include "InstanceMethodTypeDescription.hpp"
 
 
@@ -27,27 +28,18 @@ InstanceMethodTypeDescription::InstanceMethodTypeDescription(
     }
 
 
-InstanceMethodTypeDescription::~InstanceMethodTypeDescription()
-    {
-    }
-
-
 PyObject* InstanceMethodTypeDescription::transform(
         IRToPythonConverter& c,
         bool retainHomogenousListsAsNumpy
         )
     {
-    PyObject* instance = c.convert(mInstanceId);
+    PyObjectPtr instance = PyObjectPtr::unincremented(c.convert(mInstanceId));
     if (instance == nullptr) {
         return nullptr;
         }
 
-    PyObject* tr = PyObject_GetAttrString(
-        instance,
+    return PyObject_GetAttrString(
+        instance.get(),
         mMethodName.c_str()
         );
-
-    Py_DECREF(instance);
-
-    return tr;
     }

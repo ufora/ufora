@@ -18,6 +18,7 @@
 #include <Python.h>
 
 #include "TypeDescription.hpp"
+#include "../core/PyObjectPtr.hpp"
 
 
 class IRToPythonConverter;
@@ -30,7 +31,6 @@ public:
         int32_t linenumber,
         PyObject* freeVariableResolutions
         );
-    virtual ~FunctionTypeDescription();
 
     virtual PyObject* transform(
         IRToPythonConverter& c,
@@ -40,7 +40,7 @@ public:
 private:
     int64_t mSourceFileId;
     int32_t mLinenumber;
-    PyObject* mFreeVariableResolutions;
+    PyObjectPtr mFreeVariableResolutions;
 
     FunctionTypeDescription(const FunctionTypeDescription&) = delete;
     void operator=(const FunctionTypeDescription&) = delete;

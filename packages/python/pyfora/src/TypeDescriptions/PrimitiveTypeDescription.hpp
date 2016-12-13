@@ -18,6 +18,7 @@
 #include <Python.h>
 
 #include "TypeDescription.hpp"
+#include "../core/PyObjectPtr.hpp"
 
 
 class IRToPythonConverter;
@@ -26,7 +27,6 @@ class PrimitiveTypeDescription : public TypeDescription {
 public:
 
     explicit PrimitiveTypeDescription(PyObject* primitive);
-    virtual ~PrimitiveTypeDescription();
 
     virtual PyObject* transform(
         IRToPythonConverter& c,
@@ -34,7 +34,7 @@ public:
         );
 
 private:
-    PyObject* mPrimitive;
+    PyObjectPtr mPrimitive;
 
     PrimitiveTypeDescription(const PrimitiveTypeDescription&) = delete;
     void operator=(const PrimitiveTypeDescription&) = delete;

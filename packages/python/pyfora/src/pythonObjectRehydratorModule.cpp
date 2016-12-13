@@ -20,6 +20,7 @@
 
 #include "PyObjectUtils.hpp"
 #include "PythonObjectRehydrator.hpp"
+#include "core/PyObjectPtr.hpp"
 
 #include <stdexcept>
 
@@ -69,7 +70,7 @@ PythonObjectRehydratorStruct_init(PythonObjectRehydratorStruct* self,
         }
 
     self->nativePythonObjectRehydrator = new PythonObjectRehydrator(
-        purePythonClassMapping,
+        PyObjectPtr::incremented(purePythonClassMapping),
         allowUserCodeModuleLevelLookups
         );
 

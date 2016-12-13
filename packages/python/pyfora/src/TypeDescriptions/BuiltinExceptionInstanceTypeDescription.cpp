@@ -14,6 +14,7 @@
    limitations under the License.
 ****************************************************************************/
 #include "../IRToPythonConverter.hpp"
+#include "../core/PyObjectPtr.hpp"
 #include "BuiltinExceptionInstanceTypeDescription.hpp"
 
 
@@ -27,34 +28,24 @@ BuiltinExceptionInstanceTypeDescription::BuiltinExceptionInstanceTypeDescription
     }
 
 
-BuiltinExceptionInstanceTypeDescription::~BuiltinExceptionInstanceTypeDescription()
-    {
-    }
-
-
 PyObject* BuiltinExceptionInstanceTypeDescription::transform(
         IRToPythonConverter& converter,
         bool retainHomogenousListsAsNumpy
         )
     {
-    PyObject* builtinExceptionType = converter.singletonNameToObject(mTypeName);
+    PyObjectPtr builtinExceptionType = PyObjectPtr::unincremented(
+        converter.singletonNameToObject(mTypeName));
     if (builtinExceptionType == nullptr) {
         return nullptr;
         }
     
-    PyObject* args = converter.convert(mArgsId);
+    PyObjectPtr args = PyObjectPtr::unincremented(converter.convert(mArgsId));
     if (args == nullptr) {
-        Py_DECREF(builtinExceptionType);
         return nullptr;
         }
 
-    PyObject* tr = PyObject_Call(
-        builtinExceptionType,
-        args,
+    return PyObject_Call(
+        builtinExceptionType.get(),
+        args.get(),
         nullptr);
-
-    Py_DECREF(args);
-    Py_DECREF(builtinExceptionType);
-
-    return tr;
     }

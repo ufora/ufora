@@ -28,35 +28,23 @@ PackedHomogenousDataTypeDescription::PackedHomogenousDataTypeDescription(
         PyObject* dtype,
         const std::string& packedBytes
         )
-    : mDtype(dtype),
+    : mDtype(PyObjectPtr::incremented(dtype)),
       mPackedBytes(packedBytes)
     {
-    Py_XINCREF(mDtype);
     }
 
-
-PackedHomogenousDataTypeDescription::~PackedHomogenousDataTypeDescription()
-    {
-    Py_XDECREF(mDtype);
-    }
-    
 
 namespace {
 
 // returns a new reference
 PyObject* primitiveToDtypeArg(PyObject* primitive)
     {
-    if (primitive == Py_None) {
+    if (primitive == Py_None or PyString_Check(primitive)) {
         Py_INCREF(primitive);
         return primitive;
         }
 
-    if (PyString_Check(primitive)) {
-        Py_INCREF(primitive);
-        return primitive;
-        }
-
-    PyObject* iterator = PyObject_GetIter(primitive);
+    PyObjectPtr iterator = PyObjectPtr::unincremented(PyObject_GetIter(primitive));
     if (iterator == nullptr) {
         return nullptr;
         }
@@ -66,69 +54,59 @@ PyObject* primitiveToDtypeArg(PyObject* primitive)
         return nullptr;
         }
 
-    PyObject* item;
-    while ((item = PyIter_Next(iterator))) {
-        PyObject* dtypeArg = primitiveToDtypeArg(item);
+    PyObjectPtr item;
+    while ((item = PyObjectPtr::unincremented(PyIter_Next(iterator.get())))) {
+        // to be inserted in a tuple, which steals a reference,
+        // so we don't put this in a smart pointer
+        PyObject* dtypeArg = primitiveToDtypeArg(item.get());
         if (dtypeArg == nullptr) {
-            Py_DECREF(item);
             Py_DECREF(pyList);
-            Py_DECREF(iterator);
             return nullptr;
             }
 
-        PyObject* tup = PyTuple_New(2);
+        PyObjectPtr tup = PyObjectPtr::unincremented(PyTuple_New(2));
         if (tup == nullptr) {
             Py_DECREF(dtypeArg);
-            Py_DECREF(item);
             Py_DECREF(pyList);
-            Py_DECREF(iterator);
             return nullptr;
             }
 
+        // to be inserted in a tuple, which steals a reference,
+        // so we don't put this in a smart pointer
         PyObject* pyString = PyString_FromString("");
         if (pyString == nullptr) {
-            Py_DECREF(tup);
             Py_DECREF(dtypeArg);
-            Py_DECREF(item);
             Py_DECREF(pyList);
-            Py_DECREF(iterator);
             return nullptr;
             }
 
         // these steal references to the item inserted, 
-        // so decrefing isn't necessary
-        PyTuple_SET_ITEM(tup, 0, pyString);
-        PyTuple_SET_ITEM(tup, 1, dtypeArg);
+        // so we don't decref them!
+        PyTuple_SET_ITEM(tup.get(), 0, pyString);
+        PyTuple_SET_ITEM(tup.get(), 1, dtypeArg);
         
-        int retcode = PyList_Append(pyList, tup);
+        int retcode = PyList_Append(pyList, tup.get());
         
-        Py_DECREF(tup);
-        Py_DECREF(item);
-
         if (retcode < 0) {
             Py_DECREF(pyList);
-            Py_DECREF(iterator);
             return nullptr;
             }
         }
 
-    Py_DECREF(iterator);
-
     return pyList;
     }
 
-PyArray_Descr* primitiveToDtype(PyObject* primitive)
+PyArray_Descr* primitiveToDtype(const PyObjectPtr& primitive)
     {
     PyArray_Descr* tr;
 
-    PyObject* dTypeArg = primitiveToDtypeArg(primitive);
+    PyObjectPtr dTypeArg = PyObjectPtr::unincremented(
+        primitiveToDtypeArg(primitive.get()));
     if (dTypeArg == nullptr) {
         return nullptr;
         }
 
-    int retcode = PyArray_DescrConverter(dTypeArg, &tr);
-
-    Py_DECREF(dTypeArg);
+    int retcode = PyArray_DescrConverter(dTypeArg.get(), &tr);
 
     if (retcode < 0) {
         return nullptr;

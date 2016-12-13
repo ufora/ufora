@@ -17,12 +17,12 @@
 
 #include <Python.h>
 
+#include "core/PyObjectPtr.hpp"
+
 
 class PyAstFreeVariableAnalyses {
 public:
     PyAstFreeVariableAnalyses();
-    PyAstFreeVariableAnalyses(const PyAstFreeVariableAnalyses&);
-    ~PyAstFreeVariableAnalyses();
 
     PyObject* getFreeMemberAccessChainsWithPositions(
         const PyObject* pyAst,
@@ -44,7 +44,7 @@ private:
     void _initGetFreeVariableMemberAccessChainsFun();
     void _initVarWithPosition();
 
-    PyObject* mPyAstFreeVariableAnalysesModule;
-    PyObject* mGetFreeVariableMemberAccessChainsFun;
-    PyObject* mVarWithPosition;
+    PyObjectPtr mPyAstFreeVariableAnalysesModule;
+    PyObjectPtr mGetFreeVariableMemberAccessChainsFun;
+    PyObjectPtr mVarWithPosition;
     };

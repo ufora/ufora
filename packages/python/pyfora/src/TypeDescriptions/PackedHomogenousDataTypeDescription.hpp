@@ -17,6 +17,7 @@
 
 #include <Python.h>
 
+#include "../core/PyObjectPtr.hpp"
 #include "TypeDescription.hpp"
 
 #include <string>
@@ -34,7 +35,6 @@ public:
         PyObject* dtype,
         const std::string& packedBytes
         );
-    virtual ~PackedHomogenousDataTypeDescription();
 
     virtual PyObject* transform(
         IRToPythonConverter& c,
@@ -42,7 +42,7 @@ public:
         );
 
 private:
-    PyObject* mDtype;
+    PyObjectPtr mDtype;
     std::string mPackedBytes;
 
     PackedHomogenousDataTypeDescription(

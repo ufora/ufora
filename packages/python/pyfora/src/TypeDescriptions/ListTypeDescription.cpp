@@ -23,11 +23,6 @@ ListTypeDescription::ListTypeDescription(const std::vector<int64_t>& memberIds)
     }
 
 
-ListTypeDescription::~ListTypeDescription()
-    {
-    }
-
-
 PyObject* ListTypeDescription::transform(
         IRToPythonConverter& c,
         bool retainHomogenousListsAsNumpy

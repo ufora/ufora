@@ -19,23 +19,9 @@
 #include <stdexcept>
 
 
-Ast::Ast(const Ast& other)
-    : mAstModule(other.mAstModule)
+Ast::Ast() 
+    : mAstModule(PyObjectPtr::unincremented(PyImport_ImportModule("ast")))
     {
-    Py_INCREF(mAstModule);
-    }
-
-
-Ast::~Ast()
-    {
-    Py_XDECREF(mAstModule);
-    }
-
-
-Ast::Ast() : mAstModule(nullptr)
-    {
-    mAstModule = PyImport_ImportModule("ast");
-
     if (mAstModule == nullptr) {
         throw std::runtime_error(
             "py error in Ast::get(): " + PyObjectUtils::format_exc()
@@ -46,35 +32,29 @@ Ast::Ast() : mAstModule(nullptr)
 
 PyObject* Ast::FunctionDef(PyObject* args, PyObject* kw) const
     {
-    PyObject* FunctionDefFun = PyObject_GetAttrString(
-        mAstModule,
-        "FunctionDef"
-        );
+    PyObjectPtr FunctionDefFun = PyObjectPtr::unincremented(
+        PyObject_GetAttrString(
+            mAstModule.get(),
+            "FunctionDef"
+            ));
     if (FunctionDefFun == nullptr) {
         return nullptr;
         }
 
-    PyObject* res = PyObject_Call(FunctionDefFun, args, kw);
-
-    Py_DECREF(FunctionDefFun);
-
-    return res;
+    return PyObject_Call(FunctionDefFun.get(), args, kw);
     }
 
 
 PyObject* Ast::arguments(PyObject* args, PyObject* kw) const
     {
-    PyObject* argumentsFun = PyObject_GetAttrString(
-        mAstModule,
-        "arguments"
-        );
+    PyObjectPtr argumentsFun = PyObjectPtr::unincremented(
+        PyObject_GetAttrString(
+            mAstModule.get(),
+            "arguments"
+            ));
     if (argumentsFun == nullptr) {
         return nullptr;
         }
 
-    PyObject* res = PyObject_Call(argumentsFun, args, kw);
-
-    Py_DECREF(argumentsFun);
-
-    return res;
+    return PyObject_Call(argumentsFun.get(), args, kw);
     }

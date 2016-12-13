@@ -14,6 +14,7 @@
    limitations under the License.
 ****************************************************************************/
 #include "../IRToPythonConverter.hpp"
+#include "../core/PyObjectPtr.hpp"
 #include "DictTypeDescription.hpp"
 
 #include <stdexcept>
@@ -25,11 +26,6 @@ DictTypeDescription::DictTypeDescription(
         )
     : mKeyIds(keyIds),
       mValueIds(valueIds)
-    {
-    }
-
-
-DictTypeDescription::~DictTypeDescription()
     {
     }
 
@@ -52,24 +48,21 @@ PyObject* DictTypeDescription::transform(
         }
 
     for (size_type ix = 0; ix < ct; ++ix) {
-        PyObject* key = c.convert(mKeyIds[ix]);
+        PyObjectPtr key = PyObjectPtr::unincremented(c.convert(mKeyIds[ix]));
         if (key == nullptr) {
             Py_DECREF(tr);
             return nullptr;
             }
 
-        PyObject* value = c.convert(mValueIds[ix]);
+        PyObjectPtr value = PyObjectPtr::unincremented(c.convert(mValueIds[ix]));
         if (value == nullptr) {
-            Py_DECREF(key);
             Py_DECREF(tr);
             return nullptr;
             }
         
-        int retcode = PyDict_SetItem(tr, key, value);
+        int retcode = PyDict_SetItem(tr, key.get(), value.get());
 
         if (retcode != 0) {
-            Py_DECREF(value);
-            Py_DECREF(key);
             Py_DECREF(tr);
             return nullptr;
             }

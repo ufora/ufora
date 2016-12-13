@@ -29,17 +29,15 @@ ClassTypeDescription::ClassTypeDescription(
     ) :
         mSourceFileId(sourceFileId),
         mLinenumber(linenumber),
-        mFreeVariableResolutions(freeVariableResolutions),
         mBaseClassIds(baseClassIds)
     {
-    if (mFreeVariableResolutions == nullptr) {
+    if (freeVariableResolutions == nullptr) {
         throw std::runtime_error(
             "got a nullptr freeVariableResolutions arg in "
             "ClassTypeDescription::ClassTypeDescription"
             );
         }
     if (not PyDict_Check(freeVariableResolutions)) {
-        Py_DECREF(freeVariableResolutions);
         throw std::runtime_error(
             "freeVariableResolutions arg in "
             "ClassTypeDescription::ClassTypeDescription "
@@ -47,13 +45,7 @@ ClassTypeDescription::ClassTypeDescription(
             );
         }
 
-    Py_INCREF(mFreeVariableResolutions);
-    }
-
-
-ClassTypeDescription::~ClassTypeDescription()
-    {
-    Py_DECREF(mFreeVariableResolutions);
+    mFreeVariableResolutions = PyObjectPtr::incremented(freeVariableResolutions);
     }
 
 
@@ -62,26 +54,21 @@ PyObject* ClassTypeDescription::transform(
         bool retainHomogenousListsAsNumpy
         )
     {
-    PyObject* convertedMembers =
-        converter.convertDict(mFreeVariableResolutions);
+    PyObjectPtr convertedMembers = PyObjectPtr::unincremented(
+        converter.convertDict(mFreeVariableResolutions.get()));
     if (convertedMembers == nullptr) {
         return nullptr;
         }
     
-    PyObject* pyFileDescription = converter.convert(mSourceFileId);
+    PyObjectPtr pyFileDescription = PyObjectPtr::unincremented(
+        converter.convert(mSourceFileId));
     if (pyFileDescription == nullptr) {
-        Py_DECREF(convertedMembers);
         return nullptr;
         }
 
-    PyObject* tr = converter.rehydrator().createClassObject(
-        pyFileDescription,
+    return converter.rehydrator().createClassObject(
+        pyFileDescription.get(),
         mLinenumber,
-        convertedMembers
+        convertedMembers.get()
         );
-
-    Py_DECREF(pyFileDescription);
-    Py_DECREF(convertedMembers);
-
-    return tr;
     }

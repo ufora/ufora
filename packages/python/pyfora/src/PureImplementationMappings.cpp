@@ -15,41 +15,28 @@
 ****************************************************************************/
 #include "PureImplementationMappings.hpp"
 
+#include <iostream>
 #include <stdexcept>
 
 #include "PyObjectUtils.hpp"
 
 
 PureImplementationMappings::PureImplementationMappings(
-       PyObject* pyPureImplementationMappings
+       const PyObjectPtr& pyPureImplementationMappings
        )
     : mPyPureImplementationMappings(pyPureImplementationMappings)
     {
-    if (pyPureImplementationMappings == nullptr) {
-        throw std::runtime_error(
-            "can't pass a Null ptr to ctor of PureImplementationMappings");
-        }
-
-    Py_INCREF(mPyPureImplementationMappings);
-    }
-
-
-PureImplementationMappings::PureImplementationMappings(
-        const PureImplementationMappings& mappings
-        )
-    : mPyPureImplementationMappings(mappings.mPyPureImplementationMappings)
-    {
-    Py_INCREF(mPyPureImplementationMappings);
     }
 
 
 bool 
 PureImplementationMappings::canInvertInstancesOf(const PyObject* classObject)
     {
-    PyObject* canInvertInstancesOfFun = PyObject_GetAttrString(
-        mPyPureImplementationMappings,
-        "canInvertInstancesOf"
-        );
+    PyObjectPtr canInvertInstancesOfFun = PyObjectPtr::unincremented(
+        PyObject_GetAttrString(
+            mPyPureImplementationMappings.get(),
+            "canInvertInstancesOf"
+            ));
     if (canInvertInstancesOfFun == nullptr) {
         throw std::runtime_error(
             "py err in PureImplementationMappings::canInvertInstancesOf: " +
@@ -57,17 +44,14 @@ PureImplementationMappings::canInvertInstancesOf(const PyObject* classObject)
             );
         }
 
-    PyObject* tr = PyObject_CallFunctionObjArgs(
-        canInvertInstancesOfFun,
-        classObject,
-        nullptr
-        );
+    PyObjectPtr res = PyObjectPtr::unincremented(
+        PyObject_CallFunctionObjArgs(
+            canInvertInstancesOfFun.get(),
+            classObject,
+            nullptr
+            ));
 
-    Py_DECREF(canInvertInstancesOfFun);
-
-    int isTrue = PyObject_IsTrue(tr);
-
-    Py_DECREF(tr);
+    int isTrue = PyObject_IsTrue(res.get());
 
     if (isTrue < 0) {
         throw std::runtime_error(
@@ -80,40 +64,28 @@ PureImplementationMappings::canInvertInstancesOf(const PyObject* classObject)
     }
 
 
-PureImplementationMappings::~PureImplementationMappings()
-    {
-    Py_XDECREF(mPyPureImplementationMappings);
-    }
-
-
 PyObject* PureImplementationMappings::mappableInstanceToPure(
         const PyObject* pyObject)
     {
-    PyObject* pyString = PyString_FromString("mappableInstanceToPure");
+    PyObjectPtr pyString = PyObjectPtr::unincremented(
+        PyString_FromString("mappableInstanceToPure"));
     if (pyString == nullptr) {
         return nullptr;
         }
 
-    PyObject* pureInstance = PyObject_CallMethodObjArgs(
-        mPyPureImplementationMappings,
-        pyString,
+    return PyObject_CallMethodObjArgs(
+        mPyPureImplementationMappings.get(),
+        pyString.get(),
         pyObject,
         nullptr
         );
-
-    Py_DECREF(pyString);
-
-    if (pureInstance == nullptr) {
-        return nullptr;
-        }
-
-    return pureInstance;
     }
 
 
 bool PureImplementationMappings::canMap(const PyObject* pyObject)
     {
-    PyObject* pyString = PyString_FromString("canMap");
+    PyObjectPtr pyString = PyObjectPtr::unincremented(
+        PyString_FromString("canMap"));
     if (pyString == nullptr) {
         throw std::runtime_error(
             "py error in PureImplementationMappings::canMap: " +
@@ -121,14 +93,14 @@ bool PureImplementationMappings::canMap(const PyObject* pyObject)
             );
         }
 
-    PyObject* res = PyObject_CallMethodObjArgs(
-        mPyPureImplementationMappings,
-        pyString,
-        pyObject,
-        nullptr
+    PyObjectPtr res = PyObjectPtr::unincremented(
+        PyObject_CallMethodObjArgs(
+            mPyPureImplementationMappings.get(),
+            pyString.get(),
+            pyObject,
+            nullptr
+            )
         );
-
-    Py_DECREF(pyString);
 
     if (res == nullptr) {
         throw std::runtime_error(
@@ -137,9 +109,7 @@ bool PureImplementationMappings::canMap(const PyObject* pyObject)
             );
         }
 
-    int isTrue = PyObject_IsTrue(res);
-    
-    Py_DECREF(res);
+    int isTrue = PyObject_IsTrue(res.get());
 
     if (isTrue < 0) {
         throw std::runtime_error(
@@ -155,27 +125,25 @@ PyObject* PureImplementationMappings::pureInstanceToMappable(
         const PyObject* instance
         )
     {
-    PyObject* methodName = PyString_FromString("pureInstanceToMappable");
+    PyObjectPtr methodName = PyObjectPtr::unincremented(
+        PyString_FromString("pureInstanceToMappable"));
     if (methodName == nullptr) {
         return nullptr;
         }
 
-    PyObject* tr = PyObject_CallMethodObjArgs(
-        mPyPureImplementationMappings,
-        methodName,
+    return PyObject_CallMethodObjArgs(
+        mPyPureImplementationMappings.get(),
+        methodName.get(),
         instance,
         nullptr
         );
-
-    Py_DECREF(methodName);;
-    
-    return tr;
     }
 
 
 bool PureImplementationMappings::canInvert(const PyObject* pyObject)
     {
-    PyObject* methodName = PyString_FromString("canInvert");
+    PyObjectPtr methodName = PyObjectPtr::unincremented(
+        PyString_FromString("canInvert"));
     if (methodName == nullptr) {
         throw std::runtime_error(
             "py error getting a py string from a C string: " +
@@ -183,25 +151,23 @@ bool PureImplementationMappings::canInvert(const PyObject* pyObject)
             );
         }
 
-    PyObject* tr = PyObject_CallMethodObjArgs(
-        mPyPureImplementationMappings,
-        methodName,
-        pyObject,
-        nullptr
+    PyObjectPtr res = PyObjectPtr::unincremented(
+        PyObject_CallMethodObjArgs(
+            mPyPureImplementationMappings.get(),
+            methodName.get(),
+            pyObject,
+            nullptr
+            )
         );
 
-    Py_DECREF(methodName);
-
-    if (tr == nullptr) {
+    if (res == nullptr) {
         throw std::runtime_error(
             "py error calling `canInvert`: " +
             PyObjectUtils::format_exc()
             );
         }
 
-    int isTrue = PyObject_IsTrue(tr);
-
-    Py_DECREF(tr);
+    int isTrue = PyObject_IsTrue(res.get());
 
     if (isTrue < 0) {
         throw std::runtime_error(

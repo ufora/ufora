@@ -15,6 +15,7 @@
 ****************************************************************************/
 #include "../IRToPythonConverter.hpp"
 #include "../PythonObjectRehydrator.hpp"
+#include "../core/PyObjectPtr.hpp"
 #include "FunctionTypeDescription.hpp"
 
 #include <stdexcept>
@@ -26,16 +27,9 @@ FunctionTypeDescription::FunctionTypeDescription(
         PyObject* freeVariableResolutions
     ) :
         mSourceFileId(sourceFileId),
-        mLinenumber(linenumber),
-        mFreeVariableResolutions(freeVariableResolutions)
+        mLinenumber(linenumber)
     {
-    Py_XINCREF(mFreeVariableResolutions);
-    }
-
-
-FunctionTypeDescription::~FunctionTypeDescription()
-    {
-    Py_XDECREF(mFreeVariableResolutions);
+    mFreeVariableResolutions = PyObjectPtr::incremented(freeVariableResolutions);
     }
 
 
@@ -44,26 +38,21 @@ PyObject* FunctionTypeDescription::transform(
         bool retainHomogenousListsAsNumpy
         )
     {
-    PyObject* convertedMembers =
-        converter.convertDict(mFreeVariableResolutions);
+    PyObjectPtr convertedMembers = PyObjectPtr::unincremented(
+        converter.convertDict(mFreeVariableResolutions.get()));
     if (convertedMembers == nullptr) {
         return nullptr;
         }
 
-    PyObject* pyFileDescription = converter.convert(mSourceFileId);
+    PyObjectPtr pyFileDescription = PyObjectPtr::unincremented(
+        converter.convert(mSourceFileId));
     if (pyFileDescription == nullptr) {
-        Py_DECREF(convertedMembers);
         return nullptr;
         }
 
-    PyObject* tr = converter.rehydrator().instantiateFunction(
-        pyFileDescription,
+    return converter.rehydrator().instantiateFunction(
+        pyFileDescription.get(),
         mLinenumber,
-        convertedMembers
+        convertedMembers.get()
         );
-
-    Py_DECREF(pyFileDescription);
-    Py_DECREF(convertedMembers);
-
-    return tr;
     }

@@ -15,19 +15,16 @@
 ****************************************************************************/
 #include <Python.h>
 
+#include "core/PyObjectPtr.hpp"
+
 
 class Ast {
 public:
     Ast();
 
-    Ast(const Ast&);
-    ~Ast();
-
     PyObject* FunctionDef(PyObject* args, PyObject* kw) const;
     PyObject* arguments(PyObject* args, PyObject* kw) const;
 
 private:
-    void operator=(const Ast&) = delete;
-
-    PyObject* mAstModule;
+    PyObjectPtr mAstModule;
     };

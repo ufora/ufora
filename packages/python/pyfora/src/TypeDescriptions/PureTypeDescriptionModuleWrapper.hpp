@@ -17,20 +17,17 @@
 
 #include <Python.h>
 
+#include "../core/PyObjectPtr.hpp"
+
 class FileTypeDescription;
+
 
 class PureTypeDescriptionModuleWrapper {
 public:
     PureTypeDescriptionModuleWrapper();
-    ~PureTypeDescriptionModuleWrapper();
 
     PyObject* pyHomogeneousListAsNumpyArray(const PyObject*) const;
     PyObject* pyFileDescription(const FileTypeDescription&) const;
 private:
-    PureTypeDescriptionModuleWrapper(
-        const PureTypeDescriptionModuleWrapper&
-        ) = delete;
-    void operator=(PureTypeDescriptionModuleWrapper&) = delete;
-
-    PyObject* mPureTypeDescriptionModule;
+    PyObjectPtr mPureTypeDescriptionModule;
 };

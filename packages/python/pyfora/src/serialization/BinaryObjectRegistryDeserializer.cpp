@@ -17,6 +17,7 @@
 #include "../Json.hpp"
 #include "../ObjectRegistry.hpp"
 #include "../PyObjectUtils.hpp"
+#include "../core/PyObjectPtr.hpp"
 #include "BinaryObjectRegistryDeserializer.hpp"
 #include "DeserializerBase.hpp"
 
@@ -59,7 +60,8 @@ void BinaryObjectRegistryDeserializer::deserializeFromStream(
 
         if (is_primitive_code(code))
             {
-            PyObject* primitive = readPrimitive(code, stream);
+            PyObjectPtr primitive = PyObjectPtr::unincremented(
+                readPrimitive(code, stream));
             if (primitive == nullptr) {
                 throw std::runtime_error(
                     std::string("py error reading a primitive in ") +
@@ -68,9 +70,7 @@ void BinaryObjectRegistryDeserializer::deserializeFromStream(
                     );
                 }
 
-            objectRegistry.definePrimitive(objectId, primitive);
-
-            Py_DECREF(primitive);
+            objectRegistry.definePrimitive(objectId, primitive.get());
             }
         else if (code == BinaryObjectRegistry::CODE_TUPLE)
             {
@@ -80,7 +80,8 @@ void BinaryObjectRegistryDeserializer::deserializeFromStream(
             }
         else if (code == BinaryObjectRegistry::CODE_PACKED_HOMOGENOUS_DATA)
             {
-            PyObject* dtype = readSimplePrimitive(stream);
+            PyObjectPtr dtype = PyObjectPtr::unincremented(
+                readSimplePrimitive(stream));
             if (dtype == nullptr) {
                 throw std::runtime_error(
                     "error deserializing packed homogeneous data: " + 
@@ -90,11 +91,9 @@ void BinaryObjectRegistryDeserializer::deserializeFromStream(
 
             objectRegistry.definePackedHomogenousData(
                 objectId,
-                dtype,
+                dtype.get(),
                 packedBytes
                 );
-
-            Py_DECREF(dtype);
             }
         else if (code == BinaryObjectRegistry::CODE_LIST) {
             std::vector<int64_t> objectIds;
@@ -116,15 +115,16 @@ void BinaryObjectRegistryDeserializer::deserializeFromStream(
             }
         else if (code == BinaryObjectRegistry::CODE_REMOTE_PY_OBJECT) {
             std::string s = stream->readString();
-            PyObject* jsonRepresentation = jsonModule.loads(s);
+            PyObjectPtr jsonRepresentation = PyObjectPtr::unincremented(
+                jsonModule.loads(s));
 
-            PyObject* pyObject = PyObject_CallFunctionObjArgs(
-                convertJsonToObject,
-                jsonRepresentation,
-                nullptr);
+            PyObjectPtr pyObject = PyObjectPtr::unincremented(
+                PyObject_CallFunctionObjArgs(
+                    convertJsonToObject,
+                    jsonRepresentation.get(),
+                    nullptr)
+                );
             
-            Py_DECREF(jsonRepresentation);
-
             if (pyObject == nullptr) {
                 throw std::runtime_error(
                     "error calling convertJsonToObject: " +
@@ -134,9 +134,7 @@ void BinaryObjectRegistryDeserializer::deserializeFromStream(
 
             objectRegistry.defineRemotePythonObject(
                 objectId,
-                pyObject);
-
-            Py_DECREF(pyObject);
+                pyObject.get());
             }
         else if (code == BinaryObjectRegistry::CODE_BUILTIN_EXCEPTION_INSTANCE) {
             std::string typeName = stream->readString();
@@ -155,8 +153,8 @@ void BinaryObjectRegistryDeserializer::deserializeFromStream(
         else if (code == BinaryObjectRegistry::CODE_FUNCTION) {
             int64_t sourceFileId = stream->readInt64();
             int32_t linenumber = stream->readInt32();
-            PyObject* freeVariableResolutions = 
-                readFreeVariableResolutions(stream);
+            PyObjectPtr freeVariableResolutions = PyObjectPtr::unincremented(
+                readFreeVariableResolutions(stream));
             if (freeVariableResolutions == nullptr) {
                 throw std::runtime_error(
                     "error processing function: " +
@@ -168,15 +166,13 @@ void BinaryObjectRegistryDeserializer::deserializeFromStream(
                 objectId,
                 sourceFileId,
                 linenumber,
-                freeVariableResolutions);
-
-            Py_DECREF(freeVariableResolutions);
+                freeVariableResolutions.get());
             }
         else if (code == BinaryObjectRegistry::CODE_CLASS) {
             int64_t sourceFileId = stream->readInt64();
             int32_t linenumber = stream->readInt32();
-            PyObject* freeVariableResolutions =
-                readFreeVariableResolutions(stream);
+            PyObjectPtr freeVariableResolutions = PyObjectPtr::unincremented(
+                readFreeVariableResolutions(stream));
             if (freeVariableResolutions == nullptr) {
                 throw std::runtime_error(
                     "error processing class: " +
@@ -191,14 +187,13 @@ void BinaryObjectRegistryDeserializer::deserializeFromStream(
                 objectId,
                 sourceFileId,
                 linenumber,
-                freeVariableResolutions,
+                freeVariableResolutions.get(),
                 baseClassIds);
-
-            Py_DECREF(freeVariableResolutions);
             }
         else if (code == BinaryObjectRegistry::CODE_UNCONVERTIBLE) {
             if (stream->readByte()) {
-                PyObject* stringTuple = readStringTuple(stream);
+                PyObjectPtr stringTuple = PyObjectPtr::unincremented(
+                    readStringTuple(stream));
                 if (stringTuple == nullptr) {
                     throw std::runtime_error(
                         "error processing unconvertible: " +
@@ -208,9 +203,7 @@ void BinaryObjectRegistryDeserializer::deserializeFromStream(
 
                 objectRegistry.defineUnconvertible(
                     objectId,
-                    stringTuple);
-
-                Py_DECREF(stringTuple);
+                    stringTuple.get());
                 }
             else {
                 objectRegistry.defineUnconvertible(
@@ -244,7 +237,8 @@ void BinaryObjectRegistryDeserializer::deserializeFromStream(
                 methodName);
             }
         else if (code == BinaryObjectRegistry::CODE_WITH_BLOCK) {
-            PyObject* resolutions = readFreeVariableResolutions(stream);
+            PyObjectPtr resolutions = PyObjectPtr::unincremented(
+                readFreeVariableResolutions(stream));
             if (resolutions == nullptr) {
                 throw std::runtime_error(
                     "error getting resolutions: " +
@@ -257,11 +251,9 @@ void BinaryObjectRegistryDeserializer::deserializeFromStream(
 
             objectRegistry.defineWithBlock(
                 objectId,
-                resolutions,
+                resolutions.get(),
                 sourceFileId,
                 linenumber);
-
-            Py_DECREF(resolutions);
             }
         else if (code == BinaryObjectRegistry::CODE_PY_ABORT_EXCEPTION) {
             std::string typeName = stream->readString();
@@ -275,7 +267,8 @@ void BinaryObjectRegistryDeserializer::deserializeFromStream(
         else if (code == BinaryObjectRegistry::CODE_STACKTRACE_AS_JSON) {
             std::string stackAsJson = stream->readString();
 
-            PyObject* res = jsonModule.loads(stackAsJson);
+            PyObjectPtr res = PyObjectPtr::unincremented(
+                jsonModule.loads(stackAsJson));
             if (res == nullptr) {
                 throw std::runtime_error(
                     "error calling Json::loads: " +
@@ -285,9 +278,7 @@ void BinaryObjectRegistryDeserializer::deserializeFromStream(
 
             objectRegistry.defineStacktrace(
                 objectId,
-                res);
-
-            Py_DECREF(res);
+                res.get());
             }
         }
     }

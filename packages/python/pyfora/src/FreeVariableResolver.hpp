@@ -17,18 +17,18 @@
 
 #include <Python.h>
 
+#include "core/PyObjectPtr.hpp"
+
 #include <map>
 
 
 class FreeVariableResolver {
 public:
     FreeVariableResolver(
-        PyObject* exclude_list,
-        PyObject* terminal_value_filter
+        const PyObjectPtr& exclude_list,
+        const PyObjectPtr& terminal_value_filter
         );
 
-    ~FreeVariableResolver();
-    
     // returns a new reference to a dict: FVMAC -> (resolution, location)
     // FVMAC here is a tuple of strings
     PyObject* resolveFreeVariableMemberAccessChainsInAst(
@@ -43,9 +43,9 @@ public:
         const PyObject* convertedObjectCache) const;
 
 private:
-    PyObject* mPureFreeVariableResolver;
-    const PyObject* exclude_list;
-    const PyObject* terminal_value_filter;
+    PyObjectPtr mPureFreeVariableResolver;
+    PyObjectPtr mExcludeList;
+    PyObjectPtr mTerminalValueFilter;
 
     FreeVariableResolver(const FreeVariableResolver&) = delete;
     void operator=(const FreeVariableResolver&) = delete;

@@ -17,6 +17,7 @@
 #include <structmember.h>
 
 #include "StringBuilder.hpp"
+#include "core/PyObjectPtr.hpp"
 
 
 /*********************************
@@ -143,17 +144,15 @@ PyStringBuilder_addFloat64(PyStringBuilder* self, PyObject* args)
 static PyObject*
 PyStringBuilder_addInt64s(PyStringBuilder* self, PyObject* args)
     {
-    PyObject* obj = nullptr;
-    PyObject* iterator = nullptr;
-    PyObject* item = nullptr;
-    PyObject* exc = nullptr;
+    PyObject* obj;
+    PyObject* exc;
     std::vector<int64_t> ints;
 
     if (!PyArg_ParseTuple(args, "O", &obj)) {
         return nullptr;
         }
 
-    iterator = PyObject_GetIter(obj);
+    PyObjectPtr iterator = PyObjectPtr::unincremented(PyObject_GetIter(obj));
     if (iterator == nullptr) {
         PyErr_SetString(
             PyExc_TypeError,
@@ -162,8 +161,9 @@ PyStringBuilder_addInt64s(PyStringBuilder* self, PyObject* args)
         return nullptr;
         }
 
-    while ((item = PyIter_Next(iterator))) {
-        if (!PyInt_Check(item)) {
+    PyObjectPtr item;
+    while ((item = PyObjectPtr::unincremented(PyIter_Next(iterator.get())))) {
+        if (!PyInt_Check(item.get())) {
             PyErr_SetString(
                 PyExc_TypeError,
                 "all elements in the iterable must be integers"
@@ -171,12 +171,8 @@ PyStringBuilder_addInt64s(PyStringBuilder* self, PyObject* args)
             return nullptr;
             }
 
-        ints.push_back(PyInt_AsLong(item));
-
-        Py_XDECREF(item);
+        ints.push_back(PyInt_AsLong(item.get()));
         }
-
-    Py_DECREF(iterator);
 
     self->nativeStringBuilder->addInt64s(ints);
 
@@ -192,18 +188,17 @@ PyStringBuilder_addInt64s(PyStringBuilder* self, PyObject* args)
 static PyObject*
 PyStringBuilder_addStrings(PyStringBuilder* self, PyObject* args)
     {
-    PyObject* obj = nullptr;
-    PyObject* iterator = nullptr;
-    PyObject* item = nullptr;
-    PyObject* exc = nullptr;
+    PyObject* obj;
+    PyObject* exc;
     std::vector<std::string> strings;
-    char* string = nullptr;
+    char* string;
     Py_ssize_t length = 0;
 
-    if (!PyArg_ParseTuple(args, "O", &obj))
+    if (!PyArg_ParseTuple(args, "O", &obj)) {
         return nullptr;
+        }
 
-    iterator = PyObject_GetIter(obj);
+    PyObjectPtr iterator = PyObjectPtr::unincremented(PyObject_GetIter(obj));
     if (iterator == nullptr) {
         PyErr_SetString(
             PyExc_TypeError,
@@ -212,8 +207,9 @@ PyStringBuilder_addStrings(PyStringBuilder* self, PyObject* args)
         return nullptr;
         }
 
-    while ((item = PyIter_Next(iterator))) {
-        if (PyString_AsStringAndSize(item, &string, &length) == -1)
+    PyObjectPtr item;
+    while ((item = PyObjectPtr::unincremented(PyIter_Next(iterator.get())))) {
+        if (PyString_AsStringAndSize(item.get(), &string, &length) == -1)
             {
             PyErr_SetString(
                 PyExc_TypeError,
@@ -225,13 +221,9 @@ PyStringBuilder_addStrings(PyStringBuilder* self, PyObject* args)
         strings.push_back(
             std::string(string, length)
             );
-
-        Py_DECREF(item);
         }
 
     self->nativeStringBuilder->addStrings(strings);
-
-    Py_DECREF(iterator);
 
     if ((exc = PyErr_Occurred())) {
         PyErr_SetString(exc, "an error occurred");

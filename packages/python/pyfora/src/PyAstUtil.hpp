@@ -18,6 +18,7 @@
 #include <Python.h>
 
 #include "PyforaInspect.hpp"
+#include "core/PyObjectPtr.hpp"
 
 #include <string>
 #include <utility>
@@ -26,8 +27,6 @@
 class PyAstUtil {
 public:
     PyAstUtil();
-    PyAstUtil(const PyAstUtil&);
-    ~PyAstUtil();
 
     PyObject* sourceFilenameAndText(const PyObject*) const;
     long startingSourceLine(const PyObject*) const;
@@ -51,6 +50,6 @@ private:
 
     void _translateError() const;
 
-    PyObject* mPyAstUtilModule;
+    PyObjectPtr mPyAstUtilModule;
     PyforaInspect mPyforaInspectModule;
 };

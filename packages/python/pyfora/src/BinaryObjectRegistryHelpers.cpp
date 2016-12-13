@@ -19,10 +19,11 @@
 #include <stdexcept>
 
 
-BinaryObjectRegistryHelpers::BinaryObjectRegistryHelpers() :
-        mComputedValueDataStringFun(nullptr)
+BinaryObjectRegistryHelpers::BinaryObjectRegistryHelpers()
     {
-    PyObject* binaryObjectRegistryHelpersModule = PyImport_ImportModule("pyfora.BinaryObjectRegistryHelpers");
+    PyObjectPtr binaryObjectRegistryHelpersModule = PyObjectPtr::unincremented(
+        PyImport_ImportModule("pyfora.BinaryObjectRegistryHelpers")
+        );
     if (binaryObjectRegistryHelpersModule == nullptr) {
         throw std::runtime_error(
             "py error getting pyfora.BinaryObjectRegistryHelpers "
@@ -30,13 +31,13 @@ BinaryObjectRegistryHelpers::BinaryObjectRegistryHelpers() :
             PyObjectUtils::exc_string());
         }
 
-    mComputedValueDataStringFun = PyObject_GetAttrString(
-        binaryObjectRegistryHelpersModule,
-        "computedValueDataString"
+    mComputedValueDataStringFun = PyObjectPtr::unincremented(
+        PyObject_GetAttrString(
+            binaryObjectRegistryHelpersModule.get(),
+            "computedValueDataString"
+            )
         );
     
-    Py_DECREF(binaryObjectRegistryHelpersModule);
-
     if (mComputedValueDataStringFun == nullptr) {
         throw std::runtime_error(
             "py error getting computedValueDataString in "
@@ -47,26 +48,12 @@ BinaryObjectRegistryHelpers::BinaryObjectRegistryHelpers() :
     }
 
 
-BinaryObjectRegistryHelpers::BinaryObjectRegistryHelpers(
-    const BinaryObjectRegistryHelpers& other)
-    : mComputedValueDataStringFun(other.mComputedValueDataStringFun)
-    {
-    Py_INCREF(mComputedValueDataStringFun);
-    }
-
-
-BinaryObjectRegistryHelpers::~BinaryObjectRegistryHelpers()
-    {
-    Py_XDECREF(mComputedValueDataStringFun);
-    }
-
-
 PyObject* BinaryObjectRegistryHelpers::computedValueDataString(
        const PyObject* computedValueArg
        ) const
     {
     PyObject* tr = PyObject_CallFunctionObjArgs(
-        mComputedValueDataStringFun,
+        mComputedValueDataStringFun.get(),
         computedValueArg,
         nullptr
         );

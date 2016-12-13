@@ -17,6 +17,7 @@
 #include "BinaryObjectRegistry.hpp"
 #include "FreeVariableMemberAccessChain.hpp"
 #include "PyObjectUtils.hpp"
+#include "core/PyObjectPtr.hpp"
 
 #include <stdexcept>
 
@@ -202,7 +203,8 @@ void BinaryObjectRegistry::definePackedHomogenousData(int64_t objectId,
     mStringBuilder.addInt64(objectId);
     mStringBuilder.addByte(CODE_PACKED_HOMOGENOUS_DATA);
     
-    PyObject* dtype = PyObject_GetAttrString(pyObject, "dtype");
+    PyObjectPtr dtype = PyObjectPtr::unincremented(
+        PyObject_GetAttrString(pyObject, "dtype"));
     if (dtype == nullptr) {
         throw std::runtime_error(
             "py err in BinaryObjectRegistry::definePackedHomogenousData: " +
@@ -210,28 +212,24 @@ void BinaryObjectRegistry::definePackedHomogenousData(int64_t objectId,
             );
         }
 
-    _writeDTypeElement(dtype);
+    _writeDTypeElement(dtype.get());
     
-    Py_DECREF(dtype);
-
-    PyObject* dataAsBytes = PyObject_GetAttrString(pyObject, "dataAsBytes");
+    PyObjectPtr dataAsBytes = PyObjectPtr::unincremented(
+        PyObject_GetAttrString(pyObject, "dataAsBytes"));
     if (dataAsBytes == nullptr) {
         throw std::runtime_error(
             "py err in BinaryObjectRegistry::definePackedHomogenousData: " +
             PyObjectUtils::format_exc()
             );
         }
-    if (not PyString_Check(dataAsBytes)) {
-        Py_DECREF(dataAsBytes);
+    if (not PyString_Check(dataAsBytes.get())) {
         throw std::runtime_error("expected dataAsBytes attr to be a string");
         }
 
     mStringBuilder.addString(
-        PyString_AS_STRING(dataAsBytes),
-        PyString_GET_SIZE(dataAsBytes)
+        PyString_AS_STRING(dataAsBytes.get()),
+        PyString_GET_SIZE(dataAsBytes.get())
         );
-    
-    Py_DECREF(dataAsBytes);
     }
 
 
@@ -270,8 +268,9 @@ std::string BinaryObjectRegistry::_computedValueDataString(
         const PyObject* computedValueArg
         ) const
     {
-    PyObject* res = mBinaryObjectRegisteryHelpers.computedValueDataString(
-        computedValueArg);
+    PyObjectPtr res = PyObjectPtr::unincremented(
+        mBinaryObjectRegisteryHelpers.computedValueDataString(
+            computedValueArg));
     if (res == nullptr) {
         throw std::runtime_error(
             "py error getting computedValueDataString in "
@@ -279,14 +278,10 @@ std::string BinaryObjectRegistry::_computedValueDataString(
             PyObjectUtils::exc_string());
         }
     
-    std::string tr = std::string(
-        PyString_AS_STRING(res),
-        PyString_GET_SIZE(res)
+    return std::string(
+        PyString_AS_STRING(res.get()),
+        PyString_GET_SIZE(res.get())
         );
-
-    Py_DECREF(res);
-
-    return tr;
     }
 
 

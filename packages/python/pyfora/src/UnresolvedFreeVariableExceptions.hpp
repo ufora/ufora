@@ -17,16 +17,14 @@
 
 #include <Python.h>
 
+#include "core/PyObjectPtr.hpp"
+
 #include <string>
 
 
 class UnresolvedFreeVariableExceptions {
 public:
     UnresolvedFreeVariableExceptions();
-    ~UnresolvedFreeVariableExceptions();
-    UnresolvedFreeVariableExceptions(
-        const UnresolvedFreeVariableExceptions&
-        );
 
     // returns a borrowed reference
     PyObject* getUnresolvedFreeVariableExceptionWithTraceClass() const;
@@ -40,10 +38,8 @@ public:
         ) const;
     
 private:
-    void operator=(const UnresolvedFreeVariableExceptions&) = delete;
-
-    PyObject* mUnresolvedFreeVariableExceptionWithTraceClass;
-    PyObject* mUnresolvedFreeVariableExceptionClass;
-    PyObject* mGetUnresolvedFreeVariableExceptionWithTraceFun;
+    PyObjectPtr mUnresolvedFreeVariableExceptionWithTraceClass;
+    PyObjectPtr mUnresolvedFreeVariableExceptionClass;
+    PyObjectPtr mGetUnresolvedFreeVariableExceptionWithTraceFun;
 
 };

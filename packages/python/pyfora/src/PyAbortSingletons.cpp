@@ -20,10 +20,10 @@
 
 
 PyAbortSingletons::PyAbortSingletons()
-    : mSingletonNameToObject(nullptr)
     {
-    PyObject* pyAbortSingletonsModule = PyImport_ImportModule(
-        "pyfora.PyAbortSingletons");
+    PyObjectPtr pyAbortSingletonsModule = PyObjectPtr::unincremented(
+        PyImport_ImportModule(
+            "pyfora.PyAbortSingletons"));
     if (pyAbortSingletonsModule == nullptr) {
         throw std::runtime_error(
             "py error creating (cpp) PyAbortSingletons: " +
@@ -31,9 +31,11 @@ PyAbortSingletons::PyAbortSingletons()
             );
         }
 
-    mSingletonNameToObject = PyObject_GetAttrString(
-        pyAbortSingletonsModule,
-        "singletonNameToObject"
+    mSingletonNameToObject = PyObjectPtr::unincremented(
+        PyObject_GetAttrString(
+            pyAbortSingletonsModule.get(),
+            "singletonNameToObject"
+            )
         );
 
     if (mSingletonNameToObject == nullptr) {
@@ -45,23 +47,10 @@ PyAbortSingletons::PyAbortSingletons()
     }
 
 
-PyAbortSingletons::PyAbortSingletons(const PyAbortSingletons& other)
-    : mSingletonNameToObject(other.mSingletonNameToObject)
-    {
-    Py_INCREF(mSingletonNameToObject);
-    }
-
-
-PyAbortSingletons::~PyAbortSingletons()
-    {
-    Py_DECREF(mSingletonNameToObject);
-    }
-
-
 PyObject* PyAbortSingletons::singletonNameToObject(const std::string& name) const
     {
     PyObject* tr = PyDict_GetItemString(
-        mSingletonNameToObject,
+        mSingletonNameToObject.get(),
         name.c_str()
         );
 

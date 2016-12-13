@@ -17,16 +17,9 @@
 #include "PrimitiveTypeDescription.hpp"
 
 
-PrimitiveTypeDescription::PrimitiveTypeDescription(PyObject* primitive) :
-    mPrimitive(primitive)
+PrimitiveTypeDescription::PrimitiveTypeDescription(PyObject* primitive)
     {
-    Py_XINCREF(mPrimitive);
-    }
-
-
-PrimitiveTypeDescription::~PrimitiveTypeDescription()
-    {
-    Py_XDECREF(mPrimitive);
+    mPrimitive = PyObjectPtr::incremented(primitive);
     }
 
 
@@ -35,7 +28,7 @@ PyObject* PrimitiveTypeDescription::transform(
         bool retainHomogenousListsAsNumpy
         )
     {
-    Py_XINCREF(mPrimitive);
+    Py_XINCREF(mPrimitive.get());
 
-    return mPrimitive;
+    return mPrimitive.get();
     }

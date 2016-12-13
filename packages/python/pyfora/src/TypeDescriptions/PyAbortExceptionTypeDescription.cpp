@@ -27,35 +27,24 @@ PyAbortExceptionTypeDescription::PyAbortExceptionTypeDescription(
     }
 
 
-PyAbortExceptionTypeDescription::~PyAbortExceptionTypeDescription()
-    {
-    }
-
-
 PyObject* PyAbortExceptionTypeDescription::transform(
         IRToPythonConverter& converter,
         bool retainHomogenousListsAsNumpy
         )
     {
-    PyObject* pyAbortExceptionType = 
-        converter.pyAbortSingletonNameToObject(mTypeName);
+    PyObjectPtr pyAbortExceptionType = PyObjectPtr::unincremented(
+        converter.pyAbortSingletonNameToObject(mTypeName));
     if (pyAbortExceptionType == nullptr) {
         return nullptr;
         }
     
-    PyObject* args = converter.convert(mArgsId);
+    PyObjectPtr args = PyObjectPtr::unincremented(converter.convert(mArgsId));
     if (args == nullptr) {
-        Py_DECREF(pyAbortExceptionType);
         return nullptr;
         }
 
-    PyObject* tr = PyObject_Call(
-        pyAbortExceptionType,
-        args,
+    return PyObject_Call(
+        pyAbortExceptionType.get(),
+        args.get(),
         nullptr);
-
-    Py_DECREF(args);
-    Py_DECREF(pyAbortExceptionType);
-
-    return tr;
     }

@@ -19,16 +19,9 @@
 
 RemotePythonObjectTypeDescription::RemotePythonObjectTypeDescription(
         PyObject* primitive
-        ) :
-    mRemotePythonObject(primitive)
+        )
     {
-    Py_XINCREF(mRemotePythonObject);
-    }
-
-
-RemotePythonObjectTypeDescription::~RemotePythonObjectTypeDescription()
-    {
-    Py_XDECREF(mRemotePythonObject);
+    mRemotePythonObject = PyObjectPtr::incremented(primitive);
     }
 
 
@@ -37,6 +30,6 @@ PyObject* RemotePythonObjectTypeDescription::transform(
         bool retainHomogenousListsAsNumpy
         )
     {
-    Py_XINCREF(mRemotePythonObject);
-    return mRemotePythonObject;
+    Py_XINCREF(mRemotePythonObject.get());
+    return mRemotePythonObject.get();
     }

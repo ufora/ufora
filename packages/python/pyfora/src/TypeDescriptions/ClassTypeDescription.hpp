@@ -18,6 +18,7 @@
 #include <Python.h>
 
 #include "TypeDescription.hpp"
+#include "../core/PyObjectPtr.hpp"
 
 #include <vector>
 
@@ -33,7 +34,6 @@ public:
         PyObject* freeVariableResolutions,
         const std::vector<int64_t>& baseClassIds
         );
-    virtual ~ClassTypeDescription();
 
     virtual PyObject* transform(
         IRToPythonConverter& c,
@@ -43,7 +43,7 @@ public:
 private:
     int64_t mSourceFileId;
     int32_t mLinenumber;
-    PyObject* mFreeVariableResolutions;
+    PyObjectPtr mFreeVariableResolutions;
     std::vector<int64_t> mBaseClassIds;
 
     ClassTypeDescription(const ClassTypeDescription&) = delete;

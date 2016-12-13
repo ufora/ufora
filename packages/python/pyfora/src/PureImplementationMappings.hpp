@@ -17,17 +17,15 @@
 
 #include <Python.h>
 
+#include "core/PyObjectPtr.hpp"
+
 /*
   A refcounted version of (pure) python PureImplementationMappings
  */
 class PureImplementationMappings {
 public:
-    explicit PureImplementationMappings(PyObject* pyPureImplementationMappings);
+    explicit PureImplementationMappings(const PyObjectPtr& pyPureImplementationMappings);
 
-    PureImplementationMappings(const PureImplementationMappings&);
-
-    ~PureImplementationMappings();
-    
     bool canMap(const PyObject* pyObject);
     bool canInvertInstancesOf(const PyObject* pyObject);
     bool canInvert(const PyObject* pyObject);
@@ -36,7 +34,5 @@ public:
     PyObject* pureInstanceToMappable(const PyObject* instance);
 
 private:
-    PureImplementationMappings& operator=(const PureImplementationMappings&) = delete;
-
-    PyObject* mPyPureImplementationMappings;
+    PyObjectPtr mPyPureImplementationMappings;
 };

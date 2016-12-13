@@ -28,7 +28,6 @@ class ListTypeDescription : public TypeDescription {
 public:
 
     explicit ListTypeDescription(const std::vector<int64_t>& memberIds);
-    virtual ~ListTypeDescription();
 
     virtual PyObject* transform(
         IRToPythonConverter& c,

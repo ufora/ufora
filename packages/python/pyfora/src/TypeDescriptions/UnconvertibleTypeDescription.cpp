@@ -21,15 +21,8 @@
 
 
 UnconvertibleTypeDescription::UnconvertibleTypeDescription(PyObject* stringTupleOrNone)
-    : mStringTupleOrNone(stringTupleOrNone)
     {
-    Py_XINCREF(mStringTupleOrNone);
-    }
-
-
-UnconvertibleTypeDescription::~UnconvertibleTypeDescription()
-    {
-    Py_XDECREF(mStringTupleOrNone);
+    mStringTupleOrNone = PyObjectPtr::incremented(stringTupleOrNone);
     }
 
 
@@ -39,7 +32,7 @@ PyObject* UnconvertibleTypeDescription::transform(
         )
     {
     return converter.getObjectFromPath(
-        mStringTupleOrNone
+        mStringTupleOrNone.get()
         );
     }
 
@@ -51,7 +44,7 @@ std::string UnconvertibleTypeDescription::toString()
     oss << "<UnconvertibleTypeDescription object at "
         << (void*) this
         << ": stringTupleOrNone="
-        << PyObjectUtils::str_string(mStringTupleOrNone)
+        << PyObjectUtils::str_string(mStringTupleOrNone.get())
         << ">"
         ;
 

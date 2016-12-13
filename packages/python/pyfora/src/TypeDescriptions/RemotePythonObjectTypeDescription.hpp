@@ -18,6 +18,7 @@
 #include <Python.h>
 
 #include "TypeDescription.hpp"
+#include "../core/PyObjectPtr.hpp"
 
 
 class IRToPythonConverter;
@@ -26,7 +27,6 @@ class RemotePythonObjectTypeDescription : public TypeDescription {
 public:
 
     explicit RemotePythonObjectTypeDescription(PyObject* primitive);
-    virtual ~RemotePythonObjectTypeDescription();
 
     virtual PyObject* transform(
         IRToPythonConverter& c,
@@ -34,9 +34,5 @@ public:
         );
 
 private:
-    PyObject* mRemotePythonObject;
-
-    RemotePythonObjectTypeDescription(
-        const RemotePythonObjectTypeDescription&) = delete;
-    void operator=(const RemotePythonObjectTypeDescription&) = delete;
+    PyObjectPtr mRemotePythonObject;
 };

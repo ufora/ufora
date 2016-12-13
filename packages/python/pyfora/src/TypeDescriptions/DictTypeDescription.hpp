@@ -33,8 +33,6 @@ public:
         const std::vector<int64_t>& valueIds
         );
 
-    virtual ~DictTypeDescription();
-
     virtual PyObject* transform(
         IRToPythonConverter& c,
         bool retainHomogenousListsAsNumpy=false

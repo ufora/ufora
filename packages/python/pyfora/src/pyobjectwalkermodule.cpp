@@ -25,6 +25,7 @@
 #include "PythonToForaConversionError.hpp"
 #include "UnresolvedFreeVariableExceptions.hpp"
 #include "UnresolvedFreeVariableExceptionWithTrace.hpp"
+#include "core/PyObjectPtr.hpp"
 
 /*********************************
 Defining a Python C-extension for the C++ class PyObjectWalker,
@@ -68,23 +69,20 @@ namespace {
 
 PyObject* getPythonToForaConversionErrorClass()
     {
-    PyObject* pyforaModule = PyImport_ImportModule("pyfora");
+    PyObjectPtr pyforaModule = PyObjectPtr::unincremented(
+        PyImport_ImportModule("pyfora"));
     if (pyforaModule == nullptr) {
         return nullptr;
         }
 
-    PyObject* exceptionsModule = PyObject_GetAttrString(pyforaModule, "Exceptions");
-
-    Py_DECREF(pyforaModule);
-
+    PyObjectPtr exceptionsModule = PyObjectPtr::unincremented(
+        PyObject_GetAttrString(pyforaModule.get(), "Exceptions"));
     if (exceptionsModule == nullptr) {
         return nullptr;
         }
 
     PyObject* pythonToForaConversionErrorClass = 
-        PyObject_GetAttrString(exceptionsModule, "PythonToForaConversionError");
-
-    Py_DECREF(exceptionsModule);
+        PyObject_GetAttrString(exceptionsModule.get(), "PythonToForaConversionError");
 
     return pythonToForaConversionErrorClass;
     }
@@ -92,62 +90,57 @@ PyObject* getPythonToForaConversionErrorClass()
 
 PyObject* getBadWithBlockErrorClass()
     {
-    PyObject* pyforaModule = PyImport_ImportModule("pyfora");
+    PyObjectPtr pyforaModule = PyObjectPtr::unincremented(
+        PyImport_ImportModule("pyfora"));
     if (pyforaModule == nullptr) {
         return nullptr;
         }
 
-    PyObject* exceptionsModule = PyObject_GetAttrString(pyforaModule, "Exceptions");
-
-    Py_DECREF(pyforaModule);
+    PyObjectPtr exceptionsModule = PyObjectPtr::unincremented(
+        PyObject_GetAttrString(
+            pyforaModule.get(),
+            "Exceptions"));
 
     if (exceptionsModule == nullptr) {
         return nullptr;
         }
 
-    PyObject* badWithBlockErrorClass = 
-        PyObject_GetAttrString(exceptionsModule, "BadWithBlockError");
-
-    Py_DECREF(exceptionsModule);
-
-    return badWithBlockErrorClass;
+    return PyObject_GetAttrString(exceptionsModule.get(), "BadWithBlockError");
     }
 
 
 void translatePythonToForaConversionError(const PythonToForaConversionError& e)
     {
-    PyObject* pythonToForaConversionErrorClass = getPythonToForaConversionErrorClass();
+    PyObjectPtr pythonToForaConversionErrorClass = PyObjectPtr::unincremented(
+        getPythonToForaConversionErrorClass());
     if (pythonToForaConversionErrorClass == nullptr) {
         return;
         }
 
     PyErr_SetString(
-        pythonToForaConversionErrorClass,
+        pythonToForaConversionErrorClass.get(),
         e.what()
         );
-
-    Py_DECREF(pythonToForaConversionErrorClass);
     }
 
 
 void translateBadWithBlockError(const BadWithBlockError& e) 
     {
-    PyObject* badWithBlockErrorClass = getBadWithBlockErrorClass();
+    PyObjectPtr badWithBlockErrorClass = PyObjectPtr::unincremented(
+        getBadWithBlockErrorClass());
     if (badWithBlockErrorClass == nullptr) {
         return;
         }
 
     PyErr_SetString(
-        badWithBlockErrorClass,
+        badWithBlockErrorClass.get(),
         e.what()
         );
-
-    Py_DECREF(badWithBlockErrorClass);
     }
 
 void translateUnresolvedFreeVariableExceptionWithTrace(
-    const UnresolvedFreeVariableExceptionWithTrace& e,
-    const UnresolvedFreeVariableExceptions& unresolvedFreeVariableExceptionsModule
+        const UnresolvedFreeVariableExceptionWithTrace& e,
+        const UnresolvedFreeVariableExceptions& unresolvedFreeVariableExceptionsModule
         )
     {
     PyObject* unresolvedFreeVariableExceptionWithTraceClass =
@@ -171,101 +164,81 @@ void translateUnresolvedFreeVariableExceptionWithTrace(
 static int
 PyObjectWalkerStruct_init(PyObjectWalkerStruct* self, PyObject* args, PyObject* kwds)
     {
-    PyObject* binaryObjectRegistryModule = 
-        PyImport_ImportModule("pyfora.BinaryObjectRegistry");
+    PyObjectPtr binaryObjectRegistryModule = PyObjectPtr::unincremented(
+        PyImport_ImportModule("pyfora.BinaryObjectRegistry"));
     if (binaryObjectRegistryModule == nullptr) {
         return -1;
         }
 
-    PyObject* binaryObjectRegistryClass = 
-        PyObject_GetAttrString(binaryObjectRegistryModule,
-                               "BinaryObjectRegistry");
-
-    Py_DECREF(binaryObjectRegistryModule);
+    PyObjectPtr binaryObjectRegistryClass = PyObjectPtr::unincremented(
+        PyObject_GetAttrString(binaryObjectRegistryModule.get(),
+                               "BinaryObjectRegistry")
+        );
 
     if (binaryObjectRegistryClass == nullptr) {
         return -1;
-        }
-
-    if (binaryObjectRegistryClass == nullptr) {
-        throw std::runtime_error(
-            "couldn't find pyfora.binaryobjectregistry.BinaryObjectRegistry"
-            );
         }
 
     PyObject* purePythonClassMapping;
     if (!PyArg_ParseTuple(args, "OO!",
                           &purePythonClassMapping,
-                          binaryObjectRegistryClass,
+                          binaryObjectRegistryClass.get(),
                           &self->binaryObjectRegistry))
         {
-        Py_DECREF(binaryObjectRegistryClass);
         return -1;
         }
 
     Py_INCREF(self->binaryObjectRegistry);
-
-    Py_DECREF(binaryObjectRegistryClass);
     
-    PyObject* pyObjectWalkerDefaultsModule =
-        PyImport_ImportModule("pyfora.PyObjectWalkerDefaults");
+    PyObjectPtr pyObjectWalkerDefaultsModule = PyObjectPtr::unincremented(
+        PyImport_ImportModule("pyfora.PyObjectWalkerDefaults"));
     if (pyObjectWalkerDefaultsModule == nullptr) {
         return -1;
         }
 
-    PyObject* excludePredicateFun = PyObject_GetAttrString(
-        pyObjectWalkerDefaultsModule,
-        "exclude_predicate_fun");
+    PyObjectPtr excludePredicateFun = PyObjectPtr::unincremented(
+        PyObject_GetAttrString(
+            pyObjectWalkerDefaultsModule.get(),
+            "exclude_predicate_fun"));
     if (excludePredicateFun == nullptr) {
-        Py_DECREF(pyObjectWalkerDefaultsModule);
         return -1;
         }
 
-    PyObject* excludeList = PyObject_GetAttrString(
-        pyObjectWalkerDefaultsModule,
-        "exclude_list");
+    PyObjectPtr excludeList = PyObjectPtr::unincremented(
+        PyObject_GetAttrString(
+            pyObjectWalkerDefaultsModule.get(),
+            "exclude_list"));
     if (excludeList == nullptr) {
-        Py_DECREF(excludePredicateFun);
-        Py_DECREF(pyObjectWalkerDefaultsModule);
         return -1;
         }
 
-    PyObject* terminalValueFilter = PyObject_GetAttrString(
-        pyObjectWalkerDefaultsModule,
-        "terminal_value_filter");
+    PyObjectPtr terminalValueFilter = PyObjectPtr::unincremented(
+        PyObject_GetAttrString(
+            pyObjectWalkerDefaultsModule.get(),
+            "terminal_value_filter"));
     if (terminalValueFilter == nullptr) {
-        Py_DECREF(excludeList);
-        Py_DECREF(excludePredicateFun);
-        Py_DECREF(pyObjectWalkerDefaultsModule);
         return -1;
         }
 
-    PyObject* traceback_type = PyObject_GetAttrString(
-        pyObjectWalkerDefaultsModule,
-        "traceback_type");
+    PyObjectPtr traceback_type = PyObjectPtr::unincremented(
+        PyObject_GetAttrString(
+            pyObjectWalkerDefaultsModule.get(),
+            "traceback_type"));
     if (traceback_type == nullptr) {
-        Py_DECREF(terminalValueFilter);
-        Py_DECREF(excludeList);
-        Py_DECREF(excludePredicateFun);
-        Py_DECREF(pyObjectWalkerDefaultsModule);
         return -1;
         }
 
-    PyObject* pythonTracebackToJsonFun = PyObject_GetAttrString(
-        pyObjectWalkerDefaultsModule,
-        "pythonTracebackToJson");
+    PyObjectPtr pythonTracebackToJsonFun = PyObjectPtr::unincremented(
+        PyObject_GetAttrString(
+            pyObjectWalkerDefaultsModule.get(),
+            "pythonTracebackToJson"));
     if (pythonTracebackToJsonFun == nullptr) {
-        Py_DECREF(traceback_type);
-        Py_DECREF(terminalValueFilter);
-        Py_DECREF(excludeList);
-        Py_DECREF(excludePredicateFun);
-        Py_DECREF(pyObjectWalkerDefaultsModule);
         return -1;
         }
 
     try {
         self->nativePyObjectWalker = new PyObjectWalker(
-            purePythonClassMapping,
+            PyObjectPtr::incremented(purePythonClassMapping),
             *(((PyBinaryObjectRegistry*)(self->binaryObjectRegistry))->nativeBinaryObjectRegistry),
             excludePredicateFun,
             excludeList,
@@ -321,7 +294,7 @@ PyObjectWalkerStruct_walkPyObject(PyObjectWalkerStruct* self, PyObject* args)
             self->nativePyObjectWalker->unresolvedFreeVariableExceptionsModule());
         return nullptr;
         }
-    catch (const std::runtime_error& e) {
+    /*catch (const std::runtime_error& e) {
         PyErr_SetString(
             PyExc_RuntimeError,
             e.what()
@@ -334,7 +307,7 @@ PyObjectWalkerStruct_walkPyObject(PyObjectWalkerStruct* self, PyObject* args)
             e.what()
             );
         return nullptr;
-        }
+        }*/
 
     return PyInt_FromLong(res);
     }

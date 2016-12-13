@@ -31,7 +31,6 @@ public:
     BuiltinExceptionInstanceTypeDescription(
         const std::string& typeName,
         int64_t argsId);
-    virtual ~BuiltinExceptionInstanceTypeDescription();
 
     virtual PyObject* transform(
         IRToPythonConverter& c,

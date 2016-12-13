@@ -20,89 +20,60 @@
 #include <stdexcept>
 
 
-UnresolvedFreeVariableExceptions::UnresolvedFreeVariableExceptions() :
-    mUnresolvedFreeVariableExceptionWithTraceClass(nullptr),
-    mUnresolvedFreeVariableExceptionClass(nullptr),
-    mGetUnresolvedFreeVariableExceptionWithTraceFun(nullptr)
+UnresolvedFreeVariableExceptions::UnresolvedFreeVariableExceptions()
     {
-    PyObject* unresolvedFreeVariableExceptionsModule = 
-        PyImport_ImportModule("pyfora.UnresolvedFreeVariableExceptions");
+    PyObjectPtr unresolvedFreeVariableExceptionsModule = PyObjectPtr::unincremented(
+        PyImport_ImportModule("pyfora.UnresolvedFreeVariableExceptions"));
     if (unresolvedFreeVariableExceptionsModule == nullptr) {
         throw std::runtime_error(PyObjectUtils::exc_string());
         }
 
-    mUnresolvedFreeVariableExceptionWithTraceClass =
+    mUnresolvedFreeVariableExceptionWithTraceClass = PyObjectPtr::unincremented(
         PyObject_GetAttrString(
-            unresolvedFreeVariableExceptionsModule,
+            unresolvedFreeVariableExceptionsModule.get(),
             "UnresolvedFreeVariableExceptionWithTrace"
-            );
+            )
+        );
     if (mUnresolvedFreeVariableExceptionWithTraceClass == nullptr)
         {
-        Py_DECREF(unresolvedFreeVariableExceptionsModule);
         throw std::runtime_error(PyObjectUtils::exc_string());
         }
 
-    mUnresolvedFreeVariableExceptionClass =
+    mUnresolvedFreeVariableExceptionClass = PyObjectPtr::unincremented(
         PyObject_GetAttrString(
-            unresolvedFreeVariableExceptionsModule,
+            unresolvedFreeVariableExceptionsModule.get(),
             "UnresolvedFreeVariableException"
-            );
+            )
+        );
     if (mUnresolvedFreeVariableExceptionClass == nullptr)
         {
-        Py_DECREF(unresolvedFreeVariableExceptionsModule);
         throw std::runtime_error(PyObjectUtils::exc_string());
         }
     
-    mGetUnresolvedFreeVariableExceptionWithTraceFun =
+    mGetUnresolvedFreeVariableExceptionWithTraceFun = PyObjectPtr::unincremented(
         PyObject_GetAttrString(
-            unresolvedFreeVariableExceptionsModule,
+            unresolvedFreeVariableExceptionsModule.get(),
             "getUnresolvedFreeVariableExceptionWithTrace"
-            );
+            )
+        );
     if (mGetUnresolvedFreeVariableExceptionWithTraceFun == nullptr)
         {
-        Py_DECREF(unresolvedFreeVariableExceptionsModule);
         throw std::runtime_error(PyObjectUtils::exc_string());
         }
-
-    Py_DECREF(unresolvedFreeVariableExceptionsModule);
-    }
-
-
-UnresolvedFreeVariableExceptions::~UnresolvedFreeVariableExceptions()
-    {
-    Py_XDECREF(mGetUnresolvedFreeVariableExceptionWithTraceFun);
-    Py_XDECREF(mUnresolvedFreeVariableExceptionClass);
-    Py_XDECREF(mUnresolvedFreeVariableExceptionWithTraceClass);
-    }
-
-
-UnresolvedFreeVariableExceptions::UnresolvedFreeVariableExceptions(
-        const UnresolvedFreeVariableExceptions& other
-        )
-    : mUnresolvedFreeVariableExceptionWithTraceClass(
-        other.mUnresolvedFreeVariableExceptionWithTraceClass),
-      mUnresolvedFreeVariableExceptionClass(
-          other.mUnresolvedFreeVariableExceptionClass),
-      mGetUnresolvedFreeVariableExceptionWithTraceFun(
-          other.mGetUnresolvedFreeVariableExceptionWithTraceFun)
-    {
-    Py_INCREF(mUnresolvedFreeVariableExceptionWithTraceClass);
-    Py_INCREF(mUnresolvedFreeVariableExceptionClass);
-    Py_INCREF(mGetUnresolvedFreeVariableExceptionWithTraceFun);
     }
 
 
 PyObject*
 UnresolvedFreeVariableExceptions::getUnresolvedFreeVariableExceptionWithTraceClass() const
     {
-    return mUnresolvedFreeVariableExceptionWithTraceClass;
+    return mUnresolvedFreeVariableExceptionWithTraceClass.get();
     }
 
 
 PyObject*
 UnresolvedFreeVariableExceptions::getUnresolvedFreeVariableExceptionClass() const
     {
-    return mUnresolvedFreeVariableExceptionClass;
+    return mUnresolvedFreeVariableExceptionClass.get();
     }
 
 
@@ -113,7 +84,7 @@ UnresolvedFreeVariableExceptions::getUnresolvedFreeVariableExceptionWithTrace(
         ) const
     {
     return PyObject_CallFunctionObjArgs(
-        mGetUnresolvedFreeVariableExceptionWithTraceFun,
+        mGetUnresolvedFreeVariableExceptionWithTraceFun.get(),
         unresolvedFreeVariableException,
         filename,
         nullptr

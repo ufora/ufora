@@ -33,7 +33,7 @@ public:
 
     virtual ~TypeDescription()
         {
-        };
+        }
 
     virtual std::string toString() {
         std::ostringstream oss;

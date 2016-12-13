@@ -18,6 +18,7 @@
 #include <Python.h>
 
 #include "TypeDescription.hpp"
+#include "../core/PyObjectPtr.hpp"
 
 
 class IRToPythonConverter;
@@ -26,7 +27,6 @@ class StackTraceTypeDescription : public TypeDescription {
 public:
 
     explicit StackTraceTypeDescription(PyObject* stackTraceAsJson);
-    virtual ~StackTraceTypeDescription();
 
     virtual PyObject* transform(
         IRToPythonConverter& c,
@@ -34,9 +34,5 @@ public:
         );
 
 private:
-    PyObject* mStackTraceAsJson;
-
-    StackTraceTypeDescription(
-        const StackTraceTypeDescription&) = delete;
-    void operator=(const StackTraceTypeDescription&) = delete;
+    PyObjectPtr mStackTraceAsJson;
 };

@@ -15,7 +15,7 @@
 ****************************************************************************/
 #pragma once
 
-#include <Python.h>
+#include "core/PyObjectPtr.hpp"
 
 #include <string>
 
@@ -23,12 +23,8 @@
 class NamedSingletons {
 public:
     NamedSingletons();
-    NamedSingletons(const NamedSingletons&);
-    ~NamedSingletons();
 
     PyObject* singletonNameToObject(const std::string& s) const;
 private:
-    void operator=(const NamedSingletons) = delete;
-    
-    PyObject* mSingletonNameToObjectDict;
+    PyObjectPtr mSingletonNameToObjectDict;
 };

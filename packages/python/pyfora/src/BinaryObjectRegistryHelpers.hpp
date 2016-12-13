@@ -17,12 +17,12 @@
 
 #include <Python.h>
 
+#include "core/PyObjectPtr.hpp"
+
 
 class BinaryObjectRegistryHelpers {
 public:
     BinaryObjectRegistryHelpers();
-    ~BinaryObjectRegistryHelpers();
-    BinaryObjectRegistryHelpers(const BinaryObjectRegistryHelpers&);
 
     // returns nullptr or a reference to a new PyString
     PyObject* computedValueDataString(const PyObject* computedValueArg) const;
@@ -30,5 +30,5 @@ public:
 private:
     void operator=(const BinaryObjectRegistryHelpers&) = delete;
 
-    PyObject* mComputedValueDataStringFun;
+    PyObjectPtr mComputedValueDataStringFun;
 };

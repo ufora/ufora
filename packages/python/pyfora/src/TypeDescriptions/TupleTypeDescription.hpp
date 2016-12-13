@@ -28,8 +28,6 @@ class TupleTypeDescription : public TypeDescription {
 public:
 
     explicit TupleTypeDescription(const std::vector<int64_t>& memberIds);
-    
-    virtual ~TupleTypeDescription();
 
     virtual PyObject* transform(
         IRToPythonConverter& c,

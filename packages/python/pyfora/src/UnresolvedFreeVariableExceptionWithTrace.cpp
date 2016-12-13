@@ -71,7 +71,7 @@ UnresolvedFreeVariableExceptions::getUnresolvedFreeVariableExceptionWithTrace(
         const std::string& filename
         )
     {
-    PyObject* pyFilename = PyString_FromStringAndSize(
+    PyObjectPtr pyFilename = PyString_FromStringAndSize(
         filename.data(),
         filename.size()
         );
@@ -79,13 +79,9 @@ UnresolvedFreeVariableExceptions::getUnresolvedFreeVariableExceptionWithTrace(
         return nullptr;
         }
     
-    PyObject* res = PyObject_CallFunctionObjArgs(
-        mUnresolvedFreeVariableExceptionWithTraceClass,
+    return PyObject_CallFunctionObjArgs(
+        mUnresolvedFreeVariableExceptionWithTraceClass.get(),
         unresolvedFreeVariableException,
-        pyFilename
+        pyFilename.get()
         );
-
-    Py_DECREF(pyFilename);
-    
-    return res;
     }

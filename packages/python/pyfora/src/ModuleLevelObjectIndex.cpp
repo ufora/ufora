@@ -20,11 +20,11 @@
 
 
 ModuleLevelObjectIndex::ModuleLevelObjectIndex()
-    : mModuleLevelObjectIndexSingleton(nullptr)
     {
-    PyObject* moduleLevelObjectIndexModule = PyImport_ImportModule(
-        "pyfora.ModuleLevelObjectIndex"
-        );
+    PyObjectPtr moduleLevelObjectIndexModule = PyObjectPtr::unincremented(
+        PyImport_ImportModule(
+            "pyfora.ModuleLevelObjectIndex"
+            ));
     if (moduleLevelObjectIndexModule == nullptr) {
         throw std::runtime_error(
             "error getting pyfora.ModuleLevelObjectIndex "
@@ -33,12 +33,12 @@ ModuleLevelObjectIndex::ModuleLevelObjectIndex()
             );
         }
 
-    PyObject* moduleLevelObjectIndexClass = PyObject_GetAttrString(
-        moduleLevelObjectIndexModule,
-        "ModuleLevelObjectIndex"
-        );
+    PyObjectPtr moduleLevelObjectIndexClass = PyObjectPtr::unincremented(
+        PyObject_GetAttrString(
+            moduleLevelObjectIndexModule.get(),
+            "ModuleLevelObjectIndex"
+            ));
     if (moduleLevelObjectIndexClass == nullptr) {
-        Py_DECREF(moduleLevelObjectIndexModule);
         throw std::runtime_error(
             "error getting ModuleLevelObjectIndex.ModuleLevelObjectIndex "
             "in ModuleLevelObjectIndex::get():\n" +
@@ -46,13 +46,12 @@ ModuleLevelObjectIndex::ModuleLevelObjectIndex()
             );
         }
 
-    PyObject* singletonFunc = PyObject_GetAttrString(
-        moduleLevelObjectIndexClass,
-        "singleton"
-        );
+    PyObjectPtr singletonFunc = PyObjectPtr::unincremented(
+        PyObject_GetAttrString(
+            moduleLevelObjectIndexClass.get(),
+            "singleton"
+            ));
     if (singletonFunc == nullptr) {
-        Py_DECREF(moduleLevelObjectIndexClass);
-        Py_DECREF(moduleLevelObjectIndexModule);
         throw std::runtime_error(
             "error getting ModuleLevelObjectIndex.singleton "
             "in ModuleLevelObjectIndex::get():\n" +
@@ -60,14 +59,11 @@ ModuleLevelObjectIndex::ModuleLevelObjectIndex()
             );
         }
 
-    mModuleLevelObjectIndexSingleton = PyObject_CallFunctionObjArgs(
-        singletonFunc,
-        nullptr
-        );
-
-    Py_DECREF(singletonFunc);
-    Py_DECREF(moduleLevelObjectIndexClass);
-    Py_DECREF(moduleLevelObjectIndexModule);
+    mModuleLevelObjectIndexSingleton = PyObjectPtr::unincremented(
+        PyObject_CallFunctionObjArgs(
+            singletonFunc.get(),
+            nullptr
+            ));
 
     if (mModuleLevelObjectIndexSingleton == nullptr) {
         throw std::runtime_error(
@@ -79,54 +75,33 @@ ModuleLevelObjectIndex::ModuleLevelObjectIndex()
     }
 
 
-ModuleLevelObjectIndex::ModuleLevelObjectIndex(
-        const ModuleLevelObjectIndex& other
-        )
-    : mModuleLevelObjectIndexSingleton(other.mModuleLevelObjectIndexSingleton)
-    {
-    Py_INCREF(mModuleLevelObjectIndexSingleton);
-    }
-
-
-ModuleLevelObjectIndex::~ModuleLevelObjectIndex()
-    {
-    Py_XDECREF(mModuleLevelObjectIndexSingleton);
-    }
-
-
 PyObject*
 ModuleLevelObjectIndex::getPathToObject(const PyObject* pyObject) const
     {
-    PyObject* getPathToObjectFun = PyObject_GetAttrString(
-        mModuleLevelObjectIndexSingleton,
-        "getPathToObject"
-        );
+    PyObjectPtr getPathToObjectFun = PyObjectPtr::unincremented(
+        PyObject_GetAttrString(
+            mModuleLevelObjectIndexSingleton.get(),
+            "getPathToObject"
+            ));
 
-    PyObject* tr =PyObject_CallFunctionObjArgs(
-        getPathToObjectFun,
+    return PyObject_CallFunctionObjArgs(
+        getPathToObjectFun.get(),
         pyObject,
         nullptr);
-    
-    Py_DECREF(getPathToObjectFun);
-
-    return tr;
     }
 
 
 PyObject*
 ModuleLevelObjectIndex::getObjectFromPath(const PyObject* pyObject) const
     {
-    PyObject* getObjectFromPathFun = PyObject_GetAttrString(
-        mModuleLevelObjectIndexSingleton,
-        "getObjectFromPath"
-        );
+    PyObjectPtr getObjectFromPathFun = PyObjectPtr::unincremented(
+        PyObject_GetAttrString(
+            mModuleLevelObjectIndexSingleton.get(),
+            "getObjectFromPath"
+            ));
 
-    PyObject* tr =PyObject_CallFunctionObjArgs(
-        getObjectFromPathFun,
+    return PyObject_CallFunctionObjArgs(
+        getObjectFromPathFun.get(),
         pyObject,
         nullptr);
-    
-    Py_DECREF(getObjectFromPathFun);
-
-    return tr;
     }

@@ -21,11 +21,14 @@
 
 
 PureTypeDescriptionModuleWrapper::PureTypeDescriptionModuleWrapper()
-    : mPureTypeDescriptionModule(nullptr)
+    : mPureTypeDescriptionModule(
+        PyObjectPtr::unincremented(
+            PyImport_ImportModule(
+                "pyfora.TypeDescription"
+                )
+            )
+        )
     {
-    mPureTypeDescriptionModule = PyImport_ImportModule(
-        "pyfora.TypeDescription"
-        );
     if (mPureTypeDescriptionModule == nullptr) {
         throw std::runtime_error(
             "py error instantiating PyFileDescriptionWrapper: " +
@@ -35,52 +38,39 @@ PureTypeDescriptionModuleWrapper::PureTypeDescriptionModuleWrapper()
     }
 
 
-PureTypeDescriptionModuleWrapper::~PureTypeDescriptionModuleWrapper()
-    {
-    Py_XDECREF(mPureTypeDescriptionModule);
-    }
-
-
 PyObject* PureTypeDescriptionModuleWrapper::pyFileDescription(
         const FileTypeDescription& filedescription
         ) const
     {
-    PyObject* pyFileDescriptionClass = PyObject_GetAttrString(
-        mPureTypeDescriptionModule,
-        "File"
-        );
+    PyObjectPtr pyFileDescriptionClass = PyObjectPtr::unincremented(
+        PyObject_GetAttrString(
+            mPureTypeDescriptionModule.get(),
+            "File"
+            ));
     if (pyFileDescriptionClass == nullptr) {
         return nullptr;
         }
 
-    PyObject* args = PyTuple_New(0);
+    PyObjectPtr args = PyObjectPtr::unincremented(PyTuple_New(0));
     if (args == nullptr) {
-        Py_DECREF(pyFileDescriptionClass);
         return nullptr;
         }
     
-    PyObject* kw = Py_BuildValue(
-        "{s:s, s:s}",
-        "path", filedescription.path().c_str(),
-        "text", filedescription.text().c_str()
-        );
+    PyObjectPtr kw = PyObjectPtr::unincremented(
+        Py_BuildValue(
+            "{s:s, s:s}",
+            "path", filedescription.path().c_str(),
+            "text", filedescription.text().c_str()
+            ));
     if (kw == nullptr) {
-        Py_DECREF(args);
-        Py_DECREF(pyFileDescriptionClass);
         return nullptr;
         }
     
-    PyObject* tr = PyObject_Call(
-        pyFileDescriptionClass,
-        args,
-        kw
+    return PyObject_Call(
+        pyFileDescriptionClass.get(),
+        args.get(),
+        kw.get()
         );
-
-    Py_DECREF(kw);
-    Py_DECREF(args);
-    Py_DECREF(pyFileDescriptionClass);
-
-    return tr;
     }
 
 
@@ -88,21 +78,18 @@ PyObject* PureTypeDescriptionModuleWrapper::pyHomogeneousListAsNumpyArray(
         const PyObject* array
         ) const
     {
-    PyObject* pyHomogeneousListAsNumpyArrayClass = PyObject_GetAttrString(
-        mPureTypeDescriptionModule,
-        "HomogenousListAsNumpyArray"
-        );
+    PyObjectPtr pyHomogeneousListAsNumpyArrayClass = PyObjectPtr::unincremented(
+        PyObject_GetAttrString(
+            mPureTypeDescriptionModule.get(),
+            "HomogenousListAsNumpyArray"
+            ));
     if (pyHomogeneousListAsNumpyArrayClass == nullptr) {
         return nullptr;
         }
 
-    PyObject* tr = PyObject_CallFunctionObjArgs(
-        pyHomogeneousListAsNumpyArrayClass,
+    return PyObject_CallFunctionObjArgs(
+        pyHomogeneousListAsNumpyArrayClass.get(),
         array,
         nullptr
         );
-
-    Py_DECREF(pyHomogeneousListAsNumpyArrayClass);
-
-    return tr;
     }

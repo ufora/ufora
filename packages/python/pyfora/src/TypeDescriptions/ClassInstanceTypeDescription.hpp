@@ -33,7 +33,6 @@ public:
         int64_t classId,
         const std::map<std::string, int64_t>& mClassMembers
         );
-    virtual ~ClassInstanceTypeDescription();
 
     virtual PyObject* transform(
         IRToPythonConverter& c,

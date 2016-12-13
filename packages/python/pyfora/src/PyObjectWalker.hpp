@@ -29,6 +29,7 @@
 #include "PyAstUtil.hpp"
 #include "PyforaInspect.hpp"
 #include "UnresolvedFreeVariableExceptions.hpp"
+#include "core/PyObjectPtr.hpp"
 
 
 class ClassOrFunctionInfo;
@@ -37,24 +38,14 @@ class FileDescription;
 
 class PyObjectWalker {
 public:
-    /* 
-       Steals references to most PyObject* args, except purePythonClassMapping,
-       which is the only one passed-in from python
-
-       The stolen references are not increfed on
-       construction, but are decrefed on destruction. They come
-       from pyobjectwalkermodule, and have refct 1.
-
-       Arguments should be non-nullptr -- no error checking is done
-    */
     PyObjectWalker(
-        PyObject* purePythonClassMapping,
+        const PyObjectPtr& purePythonClassMapping,
         BinaryObjectRegistry& objectRegistry, // should we really be doing this?
-        PyObject* excludePredicateFun, // stolen reference
-        PyObject* excludeList, // stolen reference
-        PyObject* terminalValueFilter, // stolen reference
-        PyObject* traceback_type, // stolen reference
-        PyObject* pythonTracebackToJsonFun
+        const PyObjectPtr& excludePredicateFun, // stolen reference
+        const PyObjectPtr& excludeList, // stolen reference
+        const PyObjectPtr& terminalValueFilter, // stolen reference
+        const PyObjectPtr& traceback_type, // stolen reference
+        const PyObjectPtr& pythonTracebackToJsonFun
         );
 
     ~PyObjectWalker();
@@ -152,17 +143,16 @@ private:
 
     PureImplementationMappings mPureImplementationMappings;
 
-    PyObject* mRemotePythonObjectClass;
-    PyObject* mPackedHomogenousDataClass;
-    PyObject* mFutureClass;
-    PyObject* mExcludePredicateFun;
-    PyObject* mExcludeList;
-    PyObject* mTerminalValueFilter;
-    PyObject* mPyforaWithBlockClass;
-    PyObject* mUnconvertibleClass;
-    PyObject* mPyforaConnectHack;
-    PyObject* mTracebackType;
-    PyObject* mPythonTracebackToJsonFun;
+    PyObjectPtr mRemotePythonObjectClass;
+    PyObjectPtr mPackedHomogenousDataClass;
+    PyObjectPtr mFutureClass;
+    PyObjectPtr mExcludePredicateFun;
+    PyObjectPtr mExcludeList;
+    PyObjectPtr mPyforaWithBlockClass;
+    PyObjectPtr mUnconvertibleClass;
+    PyObjectPtr mPyforaConnectHack;
+    PyObjectPtr mTracebackType;
+    PyObjectPtr mPythonTracebackToJsonFun;
 
     ModuleLevelObjectIndex mModuleLevelObjectIndex;
     Ast mAstModule;
@@ -171,7 +161,7 @@ private:
     PyAstFreeVariableAnalyses mPyAstFreeVariableAnalysesModule;
     UnresolvedFreeVariableExceptions mUnresolvedFreeVariableExceptions;
 
-    std::map<long, PyObject*> mConvertedObjectCache;
+    std::map<long, PyObjectPtr> mConvertedObjectCache;
     std::map<PyObject*, int64_t> mPyObjectToObjectId;
     std::map<PyObject*, std::string> mPythonSingletonToName;
     std::map<std::string, int64_t> mConvertedFiles;

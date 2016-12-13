@@ -17,20 +17,16 @@
 
 #include <Python.h>
 
+#include "core/PyObjectPtr.hpp"
+
 
 class ModuleLevelObjectIndex {
 public:
     ModuleLevelObjectIndex();
 
-    ModuleLevelObjectIndex(const ModuleLevelObjectIndex&);
-
-    ~ModuleLevelObjectIndex();
-
     PyObject* getObjectFromPath(const PyObject* path) const;
     PyObject* getPathToObject(const PyObject* obj) const;
 
 private:
-    void operator=(const ModuleLevelObjectIndex&) = delete;
-    
-    PyObject* mModuleLevelObjectIndexSingleton;
+    PyObjectPtr mModuleLevelObjectIndexSingleton;
     };

@@ -17,13 +17,12 @@
 
 #include <Python.h>
 
+#include "core/PyObjectPtr.hpp"
+
 
 class PyforaInspect {
 public:
     PyforaInspect();
-
-    PyforaInspect(const PyforaInspect&);
-    ~PyforaInspect();
 
     bool isclass(PyObject*) const;
     bool isclassinstance(PyObject*) const;
@@ -40,10 +39,10 @@ private:
 
     void _initMembers();
 
-    PyObject* mClassType;
-    PyObject* mTypeType;
-    PyObject* mFunctionType;
-    PyObject* mModuleType;
-    PyObject* mGetLinesFunc;
-    PyObject* mPyforaInspectErrorClass;
+    PyObjectPtr mClassType;
+    PyObjectPtr mTypeType;
+    PyObjectPtr mFunctionType;
+    PyObjectPtr mModuleType;
+    PyObjectPtr mGetLinesFunc;
+    PyObjectPtr mPyforaInspectErrorClass;
 };

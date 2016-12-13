@@ -28,11 +28,9 @@
 
 
 PythonObjectRehydrator::PythonObjectRehydrator(
-        PyObject* purePythonClassMapping,
+        const PyObjectPtr& purePythonClassMapping,
         bool allowUserCodeModuleLevelLookups)
-    : mNoConversionFunc(nullptr),
-      mPureImplementationMappings(purePythonClassMapping),
-      mPurePythonObjectRehydratorHelpers(nullptr),
+    : mPureImplementationMappings(purePythonClassMapping),
       mModuleLevelObjectIndex(ModuleLevelObjectIndex())
     {
     _initNoConversionFunc();
@@ -45,9 +43,10 @@ PythonObjectRehydrator::PythonObjectRehydrator(
 
 void PythonObjectRehydrator::_initNoConversionFunc()
     {
-    PyObject* PythonObjectRehydratorHelpersModule = PyImport_ImportModule(
-        "pyfora.PythonObjectRehydratorHelpers"
-        );
+    PyObjectPtr PythonObjectRehydratorHelpersModule = PyObjectPtr::unincremented(
+        PyImport_ImportModule(
+            "pyfora.PythonObjectRehydratorHelpers"
+            ));
     if (PythonObjectRehydratorHelpersModule == nullptr) {
         throw std::runtime_error(
             "py error while creating a (cpp) PythonObjectRehydrator: " +
@@ -55,12 +54,10 @@ void PythonObjectRehydrator::_initNoConversionFunc()
             );
         }
     
-    mNoConversionFunc = PyObject_GetAttrString(
-        PythonObjectRehydratorHelpersModule,
-        "noConversion"
-        );
-    
-    Py_DECREF(PythonObjectRehydratorHelpersModule);
+    mNoConversionFunc = PyObjectPtr::unincremented(PyObject_GetAttrString(
+            PythonObjectRehydratorHelpersModule.get(),
+            "noConversion"
+            ));
 
     if (mNoConversionFunc == nullptr) {
         throw std::runtime_error(
@@ -72,13 +69,15 @@ void PythonObjectRehydrator::_initNoConversionFunc()
 
 
 void PythonObjectRehydrator::_initPurePythonObjectRehydratorHelpers(
-        PyObject* purePythonClassMapping,
+        const PyObjectPtr& purePythonClassMapping,
         bool allowUserCodeModuleLevelLookups
         )
     {
-    PyObject* PurePythonObjectRehydratorHelpersModule = PyImport_ImportModule(
-        "pyfora.PythonObjectRehydratorHelpers"
-        );
+    PyObjectPtr PurePythonObjectRehydratorHelpersModule = 
+        PyObjectPtr::unincremented(
+            PyImport_ImportModule(
+                "pyfora.PythonObjectRehydratorHelpers"
+                ));
     if (PurePythonObjectRehydratorHelpersModule == nullptr) {
         throw std::runtime_error(
             "py error while creating a (cpp) PythonObjectRehydrator: " +
@@ -86,11 +85,12 @@ void PythonObjectRehydrator::_initPurePythonObjectRehydratorHelpers(
             );
         }
     
-    PyObject* PurePythonObjectRehydratorHelpersClass = PyObject_GetAttrString(
-        PurePythonObjectRehydratorHelpersModule,
-        "PythonObjectRehydratorHelpers"
-        );
-    Py_DECREF(PurePythonObjectRehydratorHelpersModule);
+    PyObjectPtr PurePythonObjectRehydratorHelpersClass = 
+        PyObjectPtr::unincremented(
+            PyObject_GetAttrString(
+                PurePythonObjectRehydratorHelpersModule.get(),
+                "PythonObjectRehydratorHelpers"
+                ));
     if (PurePythonObjectRehydratorHelpersClass == nullptr) {
         throw std::runtime_error(
             "py error while creating a (cpp) PythonObjectRehydrator: " +
@@ -98,14 +98,13 @@ void PythonObjectRehydrator::_initPurePythonObjectRehydratorHelpers(
             );        
         }
 
-    mPurePythonObjectRehydratorHelpers = PyObject_CallFunctionObjArgs(
-        PurePythonObjectRehydratorHelpersClass,
-        purePythonClassMapping,
-        allowUserCodeModuleLevelLookups ? Py_True : Py_False,
-        nullptr
-        );
-
-    Py_DECREF(PurePythonObjectRehydratorHelpersClass);
+    mPurePythonObjectRehydratorHelpers = PyObjectPtr::unincremented(
+        PyObject_CallFunctionObjArgs(
+            PurePythonObjectRehydratorHelpersClass.get(),
+            purePythonClassMapping.get(),
+            allowUserCodeModuleLevelLookups ? Py_True : Py_False,
+            nullptr
+            ));
 
     if (mPurePythonObjectRehydratorHelpers == nullptr) {
         throw std::runtime_error(
@@ -113,13 +112,6 @@ void PythonObjectRehydrator::_initPurePythonObjectRehydratorHelpers(
             PyObjectUtils::exc_string()
             );
         }
-    }
-
-
-PythonObjectRehydrator::~PythonObjectRehydrator()
-    {
-    Py_XDECREF(mPurePythonObjectRehydratorHelpers);
-    Py_XDECREF(mNoConversionFunc);
     }
 
 
@@ -134,7 +126,7 @@ PyObject* PythonObjectRehydrator::readFileDescriptorToPythonObject(
     BinaryObjectRegistryDeserializer::deserializeFromStream(
         deserializer,
         registry,
-        mNoConversionFunc
+        mNoConversionFunc.get()
         );
     
     int64_t root_id = deserializer->readInt64();
@@ -155,7 +147,7 @@ PyObject* PythonObjectRehydrator::convertEncodedStringToPythonObject(
     BinaryObjectRegistryDeserializer::deserializeFromStream(
         deserializer,
         registry,
-        mNoConversionFunc
+        mNoConversionFunc.get()
         );
 
     return convertObjectDefinitionsToPythonObject(registry, root_id);
@@ -189,32 +181,28 @@ PyObject* PythonObjectRehydrator::createClassObject(
         PyObject* convertedMembers
         )
     {
-    PyObject* pyLineNumber = PyInt_FromLong(linenumber);
+    PyObjectPtr pyLineNumber = PyObjectPtr::unincremented(
+        PyInt_FromLong(linenumber));
     if (pyLineNumber == nullptr) {
         return nullptr;
         }
 
-    PyObject* classObjectFromFileFun = PyObject_GetAttrString(
-        mPurePythonObjectRehydratorHelpers,
-        "classObjectFromFile"
-        );
+    PyObjectPtr classObjectFromFileFun = PyObjectPtr::unincremented(
+        PyObject_GetAttrString(
+            mPurePythonObjectRehydratorHelpers.get(),
+            "classObjectFromFile"
+            ));
     if (classObjectFromFileFun == nullptr) {
-        Py_DECREF(pyLineNumber);
         return nullptr;
         }
 
-    PyObject* tr = PyObject_CallFunctionObjArgs(
-        classObjectFromFileFun,
+    return PyObject_CallFunctionObjArgs(
+        classObjectFromFileFun.get(),
         pyFileDescription,
-        pyLineNumber,
+        pyLineNumber.get(),
         convertedMembers,
         nullptr
         );
-
-    Py_DECREF(classObjectFromFileFun);
-    Py_DECREF(pyLineNumber);
-
-    return tr;
     }
 
 
@@ -224,32 +212,28 @@ PyObject* PythonObjectRehydrator::instantiateFunction(
         PyObject* convertedMembers
         )
     {
-    PyObject* pyLineNumber = PyInt_FromLong(linenumber);
+    PyObjectPtr pyLineNumber = PyObjectPtr::unincremented(
+        PyInt_FromLong(linenumber));
     if (pyLineNumber == nullptr) {
         return nullptr;
         }
 
-    PyObject* fileFromFileFun = PyObject_GetAttrString(
-        mPurePythonObjectRehydratorHelpers,
-        "instantiateFunctionFromFile"
-        );
-    if (fileFromFileFun == nullptr) {
-        Py_DECREF(pyLineNumber);
+    PyObjectPtr functionFromFileFun = PyObjectPtr::unincremented(
+        PyObject_GetAttrString(
+            mPurePythonObjectRehydratorHelpers.get(),
+            "instantiateFunctionFromFile"
+            ));
+    if (functionFromFileFun == nullptr) {
         return nullptr;
         }
 
-    PyObject* tr = PyObject_CallFunctionObjArgs(
-        fileFromFileFun,
+    return PyObject_CallFunctionObjArgs(
+        functionFromFileFun.get(),
         pyFileDescription,
-        pyLineNumber,
+        pyLineNumber.get(),
         convertedMembers,
         nullptr
         );
-
-    Py_DECREF(fileFromFileFun);
-    Py_DECREF(pyLineNumber);
-
-    return tr;
     }
 
 
@@ -258,22 +242,19 @@ PyObject* PythonObjectRehydrator::instantiateClass(
         PyObject* membersDict
         )
     {
-    PyObject* methodName = PyString_FromString("instantiateClass");
+    PyObjectPtr methodName = PyObjectPtr::unincremented(
+        PyString_FromString("instantiateClass"));
     if (methodName == nullptr) {
         return nullptr;
         }
     
-    PyObject* tr = PyObject_CallMethodObjArgs(
-        mPurePythonObjectRehydratorHelpers,
-        methodName,
+    return PyObject_CallMethodObjArgs(
+        mPurePythonObjectRehydratorHelpers.get(),
+        methodName.get(),
         classObject,
         membersDict,
         nullptr
         );
-
-    Py_DECREF(methodName);
-
-    return tr;
     }
 
 
