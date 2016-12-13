@@ -18,8 +18,6 @@ import ufora.BackendGateway.SubscribableWebObjects.ObjectClassesToExpose.Test as
 import ufora.BackendGateway.SubscribableWebObjects.ObjectClassesToExpose.PyforaObjectConverter \
     as PyforaObjectConverter
 import ufora.BackendGateway.SubscribableWebObjects.Computation as Computation
-#import ufora.BackendGateway.SubscribableWebObjects.ObjectClassesToExpose.PyforaComputedValue \
-    #as PyforaComputedValue
 #import ufora.BackendGateway.SubscribableWebObjects.ObjectClassesToExpose.WriteToS3Task \
     #as WriteToS3Task
 import ufora.BackendGateway.SubscribableWebObjects.ObjectClassesToExpose.PyforaCluster \
@@ -29,7 +27,6 @@ import ufora.BackendGateway.ComputedValue.PersistentCacheIndex as PersistentCach
 import ufora.BackendGateway.ComputedValue.ViewOfEntireCumulusSystem as ViewOfEntireCumulusSystem
 
 classMap = {
-    #"Test": Test.Test,
     "TestSubscribable": Test.TestSubscribable,
     #"ComputedValue": ComputedValue.ComputedValue,
     #"ComputedValueForMember": ComputedValue.ComputedValueForMember,
@@ -37,15 +34,11 @@ classMap = {
     #"ComputedValueVectorSlice": ComputedValue.ComputedValueVectorSlice,
     #"PersistentCacheIndex": PersistentCacheIndex.PersistentCacheIndex,
     "PyforaObjectConverter": PyforaObjectConverter.PyforaObjectConverter,
-    #"PyforaComputedValue": PyforaComputedValue.PyforaComputedValue,
     "Computation": Computation.Computation,
     "TupleElement": Computation.TupleElement,
     "DictElement": Computation.DictElement,
     "ViewOfEntireCumulusSystem": ViewOfEntireCumulusSystem.ViewOfEntireCumulusSystem,
     #"WriteToS3Task": WriteToS3Task.WriteToS3Task,
-    #"PyforaDictionaryElement": PyforaComputedValue.PyforaDictionaryElement,
-    #"PyforaTupleElement": PyforaComputedValue.PyforaTupleElement,
-    #"PyforaResultAsJson": PyforaComputedValue.PyforaResultAsJson,
     "PyforaCluster": PyforaCluster.PyforaCluster
     }
 

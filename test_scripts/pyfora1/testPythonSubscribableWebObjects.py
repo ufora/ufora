@@ -194,7 +194,7 @@ class TestSubscribableWebObjects(unittest.TestCase):
             threadResults
             )
 
-    def disabled_test_volumeTest(self):
+    def disabled_volumeTest(self):
         interface = self.connect()
         webObjects = SubscribableWebObjects.WebObjectFactory(interface, maxObjectIds=50)
         initialTimesCleared = webObjects.sessionState.timesCleared
