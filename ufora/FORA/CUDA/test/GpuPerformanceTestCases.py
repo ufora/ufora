@@ -1,4 +1,4 @@
-#   Copyright 2015 Ufora Inc.
+#   Copyright 2016 Ufora Inc.
 #
 #   Licensed under the Apache License, Version 2.0 (the "License");
 #   you may not use this file except in compliance with the License.
@@ -12,27 +12,11 @@
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
 
+import numpy
+import time
 import ufora.test.PerformanceTestReporter as PerformanceTestReporter
 
-class GpuMathTestCases:
-
-    def test_precision_of_exp(self):
-        for x in xrange(-10000, 10000, 10000):
-            print x
-            self.check_precision_of_function_on_GPU("exp", x)
-
-    def test_precision_of_log(self):
-        for x in [0.001, 0.01, 0.1, 0.5, 0.8, 0.9, 0.99, 0.9999, 1.0, 1.0001, 1.01, 1.1, 10, 1000, 1000000, 1000000000]:
-            self.check_precision_of_function_on_GPU("log", x)
-
-    def test_precision_of_cos(self):
-        for x in xrange(0, 360, 20):
-            self.check_precision_of_function_on_GPU("cos", x)
-
-    def test_precision_of_sin(self):
-        for x in xrange(0, 360, 20):
-            self.check_precision_of_function_on_GPU("sin", x)
-
+class GpuPerformanceTestCases:
 
     @PerformanceTestReporter.PerfTest("python.InMemoryCumulus.GPU.LotsOfExpsUsingGPU")
     def test_basic_gpu_works_exp1(self):
@@ -65,3 +49,42 @@ class GpuMathTestCases:
     @PerformanceTestReporter.PerfTest("python.InMemoryCumulus.GPU.LotsOfSinesWithoutGPU")
     def test_basic_gpu_works_sin2(self):
         self.basic_gpu_works_helper("sin", onGPU=False)
+
+    MATMULT_SIZE = 3000
+    @PerformanceTestReporter.PerfTest("python.InMemoryCumulus.GPU.MatMultOnGPU")
+    def test_matmult_gpu(self):
+        dimSize = self.MATMULT_SIZE
+        captureExpr = '''
+                let mat_d = __size__;
+                let mat1 = Vector.range(mat_d, fun(x){Vector.range(mat_d, fun(y){(x*mat_d + y) * 1.0})});
+                let mat2 = Vector.range(mat_d, fun(x){Vector.range(mat_d, fun(y){(y*mat_d + x) * 1.0})});
+                '''.replace('__size__', str(dimSize))
+        functionExpr = '''
+                fun((x,y)) {
+                  let sum = 0;
+                  for k in sequence(mat_d) {
+                    sum = mat1[x][k] * mat2[k][y]
+                  }
+                  sum
+                }'''
+
+        vectorExpr = '[(x,y) for y in sequence(mat_d) for x in sequence(mat_d)]'
+
+        print "CapEx: ", captureExpr
+        print "FunEx: ", functionExpr
+        print "VecEx: ", vectorExpr
+
+        t0 = time.time()
+        self.runOnGPU(functionExpr, vectorExpr, captureExpr)
+        print "GPU took ", time.time() - t0, " to do mm ", dimSize
+
+    @PerformanceTestReporter.PerfTest("python.InMemoryCumulus.GPU.MatMultWithNumpy")
+    def test_matmult_numpy(self):
+        dimSize = self.MATMULT_SIZE
+        m1 = numpy.ones((dimSize,dimSize))
+        m2 = numpy.ones((dimSize,dimSize))
+
+        t0 = time.time()
+        numpy.matmul(m1,m2)
+        print "Numpy took ", time.time() - t0, " to do mm ",dimSize, " in one CPU"
+

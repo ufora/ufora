@@ -17,6 +17,20 @@ import ufora.cumulus.test.InMemoryCumulusSimulation as InMemoryCumulusSimulation
 import math
 
 class GpuTestUtil:
+    def runOnGPU(self, funcExpr, vecExpr, captureExpr=""):
+        s3 = InMemoryS3Interface.InMemoryS3InterfaceFactory()
+
+        text = captureExpr + """
+            let f = __funcExpr__;
+            let vec = __vecExpr__;
+            cached`(#GpuApply(f, vec));
+            """.replace("__funcExpr__", funcExpr).replace("__vecExpr__", vecExpr)
+
+        res = InMemoryCumulusSimulation.computeUsingSeveralWorkers(text, s3, 1, timeout=120, threadCount=4,memoryLimitMb=1000)
+        self.assertIsNotNone(res)
+        self.assertFalse(res.isException(), "Failed with %s" % res)
+        return res
+
     def compareCudaToCPUnoCheck(self, funcExpr, vecExpr, captureExpr=""):
         s3 = InMemoryS3Interface.InMemoryS3InterfaceFactory()
 

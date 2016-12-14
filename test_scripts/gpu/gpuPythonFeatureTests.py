@@ -15,8 +15,8 @@
 import unittest
 import pyfora
 import ufora.config.Setup as Setup
-import ufora.FORA.CUDA.GpuFeatureTestCases as GpuFeatureTestCases
-import ufora.FORA.CUDA.GpuTestUtil as GpuTestUtil
+import ufora.FORA.CUDA.test.GpuFeatureTestCases as GpuFeatureTestCases
+import ufora.FORA.CUDA.test.GpuTestUtil as GpuTestUtil
 import ufora.FORA.python.FORA as FORA
 
 class GpuPythonFeatureTests(
