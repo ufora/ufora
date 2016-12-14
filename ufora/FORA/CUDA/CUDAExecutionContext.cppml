@@ -36,6 +36,7 @@
 #include "../TypedFora/ABI/VectorRecordCodegen.hppml"
 #include "../TypedFora/ABI/VectorHandle.hpp"
 #include "../TypedFora/TypedFora.hppml"
+#include "../TypedFora/TypedForaUtil.hppml"
 #include "../Reasoner/SimpleForwardReasoner.hppml"
 #include "../VectorDataManager/PageletTree.hppml"
 #include "../../core/Logging.hpp"
@@ -46,7 +47,6 @@
 
 #include <fstream>
 #include <iostream>
-
 
 using TypedFora::Abi::VectorHandle;
 using TypedFora::Abi::VectorRecord;
@@ -138,7 +138,7 @@ public:
 			LOG_INFO 	<< "CUDA Using Device " << devID
 						<< ": \"" << deviceName
 						<< "\" with Compute " << major << "." << minor
-						<< "capability.\n"
+						<< " capability.\n"
 						;
 			if (major < 3) {
 				// We need compute capability to be at least 3.0 to use CUDA unified memory
@@ -292,7 +292,7 @@ public:
 
 			if (inCudaClosureData)
 				args.push_back(&inCudaClosureData);
-			
+
 			args.push_back(&inN);
 			args.push_back(&inCudaSourceData);
 
@@ -313,7 +313,7 @@ public:
 			throwOnError(error, "Launch Kernel: ");
 			lassert_dump(error == CUDA_SUCCESS, "UNKNOWN CUDA ERROR");
 			cudaDeviceSynchronize();
-			
+
 			mUnusedContexts.write(contextToUse);
 			}
 		catch(...)
@@ -631,6 +631,10 @@ ImplValContainer	CUDAExecutionContext::executeKernel(
 						ImplValContainer	inSourceVector
 						)
 	{
+	lassert_dump(
+		inSourceVector.cast<VectorRecord>().jor().size() == 1,
+		"expected input vector with one type but it has " << inSourceVector.cast<VectorRecord>().jor().size()
+		);
 	JOV vecElementJov = inSourceVector.cast<VectorRecord>().jor()[0];
 	LOG_DEBUG << "CUDAApply Vector Element Type:" << prettyPrintString(vecElementJov);
 	LOG_DEBUG << "CUDAApply Function Object:" << prettyPrintString(inApplyObject);
@@ -671,9 +675,12 @@ ImplValContainer	CUDAExecutionContext::executeKernel(
 				throw UnableToConvertToPTX(msg.str());
 				}
 
-			auto res = reasoner->compileEntrypointForApply(JOVT::Unnamed(signatureJOVs));
+			// Nullable<pair<TypedFora::BlockID, std::string> >
+			auto blockIdAndCode = reasoner->compileEntrypointForApply(JOVT::Unnamed(signatureJOVs));
 
-			if (!res)
+			lassert(blockIdAndCode->first == TypedFora::BlockID::entry());
+
+			if (!blockIdAndCode)
 				throw UnableToConvertToPTX(
 					"Reasoning failed to converge."
 					);
@@ -691,20 +698,27 @@ ImplValContainer	CUDAExecutionContext::executeKernel(
 
 			//if the joa() has multiple exit points that are compatible,
 			//we need to wrap them up into a single typed value
-			bool	needsReturnTypeModification = false;
+			bool needsReturnTypeModification = false;
+
+			TypedFora::Callable callable =
+					Runtime::getRuntime().getTypedForaCompiler()->getDefinition(blockIdAndCode->second);
+
+			LOG_DEBUG << "Relaxed result signatures : " << prettyPrintString(callable.resultSignature().relaxed());
+
 			TypedFora::Converter converter;
 
-			NativeCFG cfg =
-					converter.convertCallable(
-							Runtime::getRuntime().getTypedForaCompiler()->getDefinition(res->second));
+			LOG_DEBUG << "building new callable with relaxed JOVs";
+			callable = adaptSignatureOfCallable(
+							callable,
+							callable.callSignatureAsJovt(blockIdAndCode->first),
+							callable.callSignatureAsJovt(blockIdAndCode->first),
+							callable.resultSignature().relaxed(),
+							false
+							);
 
-			lassert(res->first == TypedFora::BlockID::entry());
-
-			// LOG_DEBUG << "CFG before any processing: "
-					// << prettyPrintString(cfg);
+			NativeCFG cfg = converter.convertCallable(callable);
 
 			cfg = NativeCFGTransforms::convertForGpuExecution(cfg, frame->exits().resultPart().size());
-			LOG_DEBUG << "CFG after initial processing";
 
 			while (cfg.externalBranches().size())
 				{
@@ -725,7 +739,6 @@ ImplValContainer	CUDAExecutionContext::executeKernel(
 						),
 					nameOfSubbranch
 					);
-				LOG_DEBUG << "CFG after processing inlined code";
 				}
 
 			try {
@@ -750,8 +763,6 @@ ImplValContainer	CUDAExecutionContext::executeKernel(
 						}
 					}
 				LOG_DEBUG << "executeKernel: 7";
-				
-				LOG_TEST << "code pre-define " << cfg;
 
 				define(kernelName, cfg, *vecElementJov.type(), outputTypes);
 				}

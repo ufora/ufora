@@ -180,7 +180,6 @@ class GpuFeatureTestCases:
         self.checkCudaRaises(functionExpr, "[5]", "")
         self.checkCudaRaises(functionExpr, "[0, 5, 1, 6, 2, 7, 3, 8, 4, 9]", "")
 
-    @unittest.skip
     def test_many_return_types(self):
         functionExpr = """
             fun(0) {(0)}
@@ -203,8 +202,7 @@ class GpuFeatureTestCases:
         self.compareCudaToCPU(functionExpr, "[5]", "")
         self.compareCudaToCPU(functionExpr, "[0, 5, 1, 6, 2, 7, 3, 8, 4, 9]", "")
 
-    @unittest.skip
-    def test_two_return_types_1(self):
+    def test_two_return_types_const(self):
         functionExpr = """
             fun(x) {
                 if (x > 0)
@@ -216,8 +214,7 @@ class GpuFeatureTestCases:
         self.compareCudaToCPU(functionExpr, "[0]", "")
         self.compareCudaToCPU(functionExpr, "[1]", "")
 
-    @unittest.skip
-    def test_return_constant(self):
+    def test_return_constant_1(self):
         functionExpr = """
             fun(x) {
                 0
@@ -227,6 +224,16 @@ class GpuFeatureTestCases:
         self.compareCudaToCPU(functionExpr, "[1]", "")
         self.compareCudaToCPU(functionExpr, "[11]", "")
         self.compareCudaToCPU(functionExpr, "[101]", "")
+
+    def test_return_constant_2(self):
+        functionExpr = """
+                fun(x) {
+                    if (x < 5) 1 else 0
+                }
+                """
+        vectorExpr = "Vector.range(10)"
+
+        self.compareCudaToCPU(functionExpr, vectorExpr)
 
     def test_division(self):
         functionExpr = """
@@ -337,14 +344,10 @@ class GpuFeatureTestCases:
                 let mat_d = 20;
                 let mat = Vector.range(mat_d, fun(x){Vector.range(mat_d, fun(y){(x*mat_d + y) * 1.0})});
                 """
-        # FIXME: in the function below, the arg of the sequence is the constant 20 but we want
-        # it to be the captured variable mat_d. If we use that however, the reasoner cannot
-        # exclude the possibility that the loop is never taken, in which case the function
-        # returns the constant 0, and we don't yet have proper support for constants.
         functionExpr = """
                 fun(x) {
                   let sum = 0;
-                  for y in sequence(20) {
+                  for y in sequence(mat_d) {
                     sum = sum + mat[x][y]
                   }
                   sum
