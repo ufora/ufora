@@ -339,6 +339,29 @@ class GpuFeatureTestCases:
 
         self.compareCudaToCPU(functionExpr, vectorExpr, captureExpr)
 
+    def test_matmult(self):
+        dimensionSize = 'let mat_d = 5;'
+        captureExpr = '''
+                let mat1 = Vector.range(mat_d, fun(x){Vector.range(mat_d, fun(y){(x*mat_d + y) * 1.0})});
+                let mat2 = Vector.range(mat_d, fun(x){Vector.range(mat_d, fun(y){(y*mat_d + x) * 1.0})});
+                '''
+        functionExpr = '''
+                fun((x,y)) {
+                  let sum = 0;
+                  for k in sequence(mat_d) {
+                    sum = mat1[x][k] * mat2[k][y]
+                  }
+                  sum
+                }'''
+
+        vectorExpr = '[(x,y) for y in sequence(mat_d) for x in sequence(mat_d)]'
+
+        print "CapEx: ", dimensionSize+captureExpr
+        print "FunEx: ", functionExpr
+        print "VecEx: ", vectorExpr
+
+        self.compareCudaToCPU(functionExpr, vectorExpr, dimensionSize+captureExpr)
+
     def test_vec_of_vec_sum(self):
         captureExpr = """
                 let mat_d = 20;
