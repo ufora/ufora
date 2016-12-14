@@ -599,6 +599,5 @@ class MessageProcessor(object):
         self.lock.__exit__(type, value, tb)
 
     def teardown(self):
-        pass
-        #self.computedValueGateway = None
+        self.cumulus_gateway.teardown()
 
