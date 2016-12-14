@@ -10,10 +10,17 @@
 
 namespace NativeCFGTransforms {
 
+NativeCFG prependNothingToReturnTypes(const NativeCFG& inCfg) {
+	NativeCFG cfg(inCfg);
+	cfg.returnTypes() = emptyTreeVec() + NativeType::Nothing() + cfg.returnTypes();
+	return cfg;
+
+	}
+
 class IncrementReturnIndexTransformer {
 public:
 	IncrementReturnIndexTransformer(uword_t maxIdx) {
-	mMaxIdx.push_back(maxIdx);
+	mOuterMaxIdx = maxIdx;
 	mNullCont = NativeContinuation(
 					NativeVariable::Temp(NativeType::Nothing()),
 					NativeExpression::Return(0, NativeConstant::Nothing().expr()));
@@ -32,7 +39,11 @@ public:
 
 	Nullable<NativeCFG> processDown(const NativeCFG& inCFG, bool& cont) const
 		{
-		mMaxIdx.push_back(inCFG.returnTypes().size());
+		auto size = inCFG.returnTypes().size();
+		if (mMaxIdx.size() == 0)
+			mMaxIdx.push_back(mOuterMaxIdx);
+		else
+			mMaxIdx.push_back(size);
 		return null();
 		}
 	Nullable<NativeCFG> processUp(const NativeCFG& inCFG) const
@@ -78,7 +89,7 @@ public:
 				if (idx < mMaxIdx.back())
 					return NativeExpression::Return(idx+1, val);
 				else
-					return NativeExpression::Return(0, val);
+					return NativeExpression::Return(0, NativeConstant::Nothing().expr());
 				}
 			-|	Call(f, continuations, args, meta) ->> {
 				auto newF = f;
@@ -113,13 +124,8 @@ public:
 		}
 
 private:
-	NativeCFG prependNothingToReturnTypes(const NativeCFG& inCfg) const {
-		NativeCFG cfg(inCfg);
-		cfg.returnTypes() = emptyTreeVec() + NativeType::Nothing() + cfg.returnTypes();
-		return cfg;
-
-		}
 	mutable std::vector<uword_t> mMaxIdx;
+	uword_t mOuterMaxIdx;
 	NativeContinuation mNullCont;
 };
 
@@ -244,20 +250,23 @@ private:
 NativeCFG convertForGpuExecution(const NativeCFG& in, unsigned int resultPartSize)
 	{
 	NativeCFG cfg(in);
-	cfg.returnTypes() =
-			emptyTreeVec() + NativeType::Nothing() +
-			cfg.returnTypes().slice(0, resultPartSize);
 
 	LOG_DEBUG << "convertForGpuExecution: BEGIN!";
+	LOG_DEBUG << prettyPrintString(cfg);
 	// 1. Convert VectorRecords to GPU VectorRecords.
 	cfg = transform(cfg, VectorRecordForGpuTransformer());
 	LOG_DEBUG << "convertForGpuExecution: after VectorRecord transformer";
+	LOG_DEBUG << prettyPrintString(cfg);
 
 	// 2. Add a Nothing as the first return type, update continuations,
 	//    and remove some runtime stuff
 	LOG_DEBUG << "convertForGpuExecution: before ReturnIndex transformer. resultPartSize=" << resultPartSize;
+	cfg.returnTypes() =
+			emptyTreeVec() + NativeType::Nothing() +
+			cfg.returnTypes().slice(0, resultPartSize);
 	cfg = transform(cfg, IncrementReturnIndexTransformer(resultPartSize));
 	LOG_DEBUG << "convertForGpuExecution: after ReturnIndex transformer";
+	LOG_DEBUG << prettyPrintString(cfg);
 
 	// 3. Remove unsupported code and rewire it to return to that 1st 'Nothing'
 	//    type which we added in an earlier pass
