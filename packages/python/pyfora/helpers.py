@@ -53,3 +53,11 @@ class RegularPythonContext:
         return res
 
 python = RegularPythonContext()
+
+def locality(locality_expr):
+    """A no-op that indicates that threads with common "locality_expr"
+    should be grouped together on GPU hardware"""
+    __inline_fora("""
+        fun(@unnamed_args:(locality_expr), ...) {
+               `LocalityHint(locality_expr)
+        """)(locality_expr)

@@ -22,12 +22,9 @@
 #include "../Core/ExecutionContext.hppml"
 #include "../Core/MemoryPool.hpp"
 #include "../Core/ImplValContainerUtilities.hppml"
-#include "../Native/NativeCFGTransforms/ConvertForGPUExecution.hppml"
-#include "../Native/NativeCFGTransforms/Transforms.hppml"
 #include "../Native/NativeCode.hppml"
 #include "../Native/NativeType.hppml"
 #include "../Native/NativeTypeFor.hpp"
-#include "../Runtime.hppml"
 #include "../TypedFora/JitCompiler/StaticInliner.hppml"
 #include "../TypedFora/Converter.hppml"
 #include "../TypedFora/ABI/NativeLayoutType.hppml"
@@ -37,8 +34,8 @@
 #include "../TypedFora/ABI/VectorHandle.hpp"
 #include "../TypedFora/TypedFora.hppml"
 #include "../TypedFora/TypedForaUtil.hppml"
-#include "../Reasoner/SimpleForwardReasoner.hppml"
 #include "../VectorDataManager/PageletTree.hppml"
+#include "GpuCodegen.hppml"
 #include "../../core/Logging.hpp"
 #include "../../core/threading/Queue.hpp"
 
@@ -346,7 +343,7 @@ void	CUDAExecutionContext::define(
 						const std::string& inKernelName,
 						const NativeCFG& inCFG,
 						const Type& inInputType,
-						const std::vector<Type>& inOutputTypes
+						const ImmutableTreeVector<Type>& inOutputTypes
 						)
 	{
 	boost::recursive_mutex::scoped_lock lock(mMutex);
@@ -385,9 +382,9 @@ void	CUDAExecutionContext::define(
 ImplValContainer    createFORAVector(
 						uint8_t* indexData,
 						uword_t  indexAlignedSize, // we can also pass the Type if necessary
-						const std::vector<Type>& outputElementTypes,
-						const std::vector<NativeType>& outputElementNativeTypes,
-						const std::vector<uint8_t*> alignedDataVectors,
+						const ImmutableTreeVector<Type>& outputElementTypes,
+						const ImmutableTreeVector<NativeType>& outputElementNativeTypes,
+						const std::vector<uint8_t*>& alignedDataVectors,
 						uint64_t count,
 						MemoryPool* inPool
 						)
@@ -500,10 +497,9 @@ ImplValContainer	CUDAExecutionContext::executeKernel(
 	Type closureType = inApplyObject.type();
 	Type inputElementType;
 	NativeType inputElementNativeType;
-	const std::vector<Type>* outputElementTypes;
-	const std::vector<NativeType>* outputElementNativeTypes;
-	bool mayThrowException = false;
-
+	ImmutableTreeVector<Type> outputElementTypes;
+	ImmutableTreeVector<NativeType> outputElementNativeTypes;
+	
 		{
 		boost::recursive_mutex::scoped_lock lock(mMutex);
 
@@ -513,23 +509,15 @@ ImplValContainer	CUDAExecutionContext::executeKernel(
 				inoutIt != mInputOutputTypesByName.end(),
 				"used kernel " << inKernelName << " without defining it."
 				);
-		lassert_dump(
-				mMayThrowException.find(inKernelName) != mMayThrowException.end(),
-				"used kernel " << inKernelName << " without defining mMayThrowException for it."
-				);
-
+		
 		// inputElementType = mInputOutputTypesByName[inKernelName].first;
 		// outputElementTypes = &mInputOutputTypesByName[inKernelName].second;
 		auto& inout = inoutIt->second;
 		inputElementType = inout.inputType;
-		outputElementTypes = &inout.outputTypes;
-		lassert(outputElementTypes);
-
+		outputElementTypes = inout.outputTypes;
+		
 		inputElementNativeType = inout.inputNativeType;
-		outputElementNativeTypes = &inout.outputNativeTypes;
-		lassert(outputElementNativeTypes);
-
-		mayThrowException = mMayThrowException[inKernelName];
+		outputElementNativeTypes = inout.outputNativeTypes;
 		}
 
 	lassert(inApplyObject.type().isClass());
@@ -566,29 +554,27 @@ ImplValContainer	CUDAExecutionContext::executeKernel(
 	if (!cudaInVecData || (!cudaClosureData && inApplyObject.type().size() > 0))
 		return ImplValContainer(CSTValue::blankOf(Type::Vector()));
 
-	uword_t outputElementTypesCount = outputElementTypes->size();
+	uword_t outputElementTypesCount = outputElementTypes.size();
 	lassert_dump(outputElementTypesCount < GPU_EXCEPTION_INDEX, // reserve value 0xFF to flag exceptions
 			"Too many output types for 8bit unsigned integer to encode");
 	// Type indexElementType = Type::Integer(8, false);
 	NativeType indexElementType = NativeType::uint8();
 
 	uint8_t* cudaOutVecIndex = nullptr;
-	if (outputElementTypesCount > 1 || mayThrowException) {
-		cudaOutVecIndex = alignMgr.allocateCudaMemory(indexElementType.alignedSize() * elementCount);
-		lassert(cudaOutVecIndex != nullptr);
-		LOG_DEBUG << "allocated " << elementCount << " slots in the cuda result index vector (using CUDA unified memory)";
-		memset(cudaOutVecIndex, 0xff, elementCount * indexElementType.alignedSize());
-		LOG_DEBUG << "executeKernel(2): initialized CUDA outVecIdx with " << (int)cudaOutVecIndex[0]
-				<< ", at address " << (uint64_t)cudaOutVecIndex;
-	}
-	LOG_DEBUG << "executeKernel(2): 4";
+
+	cudaOutVecIndex = alignMgr.allocateCudaMemory(indexElementType.alignedSize() * elementCount);
+	lassert(cudaOutVecIndex != nullptr);
+	LOG_DEBUG << "allocated " << elementCount << " slots in the cuda result index vector (using CUDA unified memory)";
+	memset(cudaOutVecIndex, 0xff, elementCount * indexElementType.alignedSize());
+	LOG_DEBUG << "executeKernel(2): initialized CUDA outVecIdx with " << (int)cudaOutVecIndex[0]
+			<< ", at address " << (uint64_t)cudaOutVecIndex;
 
 	std::vector<uint8_t*> cudaOutVecDataVectors(outputElementTypesCount);
 
 	for (uword_t k = 0; k < outputElementTypesCount; ++k)
 		{
 		// const Type& t = (*outputElementTypes)[k];
-		const NativeType& nt = (*outputElementNativeTypes)[k];
+		const NativeType& nt = outputElementNativeTypes[k];
 
 		uint8_t* ptr = alignMgr.allocateCudaMemory(nt.alignedSize() * elementCount);
 		lassert(ptr != nullptr);
@@ -615,8 +601,8 @@ ImplValContainer	CUDAExecutionContext::executeKernel(
 	auto res = createFORAVector(
 					cudaOutVecIndex,
 					indexElementType.alignedSize(),
-					*outputElementTypes,
-					*outputElementNativeTypes,
+					outputElementTypes,
+					outputElementNativeTypes,
 					cudaOutVecDataVectors,
 					elementCount,
 					pool);
@@ -635,7 +621,9 @@ ImplValContainer	CUDAExecutionContext::executeKernel(
 		inSourceVector.cast<VectorRecord>().jor().size() == 1,
 		"expected input vector with one type but it has " << inSourceVector.cast<VectorRecord>().jor().size()
 		);
+	
 	JOV vecElementJov = inSourceVector.cast<VectorRecord>().jor()[0];
+
 	LOG_DEBUG << "CUDAApply Vector Element Type:" << prettyPrintString(vecElementJov);
 	LOG_DEBUG << "CUDAApply Function Object:" << prettyPrintString(inApplyObject);
 
@@ -648,123 +636,11 @@ ImplValContainer	CUDAExecutionContext::executeKernel(
 
 		if (mNativeKernelsByName.find(kernelName) == mNativeKernelsByName.end())
 			{
-			ImmutableTreeVector<JudgmentOnValue> signatureJOVs =
-				emptyTreeVec() +
-					funJOV +
-					JudgmentOnValue::Constant(CSTValue(Symbol::Call())) +
-					vecElementJov
-				;
-			LOG_DEBUG << "signature JOVs: " << prettyPrintString(signatureJOVs);
-
-			PolymorphicSharedPtr<Fora::SimpleForwardReasoner> reasoner(
-				new Fora::SimpleForwardReasoner(
-					Runtime::getRuntime().getTypedForaCompiler(),
-		            Runtime::getRuntime().getInstructionGraph(),
-		            Runtime::getRuntime().getAxioms()
-		            )
-				);
-
-			auto frame = reasoner->reasonAboutApply(JOVT::Unnamed(signatureJOVs));
-
-			if (frame->exits().resultPart().size() < 1 )
-				{
-				ostringstream msg;
-				msg << "Code returns zero types ("
-						<< frame->exits().resultPart().size() << "):"
-						<< prettyPrintString(frame->exits().resultPart());
-				throw UnableToConvertToPTX(msg.str());
-				}
-
-			// Nullable<pair<TypedFora::BlockID, std::string> >
-			auto blockIdAndCode = reasoner->compileEntrypointForApply(JOVT::Unnamed(signatureJOVs));
-
-			lassert(blockIdAndCode->first == TypedFora::BlockID::entry());
-
-			if (!blockIdAndCode)
-				throw UnableToConvertToPTX(
-					"Reasoning failed to converge."
-					);
-
-			//the target instruction might have different JOVS
-			//than the signature, because the axiom might be
-			//a 'class apply' in which case the instruction
-			//will have all of the class object's members
-			//as arguments as well. These will all be constants
-			//in this case, and will be removed
-			//from the NativeCFG because they're all passed as
-			//'none'
-			ImmutableTreeVector<JudgmentOnValue>
-				targetInstructionJOVs = signatureJOVs;
-
-			//if the joa() has multiple exit points that are compatible,
-			//we need to wrap them up into a single typed value
-			bool needsReturnTypeModification = false;
-
-			TypedFora::Callable callable =
-					Runtime::getRuntime().getTypedForaCompiler()->getDefinition(blockIdAndCode->second);
-
-			LOG_DEBUG << "Relaxed result signatures : " << prettyPrintString(callable.resultSignature().relaxed());
-
-			TypedFora::Converter converter;
-
-			LOG_DEBUG << "building new callable with relaxed JOVs";
-			callable = adaptSignatureOfCallable(
-							callable,
-							callable.callSignatureAsJovt(blockIdAndCode->first),
-							callable.callSignatureAsJovt(blockIdAndCode->first),
-							callable.resultSignature().relaxed(),
-							false
-							);
-
-			NativeCFG cfg = converter.convertCallable(callable);
-
-			cfg = NativeCFGTransforms::convertForGpuExecution(cfg, frame->exits().resultPart().size());
-
-			while (cfg.externalBranches().size())
-				{
-				string nameOfSubbranch = cfg.externalBranches()[0];
-				if (Runtime::getRuntime().getTypedForaCompiler()->
-						getMutuallyRecursiveFunctions(nameOfSubbranch).size())
-					{
-					throw UnableToConvertToPTX("contains recursion");
-					}
-				NativeCFG cfgToInline =
-						converter.convertCallable(
-								Runtime::getRuntime().getTypedForaCompiler()
-									->getDefinition(nameOfSubbranch));
-				cfg = NativeCFGTransforms::inlineCFG(cfg,
-					NativeCFGTransforms::convertForGpuExecution(
-						cfgToInline,
-						cfgToInline.returnTypes().size()
-						),
-					nameOfSubbranch
-					);
-				}
-
 			try {
-				mMayThrowException[kernelName] = true;
-				//a lot simpler when all variables are unique
-				cfg = NativeCFGTransforms::optimize(cfg, Runtime::getRuntime().getConfig());
-				cfg = NativeCFGTransforms::renameVariables(cfg);
+				pair<NativeCFG, ImmutableTreeVector<Type> > cfgAndOutputTypes = 
+					computeGpuKernelFunction(funJOV, vecElementJov);
 
-				std::vector<Type> outputTypes(frame->exits().resultPart().size());
-					{
-					long k = 0;
-					for (auto& jov : frame->exits().resultPart().vals())
-						{
-						Nullable<Type> t = jov.type();
-						lassert_dump(
-								t,
-								"return type at index " << k << " of CUDA kernel '"
-									<< kernelName << "' is missing");
-						outputTypes[k] = *t;
-						LOG_DEBUG << " output_type[" << k << "] = " << prettyPrintString(*t);
-						++k;
-						}
-					}
-				LOG_DEBUG << "executeKernel: 7";
-
-				define(kernelName, cfg, *vecElementJov.type(), outputTypes);
+				define(kernelName, cfgAndOutputTypes.first, *vecElementJov.type(), cfgAndOutputTypes.second);
 				}
 			catch(std::logic_error e)
 				{

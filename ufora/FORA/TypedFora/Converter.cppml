@@ -155,6 +155,49 @@ NativeBlock Converter::convertBlock(
 		inBlock.relativeFrequency()
 		);
 	}
+NativeExpression
+	Converter::convertLocalityHintExpression(
+			const TypedFora::Expression& inExpression,
+			const ExpressionConversionContext& context,
+			const Nullable<TypedFora::Type>& inTargetType,
+			ImmutableTreeSet<TypedFora::Variable>& ioTeardowns
+			) const
+	{
+	@match TypedFora::Expression(inExpression)
+		-| LocalityHint(e) ->> {
+			if (!e.type())
+				return convertExpression(e, context, null());
+
+			TypedFora::Variable v = TypedFora::Variable::Temp(*e.type());
+
+			NativeExpressionBuilder builder;
+
+			NativeVariable toBindVar = builder.addAndGetVar(
+				convertExpression(e, context, null() << v.type(), ioTeardowns)
+				);
+
+			NativeExpression toEvalExpr = 
+				NativeExpression::SideEffectfulNoOp().taggedWith(
+					NativeExpressionTag::Generic(
+						"LocalityHint", 
+						emptyTreeMap() + std::string("hint") + toBindVar.expr()
+						)
+					);
+
+			toEvalExpr = builder.add(toEvalExpr);
+
+			if (ioTeardowns.contains(v))
+				{
+				builder.add(
+					wrapExpressionInTeardown(v.type(), toBindVar, NativeExpression::Nothing())
+					);
+				ioTeardowns = ioTeardowns - v;
+				}
+
+			return builder(toEvalExpr);
+			}
+
+	}
 
 NativeExpression
 	Converter::convertLetExpression(
@@ -1281,6 +1324,9 @@ NativeExpression
 				}
 			-| Let() ->> {
 				tr = convertLetExpression(inExpression, context, inTargetType, ioTeardowns);
+				}
+			-| LocalityHint(expr) ->> {
+				tr = convertLocalityHintExpression(inExpression, context, inTargetType, ioTeardowns);
 				}
 			-| DiscardFirst() ->> {
 				tr = convertDiscardFirstExpression(inExpression, context, inTargetType, ioTeardowns);
