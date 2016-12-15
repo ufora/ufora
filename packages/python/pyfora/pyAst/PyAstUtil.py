@@ -54,6 +54,11 @@ def getSourceFilenameAndText(pyObject):
     except TypeError as e:
         raise Exceptions.CantGetSourceTextError(e.message)
 
+    if sourceFile is None:
+        raise Exceptions.CantGetSourceTextError(
+            "can't get source lines for file %s" % sourceFile
+            )
+
     linesOrNone = PyforaInspect.getlines(sourceFile)
 
     if linesOrNone is None:

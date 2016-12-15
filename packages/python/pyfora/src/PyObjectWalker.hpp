@@ -17,9 +17,6 @@
 
 #include <Python.h>
 
-#include <map>
-#include <stdint.h>
-
 #include "Ast.hpp"
 #include "BinaryObjectRegistry.hpp"
 #include "FreeVariableResolver.hpp"
@@ -29,7 +26,14 @@
 #include "PyAstUtil.hpp"
 #include "PyforaInspect.hpp"
 #include "UnresolvedFreeVariableExceptions.hpp"
+#include "core/optional.hpp"
 #include "core/PyObjectPtr.hpp"
+#include "core/variant.hpp"
+#include "exceptions/PyforaErrors.hpp"
+
+#include <map>
+#include <memory>
+#include <stdint.h>
 
 
 class ClassOrFunctionInfo;
@@ -49,8 +53,10 @@ public:
         );
 
     ~PyObjectWalker();
+    
+    using WalkResult = variant<int64_t, std::shared_ptr<PyforaError>>;
 
-    int64_t walkPyObject(PyObject* pyObject);
+    WalkResult walkPyObject(PyObject* pyObject);
     int64_t walkFileDescription(const FileDescription& fileDescription);
 
     static FreeVariableMemberAccessChain toChain(const PyObject*);
@@ -62,26 +68,55 @@ private:
     void operator=(const PyObjectWalker&) = delete;
 
     int64_t _allocateId(PyObject* pyObject);
-    void _walkPyObject(PyObject* pyObject, int64_t objectId);
+
+    using PyforaErrorOrNull = std::experimental::optional<std::shared_ptr<PyforaError>>;
     
-    void _registerUnconvertible(int64_t objectId, const PyObject* PyObject) const;
-    void _registerRemotePythonObject(int64_t objectId, PyObject* pyObject) const;
-    void _registerPackedHomogenousData(int64_t objectId, PyObject* pyObject) const;
-    void _registerFuture(int64_t objectId, PyObject* pyObject);
-    void _registerBuiltinExceptionInstance(int64_t objectId, PyObject* pyException);
-    void _registerTypeOrBuiltinFunctionNamedSingleton(int64_t objectId,
-                                                      PyObject* pyObject) const;
-    void _registerStackTraceAsJson(int64_t objectId, const PyObject* pyobject) const;
-    void _registerPyforaWithBlock(int64_t objectId, PyObject* pyObject);
-    void _registerTuple(int64_t objectId, PyObject* pyTuple);
-    void _registerList(int64_t objectId, PyObject* pyList);
-    void _registerListOfPrimitives(int64_t objectId, PyObject* pyList) const;
-    void _registerListGeneric(int64_t objectId, const PyObject* pyList);
-    void _registerDict(int64_t objectId, PyObject* pyObject);
-    void _registerFunction(int64_t objectId, PyObject* pyFunction);
-    void _registerClass(int64_t objectId, PyObject* pyClass);
-    void _registerClassInstance(int64_t objectId, PyObject* pyClass);   
-    void _registerInstanceMethod(int64_t objectId, PyObject* pyObject);
+    PyforaErrorOrNull _walkPyObject(PyObject* pyObject, int64_t objectId);
+    
+    PyforaErrorOrNull
+    _registerUnconvertible(int64_t objectId, const PyObject* PyObject) const;
+
+    PyforaErrorOrNull
+    _registerRemotePythonObject(int64_t objectId, PyObject* pyObject) const;
+
+    PyforaErrorOrNull
+    _registerPackedHomogenousData(int64_t objectId, PyObject* pyObject) const;
+
+    PyforaErrorOrNull _registerFuture(int64_t objectId, PyObject* pyObject);
+
+    PyforaErrorOrNull
+    _registerBuiltinExceptionInstance(int64_t objectId, PyObject* pyException);
+
+    PyforaErrorOrNull
+    _registerTypeOrBuiltinFunctionNamedSingleton(int64_t objectId,
+                                                 PyObject* pyObject) const;
+    PyforaErrorOrNull
+    _registerStackTraceAsJson(int64_t objectId, const PyObject* pyobject) const;
+
+    PyforaErrorOrNull
+    _registerPyforaWithBlock(int64_t objectId, PyObject* pyObject);
+
+    PyforaErrorOrNull
+    _registerTuple(int64_t objectId, PyObject* pyTuple);
+
+    PyforaErrorOrNull
+    _registerList(int64_t objectId, PyObject* pyList);
+
+    PyforaErrorOrNull
+    _registerListOfPrimitives(int64_t objectId, PyObject* pyList) const;
+
+    PyforaErrorOrNull
+    _registerListGeneric(int64_t objectId, const PyObject* pyList);
+
+    PyforaErrorOrNull _registerDict(int64_t objectId, PyObject* pyObject);
+
+    PyforaErrorOrNull _registerFunction(int64_t objectId, PyObject* pyFunction);
+
+    PyforaErrorOrNull _registerClass(int64_t objectId, PyObject* pyClass);
+
+    PyforaErrorOrNull _registerClassInstance(int64_t objectId, PyObject* pyClass);   
+
+    PyforaErrorOrNull _registerInstanceMethod(int64_t objectId, PyObject* pyObject);
 
     template<typename T>
     void _registerPrimitive(int64_t objectId, const T& t) {
@@ -105,7 +140,8 @@ private:
         ) const;
 
     PyObject* _getPyConvertedObjectCache() const;
-    PyObject* _getDataMemberNames(PyObject* classInstance, PyObject* classObject) const;
+    variant<PyObjectPtr, std::shared_ptr<PyforaError>>
+        _getDataMemberNames(PyObject* classInstance, PyObject* classObject) const;
     PyObject* _withBlockFun(PyObject* withBlockAst, int64_t lineno) const;
     PyObject* _defaultAstArgs() const;
 
@@ -120,9 +156,11 @@ private:
     bool _classIsNamedSingleton(PyObject* pyObject) const;
     bool _isTypeOrBuiltinFunctionAndInNamedSingletons(PyObject* pyObject) const;
 
-    ClassOrFunctionInfo _classOrFunctionInfo(PyObject*, bool isFunction);
+    variant<ClassOrFunctionInfo, std::shared_ptr<PyforaError>>
+    _classOrFunctionInfo(PyObject*, bool isFunction);
 
-    std::map<FreeVariableMemberAccessChain, int64_t>
+    variant<std::map<FreeVariableMemberAccessChain, int64_t>,
+            std::shared_ptr<PyforaError>>
     _processFreeVariableMemberAccessChainResolutions(PyObject* resolutions);
 
     std::string _fileText(const std::string& filename) const;
@@ -139,7 +177,8 @@ private:
     void _initUnconvertibleClass();
     void _initPyforaConnectHack();
 
-    void _handleUnresolvedFreeVariableException(const PyObject* filename);
+    std::shared_ptr<PyforaError>
+    _handleUnresolvedFreeVariableException(const PyObject* filename);
 
     PureImplementationMappings mPureImplementationMappings;
 

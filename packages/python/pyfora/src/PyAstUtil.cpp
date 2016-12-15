@@ -15,9 +15,10 @@
 ****************************************************************************/
 #include "PyAstUtil.hpp"
 
-#include "CantGetSourceTextError.hpp"
-#include "PyforaInspectError.hpp"
+#include "Exceptions.hpp"
 #include "PyObjectUtils.hpp"
+#include "exceptions/PyforaErrors.hpp"
+#include "core/variant.hpp"
 
 #include <stdexcept>
 
@@ -36,7 +37,7 @@ PyAstUtil::PyAstUtil()
     }
 
 
-void PyAstUtil::_translateError() const
+std::shared_ptr<PyforaError> PyAstUtil::translateErrorToCpp() const
     {
     PyObject * e, * v, * tb;
 
@@ -57,42 +58,66 @@ void PyAstUtil::_translateError() const
         Py_DECREF(v);
         Py_DECREF(tb);
 
-        throw PyforaInspectError(message);
+        return std::shared_ptr<PyforaError>(
+            new PyforaInspectError(message)
+            );
+        }
+    else if (PyObject_IsInstance(v,
+            mExceptionsModule.getCantGetSourceTextErrorClass())) {
+        
+        std::string message = PyObjectUtils::str_string(v);
+
+        Py_DECREF(e);
+        Py_DECREF(v);
+        Py_DECREF(tb);
+
+        return std::shared_ptr<PyforaError>(
+            new CantGetSourceTextError(message)
+            );
         }
     else {
         PyErr_Restore(e, v, tb);
-        throw std::runtime_error(
-            PyObjectUtils::exc_string()
+        return std::shared_ptr<PyforaError>(
+            new PyforaError(PyObjectUtils::exc_string())
             );
-        }
+        }    
     }
 
 
-PyObject*
+variant<PyObjectPtr, std::shared_ptr<PyforaError>>
 PyAstUtil::sourceFilenameAndText(const PyObject* pyObject) const
     {
+    variant<PyObjectPtr, std::shared_ptr<PyforaError>> tr;
+
     PyObjectPtr getSourceFilenameAndTextFun = PyObjectPtr::unincremented(
         PyObject_GetAttrString(mPyAstUtilModule.get(), "getSourceFilenameAndText"));
     if (getSourceFilenameAndTextFun == nullptr) {
-        return nullptr;
+        tr.set<std::shared_ptr<PyforaError>>(translateErrorToCpp());
+        return tr;
         }
 
-    PyObject* tr = PyObject_CallFunctionObjArgs(
+    PyObject* res = PyObject_CallFunctionObjArgs(
         getSourceFilenameAndTextFun.get(),
         pyObject,
         nullptr
         );
 
-    if (tr == nullptr) {
-        _translateError();
+    if (res == nullptr) {
+        tr.set<std::shared_ptr<PyforaError>>(translateErrorToCpp());
+        }
+    else {
+        tr.set<PyObjectPtr>(PyObjectPtr::unincremented(res));
         }
 
     return tr;
     }
 
 
-long PyAstUtil::startingSourceLine(const PyObject* pyObject) const
+variant<long, std::shared_ptr<PyforaError>>
+PyAstUtil::startingSourceLine(const PyObject* pyObject) const
     {
+    variant<long, std::shared_ptr<PyforaError>> tr;
+
     PyObjectPtr getSourceLinesFun = PyObjectPtr::unincremented(
         PyObject_GetAttrString(mPyAstUtilModule.get(), "getSourceLines"));
     if (getSourceLinesFun == nullptr) {
@@ -109,7 +134,10 @@ long PyAstUtil::startingSourceLine(const PyObject* pyObject) const
             nullptr
             ));
     if (res == nullptr) {
-        throw CantGetSourceTextError(PyObjectUtils::exc_string());
+        tr.set<std::shared_ptr<PyforaError>>(
+            new CantGetSourceTextError(PyObjectUtils::exc_string())
+            );
+        return tr;
         }
 
     if (not PyTuple_Check(res.get())) {
@@ -130,7 +158,7 @@ long PyAstUtil::startingSourceLine(const PyObject* pyObject) const
             "expected PyforaInspect.getSourceLines to return an int");
         }
 
-    long tr = PyInt_AS_LONG(startingSourceLine);
+    tr.set<long>(PyInt_AS_LONG(startingSourceLine));
 
     return tr;
     }
@@ -247,14 +275,20 @@ PyAstUtil::withBlockAtLineNumber(const PyObject* pyObject, long sourceLine) cons
     }
 
 
-PyObject* PyAstUtil::collectDataMembersSetInInit(PyObject* pyObject) const
+variant<PyObjectPtr, std::shared_ptr<PyforaError>>
+PyAstUtil::collectDataMembersSetInInit(PyObject* pyObject) const
     {
+    variant<PyObjectPtr, std::shared_ptr<PyforaError>> tr;
+
     PyObjectPtr collectDataMembersSetInInitFun = PyObjectPtr::unincremented(
         PyObject_GetAttrString(
             mPyAstUtilModule.get(),
             "collectDataMembersSetInInit"));
     if (collectDataMembersSetInInitFun == nullptr) {
-        return nullptr;
+        throw std::runtime_error(
+            "error getting py collectDataMembersSetInInitFun "
+            "in PyAstUtil::collectDataMembersSetInInit"
+            );
         }
 
     PyObject* res = PyObject_CallFunctionObjArgs(
@@ -264,10 +298,12 @@ PyObject* PyAstUtil::collectDataMembersSetInInit(PyObject* pyObject) const
         );
 
     if (res == nullptr) {
-        _translateError();
+        tr.set<std::shared_ptr<PyforaError>>(translateErrorToCpp());
+        return tr;
         }
 
-    return res;
+    tr.set<PyObjectPtr>(PyObjectPtr::unincremented(res));
+    return tr;
     }
 
 

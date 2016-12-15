@@ -16,16 +16,16 @@
 #include <Python.h>
 #include <structmember.h>
 
-#include <stdexcept>
-
-#include "BadWithBlockError.hpp"
 #include "PyBinaryObjectRegistry.hpp"
 #include "PyObjectUtils.hpp"
 #include "PyObjectWalker.hpp"
-#include "PythonToForaConversionError.hpp"
 #include "UnresolvedFreeVariableExceptions.hpp"
-#include "UnresolvedFreeVariableExceptionWithTrace.hpp"
 #include "core/PyObjectPtr.hpp"
+#include "core/variant.hpp"
+#include "exceptions/PyforaErrors.hpp"
+
+#include <stdexcept>
+#include <stdint.h>
 
 /*********************************
 Defining a Python C-extension for the C++ class PyObjectWalker,
@@ -63,102 +63,6 @@ PyObjectWalkerStruct_dealloc(PyObjectWalkerStruct* self)
     delete self->nativePyObjectWalker;
     self->ob_type->tp_free((PyObject*)self);
     }
-
-
-namespace {
-
-PyObject* getPythonToForaConversionErrorClass()
-    {
-    PyObjectPtr pyforaModule = PyObjectPtr::unincremented(
-        PyImport_ImportModule("pyfora"));
-    if (pyforaModule == nullptr) {
-        return nullptr;
-        }
-
-    PyObjectPtr exceptionsModule = PyObjectPtr::unincremented(
-        PyObject_GetAttrString(pyforaModule.get(), "Exceptions"));
-    if (exceptionsModule == nullptr) {
-        return nullptr;
-        }
-
-    PyObject* pythonToForaConversionErrorClass = 
-        PyObject_GetAttrString(exceptionsModule.get(), "PythonToForaConversionError");
-
-    return pythonToForaConversionErrorClass;
-    }
-
-
-PyObject* getBadWithBlockErrorClass()
-    {
-    PyObjectPtr pyforaModule = PyObjectPtr::unincremented(
-        PyImport_ImportModule("pyfora"));
-    if (pyforaModule == nullptr) {
-        return nullptr;
-        }
-
-    PyObjectPtr exceptionsModule = PyObjectPtr::unincremented(
-        PyObject_GetAttrString(
-            pyforaModule.get(),
-            "Exceptions"));
-
-    if (exceptionsModule == nullptr) {
-        return nullptr;
-        }
-
-    return PyObject_GetAttrString(exceptionsModule.get(), "BadWithBlockError");
-    }
-
-
-void translatePythonToForaConversionError(const PythonToForaConversionError& e)
-    {
-    PyObjectPtr pythonToForaConversionErrorClass = PyObjectPtr::unincremented(
-        getPythonToForaConversionErrorClass());
-    if (pythonToForaConversionErrorClass == nullptr) {
-        return;
-        }
-
-    PyErr_SetString(
-        pythonToForaConversionErrorClass.get(),
-        e.what()
-        );
-    }
-
-
-void translateBadWithBlockError(const BadWithBlockError& e) 
-    {
-    PyObjectPtr badWithBlockErrorClass = PyObjectPtr::unincremented(
-        getBadWithBlockErrorClass());
-    if (badWithBlockErrorClass == nullptr) {
-        return;
-        }
-
-    PyErr_SetString(
-        badWithBlockErrorClass.get(),
-        e.what()
-        );
-    }
-
-void translateUnresolvedFreeVariableExceptionWithTrace(
-        const UnresolvedFreeVariableExceptionWithTrace& e,
-        const UnresolvedFreeVariableExceptions& unresolvedFreeVariableExceptionsModule
-        )
-    {
-    PyObject* unresolvedFreeVariableExceptionWithTraceClass =
-        unresolvedFreeVariableExceptionsModule
-        .getUnresolvedFreeVariableExceptionWithTraceClass();
-
-    if (unresolvedFreeVariableExceptionWithTraceClass == nullptr) {
-        return;
-        }
-
-    PyObject* value = e.value(); // borrowed reference
-    PyErr_SetObject(
-        unresolvedFreeVariableExceptionWithTraceClass,
-        value
-        );
-    }
-
-} // anonymous namespace
 
 
 static int
@@ -276,25 +180,23 @@ PyObjectWalkerStruct_walkPyObject(PyObjectWalkerStruct* self, PyObject* args)
         return nullptr;
         }
 
-    long res;
+    variant<int64_t, std::shared_ptr<PyforaError>> objectIdOrErr;
     try {
-        res = self->nativePyObjectWalker->walkPyObject(objToWalk);
+        objectIdOrErr = self->nativePyObjectWalker->walkPyObject(objToWalk);
         }
-    catch (const PythonToForaConversionError& e) {
-        translatePythonToForaConversionError(e);
+    catch (const UnresolvedFreeVariableExceptionWithTrace& e) {
+        e.setPyErr();
         return nullptr;
         }
     catch (const BadWithBlockError& e) {
-        translateBadWithBlockError(e);
+        e.setPyErr();
         return nullptr;
         }
-    catch (const UnresolvedFreeVariableExceptionWithTrace& e) {
-        translateUnresolvedFreeVariableExceptionWithTrace(
-            e,
-            self->nativePyObjectWalker->unresolvedFreeVariableExceptionsModule());
+    catch (const PythonToForaConversionError& e) {
+        e.setPyErr();
         return nullptr;
         }
-    /*catch (const std::runtime_error& e) {
+    catch (const std::runtime_error& e) {
         PyErr_SetString(
             PyExc_RuntimeError,
             e.what()
@@ -307,9 +209,15 @@ PyObjectWalkerStruct_walkPyObject(PyObjectWalkerStruct* self, PyObject* args)
             e.what()
             );
         return nullptr;
-        }*/
+        }
 
-    return PyInt_FromLong(res);
+    if (objectIdOrErr.is<int64_t>()) {
+        return PyInt_FromLong(objectIdOrErr.get<int64_t>());
+        }
+    else {
+        objectIdOrErr.get<std::shared_ptr<PyforaError>>()->setPyErr();
+        return nullptr;
+        }
     }
 
 

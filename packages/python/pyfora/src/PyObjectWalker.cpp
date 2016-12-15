@@ -15,17 +15,13 @@
 ****************************************************************************/
 #include "PyObjectWalker.hpp"
 
-#include "BadWithBlockError.hpp"
-#include "CantGetSourceTextError.hpp"
 #include "ClassOrFunctionInfo.hpp"
 #include "FileDescription.hpp"
 #include "FreeVariableResolver.hpp"
-#include "PyforaInspectError.hpp"
 #include "PyObjectUtils.hpp"
-#include "PythonToForaConversionError.hpp"
-#include "UnresolvedFreeVariableExceptions.hpp"
-#include "UnresolvedFreeVariableExceptionWithTrace.hpp"
+#include "exceptions/PyforaErrors.hpp"
 
+#include <cassert>
 #include <stdexcept>
 #include <vector>
 
@@ -298,13 +294,16 @@ int64_t PyObjectWalker::_allocateId(PyObject* pyObject) {
     }
 
 
-int64_t PyObjectWalker::walkPyObject(PyObject* pyObject) 
+PyObjectWalker::WalkResult PyObjectWalker::walkPyObject(PyObject* pyObject) 
     {
+    WalkResult tr;
+
         {
         auto it = mPyObjectToObjectId.find(pyObject);
 
         if (it != mPyObjectToObjectId.end()) {
-            return it->second;
+            tr.set<int64_t>(it->second);
+            return tr;
             }
         }
     
@@ -322,6 +321,8 @@ int64_t PyObjectWalker::walkPyObject(PyObject* pyObject)
     if (mPureImplementationMappings.canMap(pyObject)) {
         pyObject = _pureInstanceReplacement(pyObject);
 
+        assert (pyObject != nullptr);
+
         wasReplaced = true;
         }
 
@@ -329,16 +330,13 @@ int64_t PyObjectWalker::walkPyObject(PyObject* pyObject)
 
     if (pyObject == mPyforaConnectHack.get()) {
         _registerUnconvertible(objectId, Py_None);
-        return objectId;
+        tr.set<int64_t>(objectId);
+        return tr;
         }
     
-    try {
-        _walkPyObject(pyObject, objectId);
-        }
-    catch (const CantGetSourceTextError& e) {
-        _registerUnconvertible(objectId, pyObject);
-        }
-    catch (const PyforaInspectError& e) {
+    PyforaErrorOrNull res = _walkPyObject(pyObject, objectId);
+
+    if (res) {
         _registerUnconvertible(objectId, pyObject);
         }
 
@@ -346,7 +344,8 @@ int64_t PyObjectWalker::walkPyObject(PyObject* pyObject)
         Py_DECREF(pyObject);
         }
 
-    return objectId;
+    tr.set<int64_t>(objectId);
+    return tr;
     }
 
 
@@ -386,35 +385,36 @@ PyObject* PyObjectWalker::_pureInstanceReplacement(const PyObject* pyObject)
     }
 
 
-void PyObjectWalker::_walkPyObject(PyObject* pyObject, int64_t objectId) {
+PyObjectWalker::PyforaErrorOrNull
+PyObjectWalker::_walkPyObject(PyObject* pyObject, int64_t objectId) {
     if (PyObject_IsInstance(pyObject, mRemotePythonObjectClass.get()))
         {
-        _registerRemotePythonObject(objectId, pyObject);
+        return _registerRemotePythonObject(objectId, pyObject);
         }
     else if (PyObject_IsInstance(pyObject, mPackedHomogenousDataClass.get()))
         {
-        _registerPackedHomogenousData(objectId, pyObject);
+        return _registerPackedHomogenousData(objectId, pyObject);
         }
     else if (PyObject_IsInstance(pyObject, mFutureClass.get()))
         {
-        _registerFuture(objectId, pyObject);
+        return _registerFuture(objectId, pyObject);
         }
     else if (PyObject_IsInstance(pyObject, PyExc_Exception)
             and _classIsNamedSingleton(pyObject))
         {
-        _registerBuiltinExceptionInstance(objectId, pyObject);
+        return _registerBuiltinExceptionInstance(objectId, pyObject);
         }
     else if (_isTypeOrBuiltinFunctionAndInNamedSingletons(pyObject))
         {
-        _registerTypeOrBuiltinFunctionNamedSingleton(objectId, pyObject);
+        return _registerTypeOrBuiltinFunctionNamedSingleton(objectId, pyObject);
         }
     else if (PyObject_IsInstance(pyObject, mTracebackType.get()))
         {
-        _registerStackTraceAsJson(objectId, pyObject);
+        return _registerStackTraceAsJson(objectId, pyObject);
         }
     else if (PyObject_IsInstance(pyObject, mPyforaWithBlockClass.get()))
         {
-        _registerPyforaWithBlock(objectId, pyObject);
+        return _registerPyforaWithBlock(objectId, pyObject);
         }
     else if (PyObject_IsInstance(pyObject, mUnconvertibleClass.get()))
         {
@@ -430,39 +430,40 @@ void PyObjectWalker::_walkPyObject(PyObject* pyObject, int64_t objectId) {
                 );
             }
 
-        _registerUnconvertible(objectId, objectThatsNotConvertible.get());
+        return _registerUnconvertible(objectId, objectThatsNotConvertible.get());
         }
     else if (PyTuple_Check(pyObject))
         {
-        _registerTuple(objectId, pyObject);
+        return _registerTuple(objectId, pyObject);
         }
     else if (PyList_Check(pyObject))
         {
-        _registerList(objectId, pyObject);
+        return _registerList(objectId, pyObject);
         }
     else if (PyDict_Check(pyObject))
         {
-        _registerDict(objectId, pyObject);
+        return _registerDict(objectId, pyObject);
         }
     else if (_isPrimitive(pyObject))
         {
         _registerPrimitive(objectId, pyObject);
+        return {};
         }
     else if (PyFunction_Check(pyObject))
         {
-        _registerFunction(objectId, pyObject);
+        return _registerFunction(objectId, pyObject);
         }
     else if (mPyforaInspectModule.isclass(pyObject))
         {
-        _registerClass(objectId, pyObject);
+        return _registerClass(objectId, pyObject);
         }
     else if (PyMethod_Check(pyObject))
         {
-        _registerInstanceMethod(objectId, pyObject);
+        return _registerInstanceMethod(objectId, pyObject);
         }
     else if (mPyforaInspectModule.isclassinstance(pyObject))
         {
-        _registerClassInstance(objectId, pyObject);
+        return _registerClassInstance(objectId, pyObject);
         }
     else {
         throw std::runtime_error("PyObjectWalker couldn't handle a PyObject: " +
@@ -490,8 +491,9 @@ bool PyObjectWalker::_classIsNamedSingleton(PyObject* pyObject) const
     }
 
 
-void PyObjectWalker::_registerRemotePythonObject(int64_t objectId,
-                                                 PyObject* pyObject) const
+PyObjectWalker::PyforaErrorOrNull
+PyObjectWalker::_registerRemotePythonObject(int64_t objectId,
+                                            PyObject* pyObject) const
     {
     PyObjectPtr _pyforaComputedValueArg_attr = PyObjectPtr::unincremented(
         PyObject_GetAttrString(
@@ -524,30 +526,38 @@ void PyObjectWalker::_registerRemotePythonObject(int64_t objectId,
         objectId,
         res.get()
         );
+    return {};
     }
 
 
-void PyObjectWalker::_registerUnconvertible(int64_t objectId,
+PyObjectWalker::PyforaErrorOrNull
+PyObjectWalker::_registerUnconvertible(int64_t objectId,
                                             const PyObject* pyObject) const
     {
     PyObjectPtr modulePathOrNone = PyObjectPtr::unincremented(
         mModuleLevelObjectIndex.getPathToObject(pyObject));
     if (modulePathOrNone == nullptr) {
-        throw std::runtime_error("error getting modulePathOrNone");
+        throw std::runtime_error("error getting modulePathOrNone"
+            "in PyObjectWalker::_registerUnconvertible");
         }
 
     mObjectRegistry.defineUnconvertible(objectId, modulePathOrNone.get());
+
+    return {};
     }
 
 
-void PyObjectWalker::_registerPackedHomogenousData(int64_t objectId,
-                                                   PyObject* pyObject) const
+PyObjectWalker::PyforaErrorOrNull
+PyObjectWalker::_registerPackedHomogenousData(int64_t objectId,
+                                                                PyObject* pyObject) const
     {
     mObjectRegistry.definePackedHomogenousData(objectId, pyObject);
+    return {};
     }
 
 
-void PyObjectWalker::_registerFuture(int64_t objectId, PyObject* pyObject)
+PyObjectWalker::PyforaErrorOrNull
+PyObjectWalker::_registerFuture(int64_t objectId, PyObject* pyObject)
     {
     PyObjectPtr result_attr = PyObjectPtr::unincremented(
         PyObject_GetAttrString(pyObject, "result"));
@@ -567,12 +577,14 @@ void PyObjectWalker::_registerFuture(int64_t objectId, PyObject* pyObject)
             );
         }
 
-    _walkPyObject(res.get(), objectId);
+    return _walkPyObject(res.get(), objectId);
     }
 
 
-void PyObjectWalker::_registerBuiltinExceptionInstance(int64_t objectId,
-                                                       PyObject* pyException)
+PyObjectWalker::PyforaErrorOrNull
+PyObjectWalker::_registerBuiltinExceptionInstance(
+        int64_t objectId,
+        PyObject* pyException)
     {
     PyObjectPtr __class__attr = PyObjectPtr::unincremented(
         PyObject_GetAttrString(pyException, "__class__"));
@@ -598,11 +610,17 @@ void PyObjectWalker::_registerBuiltinExceptionInstance(int64_t objectId,
             );
         }
 
-    int64_t argsId = walkPyObject(args_attr.get());
+    WalkResult argsIdOrErr = walkPyObject(args_attr.get());
 
-    mObjectRegistry.defineBuiltinExceptionInstance(objectId,
-                                                   it->second,
-                                                   argsId);
+    if (argsIdOrErr.is<int64_t>()) {
+        mObjectRegistry.defineBuiltinExceptionInstance(objectId,
+                                                       it->second,
+                                                       argsIdOrErr.get<int64_t>());
+        return {};
+        }
+    else {
+        return argsIdOrErr.get<std::shared_ptr<PyforaError>>();
+        }
     }
 
 
@@ -676,8 +694,10 @@ std::string PyObjectWalker::_fileText(const std::string& filename) const
     }
 
 
-void PyObjectWalker::_registerTypeOrBuiltinFunctionNamedSingleton(int64_t objectId,
-                                                                  PyObject* pyObject) const
+PyObjectWalker::PyforaErrorOrNull
+PyObjectWalker::_registerTypeOrBuiltinFunctionNamedSingleton(
+        int64_t objectId,
+        PyObject* pyObject) const
     {
     auto it = mPythonSingletonToName.find(pyObject);
 
@@ -689,6 +709,7 @@ void PyObjectWalker::_registerTypeOrBuiltinFunctionNamedSingleton(int64_t object
         }
 
     mObjectRegistry.defineNamedSingleton(objectId, it->second);
+    return {};
     }
 
 
@@ -718,7 +739,8 @@ int64_t _getWithBlockLineNumber(PyObject* withBlock)
 }
 
 
-void PyObjectWalker::_handleUnresolvedFreeVariableException(const PyObject* filename)
+std::shared_ptr<PyforaError> PyObjectWalker::_handleUnresolvedFreeVariableException(
+        const PyObject* filename)
     {
     PyObject * exception, * v, * tb;
 
@@ -733,6 +755,7 @@ void PyObjectWalker::_handleUnresolvedFreeVariableException(const PyObject* file
             v,
             mUnresolvedFreeVariableExceptions.getUnresolvedFreeVariableExceptionClass()))
         {
+        // borrowed reference.
         PyObject* unresolvedFreeVariableExceptionWithTrace =
             mUnresolvedFreeVariableExceptions.getUnresolvedFreeVariableExceptionWithTrace(
                 v,
@@ -752,7 +775,7 @@ void PyObjectWalker::_handleUnresolvedFreeVariableException(const PyObject* file
             }
         
         throw UnresolvedFreeVariableExceptionWithTrace(
-            unresolvedFreeVariableExceptionWithTrace
+            PyObjectPtr::unincremented(unresolvedFreeVariableExceptionWithTrace)
             );
         }
     else {
@@ -762,10 +785,6 @@ void PyObjectWalker::_handleUnresolvedFreeVariableException(const PyObject* file
             "_handleUnresolvedFreeVariableException: " +
             PyObjectUtils::format_exc());
         }
-
-    Py_DECREF(exception);
-    Py_DECREF(v);
-    Py_DECREF(tb);
     }
 
 
@@ -778,7 +797,7 @@ PyObject* PyObjectWalker::_pythonTracebackToJson(const PyObject* pyObject) const
     }
 
 
-void
+PyObjectWalker::PyforaErrorOrNull
 PyObjectWalker::_registerStackTraceAsJson(int64_t objectId,
                                           const PyObject* pyObject) const
     {
@@ -792,10 +811,14 @@ PyObjectWalker::_registerStackTraceAsJson(int64_t objectId,
         }
 
     mObjectRegistry.defineStacktrace(objectId, pythonTraceBackAsJson.get());
+    return {};
     }
 
 
-void PyObjectWalker::_registerPyforaWithBlock(int64_t objectId, PyObject* pyObject)
+PyObjectWalker::PyforaErrorOrNull
+PyObjectWalker::_registerPyforaWithBlock(
+        int64_t objectId,
+        PyObject* pyObject)
     {
     int64_t lineno = _getWithBlockLineNumber(pyObject);
 
@@ -873,11 +896,13 @@ void PyObjectWalker::_registerPyforaWithBlock(int64_t objectId, PyObject* pyObje
         }
 
     if (resolutions == nullptr) {
-        _handleUnresolvedFreeVariableException(filename.get());
+        return _handleUnresolvedFreeVariableException(filename.get());
         }
 
-    std::map<FreeVariableMemberAccessChain, int64_t> processedResolutions =
-        _processFreeVariableMemberAccessChainResolutions(resolutions.get());
+    variant<
+        std::map<FreeVariableMemberAccessChain, int64_t>,
+        std::shared_ptr<PyforaError>> processedResolutionsOrErr =
+            _processFreeVariableMemberAccessChainResolutions(resolutions.get());
 
     int64_t sourceFileId = walkFileDescription(
         FileDescription::cachedFromArgs(
@@ -886,11 +911,20 @@ void PyObjectWalker::_registerPyforaWithBlock(int64_t objectId, PyObject* pyObje
             )
         );
 
-    mObjectRegistry.defineWithBlock(
-        objectId,
-        processedResolutions,
-        sourceFileId,
-        lineno);
+    if (processedResolutionsOrErr.is<std::map<FreeVariableMemberAccessChain, int64_t>>())
+        {
+        mObjectRegistry.defineWithBlock(
+            objectId,
+            processedResolutionsOrErr.get<
+                std::map<FreeVariableMemberAccessChain, int64_t>>(),
+            sourceFileId,
+            lineno);
+
+        return {};
+        }
+    else {
+        return processedResolutionsOrErr.get<std::shared_ptr<PyforaError>>();
+        }
     }
 
 
@@ -964,54 +998,77 @@ void PyObjectWalker::_augmentChainsWithBoundValuesInScope(
     }
 
 
-void PyObjectWalker::_registerTuple(int64_t objectId, PyObject* pyTuple)
+PyObjectWalker::PyforaErrorOrNull
+PyObjectWalker::_registerTuple(int64_t objectId, PyObject* pyTuple)
     {
     std::vector<int64_t> memberIds;
     Py_ssize_t size = PyTuple_GET_SIZE(pyTuple);
     for (Py_ssize_t ix = 0; ix < size; ++ix)
         {
-        memberIds.push_back(
-            walkPyObject(PyTuple_GET_ITEM(pyTuple, ix))
-            );
+        WalkResult res = walkPyObject(PyTuple_GET_ITEM(pyTuple, ix));
+
+        if (res.is<int64_t>()) {
+            memberIds.push_back(
+                res.get<int64_t>()
+                );
+            }
+        else {
+            return res.get<std::shared_ptr<PyforaError>>(); 
+            }
         }
 
     mObjectRegistry.defineTuple(objectId, memberIds);
+    return {};
     }
     
 
-void PyObjectWalker::_registerList(int64_t objectId, PyObject* pyList)
+PyObjectWalker::PyforaErrorOrNull
+PyObjectWalker::_registerList(int64_t objectId, PyObject* pyList)
     {
     if (_allPrimitives(pyList))
         {
-        _registerListOfPrimitives(objectId, pyList);
+        return _registerListOfPrimitives(objectId, pyList);
         }
     else {
-        _registerListGeneric(objectId, pyList);
+        return _registerListGeneric(objectId, pyList);
         }
     }
 
 
-void PyObjectWalker::_registerListOfPrimitives(int64_t objectId, PyObject* pyList) const
+PyObjectWalker::PyforaErrorOrNull
+PyObjectWalker::_registerListOfPrimitives(int64_t objectId, PyObject* pyList) const
     {
     mObjectRegistry.definePrimitive(objectId, pyList);
+    return {};
     }
 
 
-void PyObjectWalker::_registerListGeneric(int64_t objectId, const PyObject* pyList)
+PyObjectWalker::PyforaErrorOrNull
+PyObjectWalker::_registerListGeneric(int64_t objectId, const PyObject* pyList)
     {
     std::vector<int64_t> memberIds;
     Py_ssize_t size = PyList_GET_SIZE(pyList);
     for (Py_ssize_t ix = 0; ix < size; ++ix)
         {
-        memberIds.push_back(
-            walkPyObject(PyList_GET_ITEM(pyList, ix))
-            );
+        WalkResult res = walkPyObject(PyList_GET_ITEM(pyList, ix));
+
+        if (res.is<int64_t>()) {
+            memberIds.push_back(
+                res.get<int64_t>()
+                );
+            }
+        else {
+            return res.get<std::shared_ptr<PyforaError>>(); 
+            }
         }
+
     mObjectRegistry.defineList(objectId, memberIds);
+    return {};
     }
     
 
-void PyObjectWalker::_registerDict(int64_t objectId, PyObject* pyDict)
+PyObjectWalker::PyforaErrorOrNull
+PyObjectWalker::_registerDict(int64_t objectId, PyObject* pyDict)
     {
     std::vector<int64_t> keyIds;
     std::vector<int64_t> valueIds;
@@ -1020,24 +1077,51 @@ void PyObjectWalker::_registerDict(int64_t objectId, PyObject* pyDict)
     Py_ssize_t pos = 0;
     
     while (PyDict_Next(pyDict, &pos, &key, &value)) {
-        keyIds.push_back(walkPyObject(key));
-        valueIds.push_back(walkPyObject(value));
+        WalkResult res = walkPyObject(key);
+
+        if (res.is<int64_t>()) {
+            keyIds.push_back(
+                res.get<int64_t>()
+                );
+            }
+        else {
+            return res.get<std::shared_ptr<PyforaError>>(); 
+            }
+
+        res = walkPyObject(value);
+
+        if (res.is<int64_t>()) {
+            valueIds.push_back(
+                res.get<int64_t>()
+                );
+            }
+        else {
+            return res.get<std::shared_ptr<PyforaError>>(); 
+            }
         }
 
     mObjectRegistry.defineDict(objectId, keyIds, valueIds);
+    return {};
     }
     
 
-void PyObjectWalker::_registerFunction(int64_t objectId, PyObject* pyObject)
+PyObjectWalker::PyforaErrorOrNull
+PyObjectWalker::_registerFunction(int64_t objectId, PyObject* pyObject)
     {
-    ClassOrFunctionInfo info = _classOrFunctionInfo(pyObject, true);
-    
-    mObjectRegistry.defineFunction(
-        objectId,
-        info.sourceFileId(),
-        info.lineNumber(),
-        info.freeVariableMemberAccessChainsToId()
-        );
+    auto infoOrException = _classOrFunctionInfo(pyObject, true);
+    if (infoOrException.is<ClassOrFunctionInfo>()) {
+        ClassOrFunctionInfo info = infoOrException.get<ClassOrFunctionInfo>();
+        mObjectRegistry.defineFunction(
+            objectId,
+            info.sourceFileId(),
+            info.lineNumber(),
+            info.freeVariableMemberAccessChainsToId()
+            );
+        return {};
+        }
+    else {
+        return infoOrException.get<std::shared_ptr<PyforaError>>();
+        }
     }
 
 
@@ -1074,16 +1158,30 @@ void _checkForInlineForaName(PyObject* obj) {
 }
 
 
-ClassOrFunctionInfo
+variant<ClassOrFunctionInfo, std::shared_ptr<PyforaError>>
 PyObjectWalker::_classOrFunctionInfo(PyObject* obj, bool isFunction)
     {
+    variant<ClassOrFunctionInfo, std::shared_ptr<PyforaError>> tr;
+
     // old PyObjectWalker checks for __inline_fora here
     _checkForInlineForaName(obj);
 
-    // should probably make these just return PyStrings, as 
-    // we only repackage these into PyStrings anyway
-    PyObjectPtr textAndFilename = PyObjectPtr::unincremented(
-        mPyAstUtilModule.sourceFilenameAndText(obj));
+    variant<PyObjectPtr, std::shared_ptr<PyforaError>> textAndFilenameOrErr =
+        mPyAstUtilModule.sourceFilenameAndText(obj);
+
+    PyObjectPtr textAndFilename;
+    if (textAndFilenameOrErr.is<PyObjectPtr>()) {
+        textAndFilename = textAndFilenameOrErr.get<PyObjectPtr>();
+        }
+    else {
+        tr.set<std::shared_ptr<PyforaError>>(
+            textAndFilenameOrErr.get<std::shared_ptr<PyforaError>>()
+            );
+        return tr;
+        }
+
+    assert (textAndFilenameOrErr != nullptr);
+
     if (textAndFilename == nullptr) {
         throw std::runtime_error(
             "error calling sourceFilenameAndText: " + PyObjectUtils::exc_string()
@@ -1103,7 +1201,20 @@ PyObjectWalker::_classOrFunctionInfo(PyObject* obj, bool isFunction)
     // borrowed reference
     PyObject* filename = PyTuple_GET_ITEM(textAndFilename.get(), 1);
 
-    long startingSourceLine = mPyAstUtilModule.startingSourceLine(obj);
+    variant<long, std::shared_ptr<PyforaError>> startingSourceLineOrErr =
+        mPyAstUtilModule.startingSourceLine(obj);
+    long startingSourceLine;
+    
+    if (startingSourceLineOrErr.is<long>()) {
+        startingSourceLine = startingSourceLineOrErr.get<long>();
+        }
+    else {
+        tr.set<std::shared_ptr<PyforaError>>(
+            startingSourceLineOrErr.get<std::shared_ptr<PyforaError>>()
+            );
+        return tr;
+        }
+
     PyObjectPtr sourceAst = PyObjectPtr::unincremented(
         mPyAstUtilModule.pyAstFromText(text));
     if (sourceAst == nullptr) {
@@ -1137,39 +1248,65 @@ PyObjectWalker::_classOrFunctionInfo(PyObject* obj, bool isFunction)
     PyObjectPtr resolutions = PyObjectPtr::unincremented(
         _computeAndResolveFreeVariableMemberAccessChainsInAst(obj, pyAst.get()));
     if (resolutions == nullptr) {
-        _handleUnresolvedFreeVariableException(filename);
+        std::shared_ptr<PyforaError> err =
+            _handleUnresolvedFreeVariableException(filename);
+        tr.set<std::shared_ptr<PyforaError>>(err);
+        return tr;
         }
 
-    std::map<FreeVariableMemberAccessChain, int64_t> processedResolutions =
-        _processFreeVariableMemberAccessChainResolutions(resolutions.get());
+    variant<
+        std::map<FreeVariableMemberAccessChain, int64_t>,
+        std::shared_ptr<PyforaError>> processedResolutionsOrErr =
+            _processFreeVariableMemberAccessChainResolutions(resolutions.get());
 
-    int64_t fileId = walkFileDescription(
-        FileDescription::cachedFromArgs(
-            PyObjectUtils::std_string(filename),
-            PyObjectUtils::std_string(text)
-            )
-        );
+    if (processedResolutionsOrErr.is<std::map<FreeVariableMemberAccessChain, int64_t>>())
+        {
+        int64_t fileId = walkFileDescription(
+            FileDescription::cachedFromArgs(
+                PyObjectUtils::std_string(filename),
+                PyObjectUtils::std_string(text)
+                )
+            );
 
-    return ClassOrFunctionInfo(fileId,
-                               startingSourceLine,
-                               processedResolutions);
+        // can we setup perfect forwarding for variant?
+        tr.set<ClassOrFunctionInfo>(
+            ClassOrFunctionInfo(
+                fileId,
+                startingSourceLine,
+                processedResolutionsOrErr.get<
+                    std::map<FreeVariableMemberAccessChain, int64_t>
+                    >()
+                )
+            );
+        return tr;
+        }
+    else {
+        tr.set<std::shared_ptr<PyforaError>>(
+            processedResolutionsOrErr.get<std::shared_ptr<PyforaError>>()
+            );
+        return tr;
+        }
     }
 
 
-std::map<FreeVariableMemberAccessChain, int64_t>
+variant<std::map<FreeVariableMemberAccessChain, int64_t>,
+        std::shared_ptr<PyforaError>>
 PyObjectWalker::_processFreeVariableMemberAccessChainResolutions(
-        PyObject* resolutions
+        PyObject* pyResolutions
         )
     {
-    if (not PyDict_Check(resolutions)) {
+    variant<std::map<FreeVariableMemberAccessChain, int64_t>,
+            std::shared_ptr<PyforaError>> tr;
+
+    if (not PyDict_Check(pyResolutions)) {
         throw std::runtime_error("expected a dict argument");
         }
 
     PyObject * key, * value;
     Py_ssize_t pos = 0;
-    std::map<FreeVariableMemberAccessChain, int64_t> tr;
+    std::map<FreeVariableMemberAccessChain, int64_t> resolutions;
 
-    while (PyDict_Next(resolutions, &pos, &key, &value)) {
+    while (PyDict_Next(pyResolutions, &pos, &key, &value)) {
         /*
           Values should be length-two tuples: (resolution, location)
          */
@@ -1181,10 +1318,19 @@ PyObjectWalker::_processFreeVariableMemberAccessChainResolutions(
             }
         PyObject* resolution = PyTuple_GET_ITEM(value, 0);
         
-        int64_t resolutionId = walkPyObject(resolution);
-        tr[toChain(key)] = resolutionId;
-        }
+        auto resolutionIdOrErr = walkPyObject(resolution);
+        
+        if (resolutionIdOrErr.is<std::shared_ptr<PyforaError>>()) {
+            tr.set<std::shared_ptr<PyforaError>>(
+                resolutionIdOrErr.get<std::shared_ptr<PyforaError>>()
+                );
+            return tr;
+            }
 
+        resolutions[toChain(key)] = resolutionIdOrErr.get<int64_t>();
+        }
+    
+    tr.set<std::map<FreeVariableMemberAccessChain, int64_t>>(resolutions);
     return tr;
     }
 
@@ -1254,51 +1400,59 @@ PyObject* PyObjectWalker::_freeMemberAccessChainsWithPositions(
     }
 
 
-void PyObjectWalker::_registerClass(int64_t objectId, PyObject* pyObject)
+PyObjectWalker::PyforaErrorOrNull
+PyObjectWalker::_registerClass(int64_t objectId, PyObject* pyObject)
     {
-    ClassOrFunctionInfo info = _classOrFunctionInfo(pyObject, false);
+    auto infoOrException = _classOrFunctionInfo(pyObject, false);
+    if (infoOrException.is<ClassOrFunctionInfo>()) {
+        ClassOrFunctionInfo info = infoOrException.get<ClassOrFunctionInfo>();
+        PyObjectPtr bases = PyObjectPtr::unincremented(
+            PyObject_GetAttrString(
+                pyObject,
+                "__bases__"));
 
-    PyObjectPtr bases = PyObjectPtr::unincremented(
-        PyObject_GetAttrString(
-            pyObject,
-            "__bases__"));
-
-    if (bases == nullptr) {
-        throw std::runtime_error(
-            "couldn't get __bases__ member of an object we expected to be a class"
-            );
-        }
-    if (not PyTuple_Check(bases.get())) {
-        throw std::runtime_error("expected bases to be a list");
-        }
-
-    std::vector<int64_t> baseClassIds;
-    for (Py_ssize_t ix = 0; ix < PyTuple_GET_SIZE(bases.get()); ++ix)
-        {
-        PyObject* item = PyTuple_GET_ITEM(bases.get(), ix);
-
-        auto it = mPyObjectToObjectId.find(item);
-        
-        if (it == mPyObjectToObjectId.end()) {
+        if (bases == nullptr) {
             throw std::runtime_error(
-                "expected each base class to have a registered id"
-                ". class = " + PyObjectUtils::str_string(pyObject));
+                "couldn't get __bases__ member of an object we expected to be a class"
+                );
             }
+        if (not PyTuple_Check(bases.get())) {
+            throw std::runtime_error("expected bases to be a list");
+            }
+
+        std::vector<int64_t> baseClassIds;
+        for (Py_ssize_t ix = 0; ix < PyTuple_GET_SIZE(bases.get()); ++ix)
+            {
+            PyObject* item = PyTuple_GET_ITEM(bases.get(), ix);
+
+            auto it = mPyObjectToObjectId.find(item);
         
-        baseClassIds.push_back(it->second);
+            if (it == mPyObjectToObjectId.end()) {
+                throw std::runtime_error(
+                    "expected each base class to have a registered id"
+                    ". class = " + PyObjectUtils::str_string(pyObject));
+                }
+        
+            baseClassIds.push_back(it->second);
+            }
+
+        mObjectRegistry.defineClass(
+            objectId,
+            info.sourceFileId(),
+            info.lineNumber(),
+            info.freeVariableMemberAccessChainsToId(),
+            baseClassIds);
+
+        return {};
         }
-
-    mObjectRegistry.defineClass(
-        objectId,
-        info.sourceFileId(),
-        info.lineNumber(),
-        info.freeVariableMemberAccessChainsToId(),
-        baseClassIds);
-
+    else {
+        return infoOrException.get<std::shared_ptr<PyforaError>>();
+        }
     }
 
 
-void PyObjectWalker::_registerClassInstance(int64_t objectId, PyObject* pyObject)
+PyObjectWalker::PyforaErrorOrNull
+PyObjectWalker::_registerClassInstance(int64_t objectId, PyObject* pyObject)
     {
     PyObjectPtr classObject = PyObjectPtr::unincremented(
         PyObject_GetAttrString(pyObject, "__class__"));
@@ -1309,7 +1463,13 @@ void PyObjectWalker::_registerClassInstance(int64_t objectId, PyObject* pyObject
             );
         }
 
-    int64_t classId = walkPyObject(classObject.get());
+    auto classIdOrErr = walkPyObject(classObject.get());
+
+    if (classIdOrErr.is<std::shared_ptr<PyforaError>>()) {
+        return classIdOrErr.get<std::shared_ptr<PyforaError>>();
+        }
+
+    int64_t classId = classIdOrErr.get<int64_t>();
 
     if (mObjectRegistry.isUnconvertible(classId)) {
         PyObjectPtr modulePathOrNone = PyObjectPtr::unincremented(
@@ -1325,12 +1485,19 @@ void PyObjectWalker::_registerClassInstance(int64_t objectId, PyObject* pyObject
             objectId,
             modulePathOrNone.get()
             );
-
-        return;
+        return {};
         }
 
-    PyObjectPtr dataMemberNames = PyObjectPtr::unincremented(
-        _getDataMemberNames(pyObject, classObject.get()));
+    PyObjectPtr dataMemberNames;
+        {
+        auto dataMemberNamesOrErr = _getDataMemberNames(pyObject, classObject.get());
+        if (not dataMemberNamesOrErr.is<PyObjectPtr>()) {
+            return dataMemberNamesOrErr.get<std::shared_ptr<PyforaError>>();
+            }
+
+        dataMemberNames = dataMemberNamesOrErr.get<PyObjectPtr>();
+        }
+
     if (dataMemberNames == nullptr) {
         throw std::runtime_error("py error in _registerClassInstance:" +
             PyObjectUtils::exc_string()
@@ -1363,7 +1530,13 @@ void PyObjectWalker::_registerClassInstance(int64_t objectId, PyObject* pyObject
                 );
             }
 
-        int64_t dataMemberId = walkPyObject(dataMember.get());
+        auto dataMemberIdOrErr = walkPyObject(dataMember.get());
+        
+        if (dataMemberIdOrErr.is<std::shared_ptr<PyforaError>>()) {
+            return dataMemberIdOrErr.get<std::shared_ptr<PyforaError>>();
+            }
+
+        int64_t dataMemberId = dataMemberIdOrErr.get<int64_t>();
 
         classMemberNameToClassMemberId[
             std::string(
@@ -1377,38 +1550,48 @@ void PyObjectWalker::_registerClassInstance(int64_t objectId, PyObject* pyObject
         objectId,
         classId,
         classMemberNameToClassMemberId);
+
+    return {};
     }
 
 
-PyObject*
+variant<PyObjectPtr, std::shared_ptr<PyforaError>>
 PyObjectWalker::_getDataMemberNames(PyObject* pyObject, PyObject* classObject) const
     {
-    if (PyObject_HasAttrString(pyObject, "__dict__")) {
+    if (PyObject_HasAttrString(pyObject, "__dict__"))
+        {
+        variant<PyObjectPtr, std::shared_ptr<PyforaError>> tr;
+
         PyObjectPtr __dict__attr = PyObjectPtr::unincremented(
             PyObject_GetAttrString(pyObject, "__dict__"));
         if (__dict__attr == nullptr) {
-            return nullptr;
+            tr.set<PyObjectPtr>(PyObjectPtr());
+            return tr;
             }
         if (not PyDict_Check(__dict__attr.get())) {
             PyErr_SetString(
                 PyExc_TypeError,
                 "expected __dict__ attr to be a dict"
                 );
-            return nullptr;
+            tr.set<PyObjectPtr>(PyObjectPtr());
+            return tr;
             }
         PyObject* keys = PyDict_Keys(__dict__attr.get());
         if (keys == nullptr) {
-            return nullptr;
+            tr.set<PyObjectPtr>(PyObjectPtr());
+            return tr;
             }
         if (not PyList_Check(keys)) {
             PyErr_SetString(
                 PyExc_TypeError,
                 "expected keys to be a list"
                 );
-            return nullptr;
+            tr.set<PyObjectPtr>(PyObjectPtr());
+            return tr;
             }
 
-        return keys;
+        tr.set<PyObjectPtr>(PyObjectPtr::unincremented(keys));
+        return tr;
         }
     else {
         return mPyAstUtilModule.collectDataMembersSetInInit(classObject);
@@ -1500,7 +1683,8 @@ PyObject* PyObjectWalker::_defaultAstArgs() const
     }
 
 
-void PyObjectWalker::_registerInstanceMethod(int64_t objectId, PyObject* pyObject)
+PyObjectWalker::PyforaErrorOrNull
+PyObjectWalker::_registerInstanceMethod(int64_t objectId, PyObject* pyObject)
     {
     PyObjectPtr __self__attr = PyObjectPtr::unincremented(
         PyObject_GetAttrString(pyObject, "__self__"));
@@ -1523,12 +1707,19 @@ void PyObjectWalker::_registerInstanceMethod(int64_t objectId, PyObject* pyObjec
             );
         }
 
-    int64_t instanceId = walkPyObject(__self__attr.get());
+    auto instanceIdOrErr = walkPyObject(__self__attr.get());
 
-    mObjectRegistry.defineInstanceMethod(objectId,
-                                         instanceId,
-                                         PyObjectUtils::std_string(__name__attr.get())
-                                         );
+    if (instanceIdOrErr.is<int64_t>()) {
+        mObjectRegistry.defineInstanceMethod(
+            objectId,
+            instanceIdOrErr.get<int64_t>(),
+            PyObjectUtils::std_string(__name__attr.get())
+            );
+        return {};
+        }
+    else {
+        return instanceIdOrErr.get<std::shared_ptr<PyforaError>>();
+        }
     }
 
 

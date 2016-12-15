@@ -13,14 +13,33 @@
    See the License for the specific language governing permissions and
    limitations under the License.
 ****************************************************************************/
-#pragma once
+#include"Exceptions.hpp"
 
 #include <stdexcept>
 
 
-class BadWithBlockError : public std::runtime_error {
-public:
-    explicit BadWithBlockError(const std::string& s) : std::runtime_error(s)
-        {
+Exceptions::Exceptions()
+    {
+    mExceptionsModule = PyObjectPtr::unincremented(
+        PyImport_ImportModule("pyfora.Exceptions"));
+
+    if (mExceptionsModule == nullptr) {
+        throw std::runtime_error(
+            "error getting pyfora.Exceptions in Exceptions::Exceptions()"
+            );
         }
-};
+    }
+
+PyObject* Exceptions::getCantGetSourceTextErrorClass() const
+    {
+    PyObject* tr = PyObject_GetAttrString(
+        mExceptionsModule.get(),
+        "CantGetSourceTextError"
+        );
+
+    if (tr == nullptr) {
+        throw std::runtime_error ("error getting CantGetSourceTextError class");
+        }
+
+    return tr;
+    }

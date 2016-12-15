@@ -17,19 +17,29 @@
 
 #include <Python.h>
 
+#include "Exceptions.hpp"
 #include "PyforaInspect.hpp"
 #include "core/PyObjectPtr.hpp"
+#include "core/variant.hpp"
 
+#include <memory>
 #include <string>
 #include <utility>
+
+
+template<typename... Ts>
+struct variant;
+class PyforaError;
 
 
 class PyAstUtil {
 public:
     PyAstUtil();
 
-    PyObject* sourceFilenameAndText(const PyObject*) const;
-    long startingSourceLine(const PyObject*) const;
+    variant<PyObjectPtr, std::shared_ptr<PyforaError>>
+        sourceFilenameAndText(const PyObject*) const;
+    variant<long, std::shared_ptr<PyforaError>>
+        startingSourceLine(const PyObject*) const;
 
     PyObject* pyAstFromText(const std::string& fileText) const;
     PyObject* pyAstFromText(const PyObject* pyString) const;
@@ -37,7 +47,8 @@ public:
                                               long sourceLine) const;
     PyObject* classDefAtLineNumber(const PyObject* obj, long sourceLine) const;
     PyObject* withBlockAtLineNumber(const PyObject* obj, long sourceLine) const;
-    PyObject* collectDataMembersSetInInit(PyObject* pyObject) const;
+    variant<PyObjectPtr, std::shared_ptr<PyforaError>>
+        collectDataMembersSetInInit(PyObject* pyObject) const;
 
     bool hasReturnInOuterScope(const PyObject* pyAst) const;
     bool hasYieldInOuterScope(const PyObject* pyAst) const;
@@ -48,8 +59,9 @@ public:
 private:
     void operator=(const PyAstUtil&) = delete;
 
-    void _translateError() const;
+    std::shared_ptr<PyforaError> translateErrorToCpp() const;
 
     PyObjectPtr mPyAstUtilModule;
     PyforaInspect mPyforaInspectModule;
+    Exceptions mExceptionsModule;
 };

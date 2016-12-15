@@ -19,22 +19,14 @@
 
 #include "core/PyObjectPtr.hpp"
 
-#include <stdexcept>
 
-
-class UnresolvedFreeVariableExceptionWithTrace : public std::runtime_error {
+class Exceptions {
 public:
-    explicit UnresolvedFreeVariableExceptionWithTrace(PyObject* value)
-        : std::runtime_error(""),
-          mPtr(PyObjectPtr::unincremented(value))
-        {
-        }
+    Exceptions();
 
-    // returns a borrowed reference
-    PyObject* value() const {
-        return mPtr.get();
-        }
+    // borrowed reference
+    PyObject* getCantGetSourceTextErrorClass() const;
 
 private:
-    PyObjectPtr mPtr;
+    PyObjectPtr mExceptionsModule;
 };
