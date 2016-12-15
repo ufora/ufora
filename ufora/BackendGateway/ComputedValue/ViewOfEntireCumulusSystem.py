@@ -22,9 +22,10 @@ class ViewOfEntireCumulusSystem(SubscribableObject):
 
         self.viewOfSystem_ = None
         self.recentGlobalUserFacingLogMessages_ = ()
-        self.totalMessageCountsEver_ = None
+        self.totalMessageCountsEver_ = 0
 
         self.cumulus_gateway.onJsonViewOfSystemChanged = self.onJsonViewOfSystemChanged
+        self.cumulus_gateway.onNewGlobalUserFacingLogMessage = self.onNewGlobalUserFacingLogMessage
 
 
     @ExposedProperty
@@ -86,3 +87,7 @@ class ViewOfEntireCumulusSystem(SubscribableObject):
 
     def onJsonViewOfSystemChanged(self, json):
         self.viewOfCumulusSystem = json.toSimple()
+
+
+    def onNewGlobalUserFacingLogMessage(self, message):
+        self.pushNewGlobalUserFacingLogMessage(message)
