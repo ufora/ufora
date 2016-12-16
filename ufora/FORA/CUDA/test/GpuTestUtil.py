@@ -46,7 +46,7 @@ class GpuTestUtil:
                 throw String(cuda) + " != " + String(cpu)
             """.replace("__funcExpr__", funcExpr).replace("__vecExpr__", vecExpr)
 
-        res = InMemoryCumulusSimulation.computeUsingSeveralWorkers(text, s3, 1, timeout=120, threadCount=4)
+        res = InMemoryCumulusSimulation.computeUsingSeveralWorkers(text, s3, 1, timeout=120, threadCount=4,memoryLimitMb=1000)
         self.assertIsNotNone(res)
         return res
 
