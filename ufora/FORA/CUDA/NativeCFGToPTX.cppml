@@ -16,8 +16,8 @@
 
 
 #include "NativeCFGToPTX.hppml"
+#include "WrappedNativeCFG.hppml"
 #include "../Interpreter/RuntimeConfig.hppml"
-#include "../Native/NativeCode.hppml"
 #include "../Runtime.hppml"
 #include "../../core/containers/ImmutableTreeVector.hppml"
 #include "../../core/math/Alternative.hpp"
@@ -246,34 +246,6 @@ private:
 //NativeCFG must be a very specific kind of CFG
 
 class NativeToPTXConverter {
-
-	class WrappedNativeCFG {
-	public:
-		WrappedNativeCFG(
-				NativeCFG	cfg,
-				NativeType	inputType,
-				NativeType	closureType,
-				bool		hasClosure,
-				bool		hasResultIndex,
-				uword_t		firstReturnTypeIndex,
-				uword_t		returnTypesCount)
-				:	mCfg(cfg),
-					mInputType(inputType),
-					mClosureType(closureType),
-					mHasClosure(hasClosure),
-					mHasResultIndex(hasResultIndex),
-					mFirstReturnTypeIndex(firstReturnTypeIndex),
-					mReturnTypesCount(returnTypesCount)
-			{}
-
-		NativeCFG 	mCfg;
-		NativeType	mInputType;
-		NativeType	mClosureType;
-		bool		mHasClosure;
-		bool		mHasResultIndex;
-		uword_t		mFirstReturnTypeIndex;
-		uword_t		mReturnTypesCount;
-	};
 public:
 	NativeToPTXConverter(
 				const NativeCFG& inCFG,
@@ -297,194 +269,20 @@ private:
 			);
 		}
 
-	// wrap CFG of f with CFG that:
-	// 1) loads data from the vector d = in_vec[i],
-	// 2) calls f(d) -> r
-	// 3) stores out_vec[i] = r
-	WrappedNativeCFG wrapCFG(
-			const NativeCFG& inCFG,
-			const NativeType& offsetType,
-			const NativeType& indexType)
-		{
-		bool mayThrowException = false;
-		auto returnTypesCount = inCFG.returnTypes().size();
-		uword_t firstReturnTypeIndex = 0;
-		if (inCFG.returnTypes()[0] == NativeType::Nothing())
-			{
-			firstReturnTypeIndex++;
-			returnTypesCount--;
-			mayThrowException = true;
-			}
-		bool hasResultIndex = (mayThrowException || returnTypesCount > 1) ? true : false;
-		LOG_DEBUG << "hasResultIndex = " << hasResultIndex;
-		// at least one and at most two of the inputs should be not "Nothing",
-		// the last is the input data
-		Nullable<uint32_t> inputIndex, closureIndex;
-		uint32_t inCFGArgsSize = inCFG[NativeBlockID::entry()].args().size();
-		for (long k = 0; k < inCFGArgsSize; k++)
-			if (!inCFG[NativeBlockID::entry()].args()[k].type().isNothing())
-				{
-				if (inputIndex)
-					{
-					if (closureIndex)
-						{
-						throw UnableToConvertToPTX(
-							"function has multiple arguments"
-							);
-						}
-					else
-						{
-						closureIndex = inputIndex;
-						inputIndex = k;
-						}
-					}
-				else
-					inputIndex = k;
-				}
-		if (!inputIndex)
-			throw UnableToConvertToPTX("CFG had no inputs");
-
-		NativeType	inputType =
-			inCFG[NativeBlockID::entry()].args()[*inputIndex].type();
-
-		NativeType	closureType = (closureIndex) ?
-					inCFG[NativeBlockID::entry()].args()[*closureIndex].type() :
-					NativeType::Nothing();
-		NativeVariable closureVar = NativeVariable::Temp(closureType);
-		NativeVariable closurePtr = NativeVariable::Temp(closureType.ptr());
-
-		NativeVariable inputVar = NativeVariable::Temp(inputType);
-		NativeVariable inputPtr = NativeVariable::Temp(inputType.ptr());
-		NativeVariable offsetVar = NativeVariable::Temp(offsetType);
-		NativeVariable indexPtr = NativeVariable::Temp(indexType.ptr());
-
-		ImmutableTreeVector<NativeExpression> args = emptyTreeVec();
-		for (long k = 0; k < inCFGArgsSize; k++)
-			{
-			if (k == *inputIndex)
-				args = args + inputVar.expr();
-			else if (closureIndex && k == *closureIndex)
-				args = args + closureVar.expr();
-			else
-				args = args + inCFG[NativeBlockID::entry()].args()[k].expr();
-			}
-
-		ImmutableTreeVector<NativeContinuation> conts =	emptyTreeVec();
-		if (mayThrowException)
-			{
-			conts = conts +
-					NativeContinuation(
-							NativeVariable::Temp(inCFG.returnTypes()[0]),
-							NativeExpression::Return(0, NativeConstant::Nothing().expr()));
-			}
-		ImmutableTreeVector<NativeVariable> outputPointers = emptyTreeVec();
-		long idx = 0;
-		for (long k = firstReturnTypeIndex; k < firstReturnTypeIndex+returnTypesCount; ++k)
-			{
-			auto& outputType = inCFG.returnTypes()[k];
-			LOG_DEBUG << "outputType[" << k << "] = " << prettyPrintString(outputType);
-			NativeVariable outputVar = NativeVariable::Temp(outputType);
-			NativeVariable outputPtr = NativeVariable::Temp(outputType.ptr());
-			outputPointers = outputPointers + outputPtr;
-			NativeExpression storeVecExpr =
-					NativeExpression::Store(
-							NativeExpression::BinaryOp(
-									NativeBinaryOpcode::Add(),
-									outputPtr.expr(),
-									offsetVar.expr()
-									),
-							outputVar.expr()
-							);
-			if (hasResultIndex)
-				{
-				NativeExpression storeIdxExpr =
-						NativeExpression::Store(
-								NativeExpression::BinaryOp(
-										NativeBinaryOpcode::Add(),
-										indexPtr.expr(),
-										offsetVar.expr()
-										),
-								NativeExpression::ConstantUInt8(idx)
-								);
-				conts = conts +
-						NativeContinuation(
-								outputVar,
-								NativeExpression::DiscardFirst(storeVecExpr, storeIdxExpr)
-								);
-				}
-			else
-				conts = conts + NativeContinuation(outputVar, storeVecExpr);
-			++idx;
-			}
-
-
-		NativeExpression nexp =
-			NativeExpression::DiscardFirst(
-				NativeExpression::Let(
-					inputVar,
-					NativeExpression::Load(
-							NativeExpression::BinaryOp(
-									NativeBinaryOpcode::Add(),
-									inputPtr.expr(),
-									offsetVar.expr()
-									)
-							, false
-							),
-					NativeExpression::Call(
-							NativeCallTarget::Inline(inCFG, NativeBlockID::entry()),
-							conts,
-							args,
-							emptyTreeVec() /*+ NativeContinuationMetadata meta*/
-							)
-				),
-				NativeExpression::Return(0, NativeConstant::Nothing().expr())
-			);
-
-		auto wrappedCFGArgs = inCFG[NativeBlockID::entry()].args()
-							+ offsetVar + inputPtr + outputPointers;
-		if (closureIndex)
-			{
-			nexp =
-					NativeExpression::Let(
-						closureVar,
-						NativeExpression::Load(closurePtr.expr(), false),
-						nexp
-						);
-			wrappedCFGArgs = wrappedCFGArgs + closurePtr;
-			}
-		if (hasResultIndex)
-			wrappedCFGArgs = wrappedCFGArgs + indexPtr;
-
-		NativeCFG wrappedCFG =
-				NativeCFG(
-						emptyTreeVec(),
-						wrappedCFGArgs,
-						nexp,
-						"wrappedCUDANativeCFG"
-						);
-		return	WrappedNativeCFG(
-					wrappedCFG,
-					inputType,
-					closureType,
-					closureIndex ? true : false,
-					hasResultIndex,
-					firstReturnTypeIndex,
-					returnTypesCount);
-		}
-
 	void buildResult(const NativeCFG& inCFG, string inEntryFunctionName)
 		{
 		LOG_DEBUG << "CFG to wrap::\n\n" << prettyPrintString(inCFG);
 		NativeType offsetType = NativeType::uint64();
 		NativeType indexType  = NativeType::uint8();
 
-		auto wrappedCfg = wrapCFG(inCFG, offsetType, indexType);
-		const NativeType& inputType = wrappedCfg.mInputType;
-		const NativeType& closureType = wrappedCfg.mClosureType;
-		bool hasResultIndex = wrappedCfg.mHasResultIndex;
-		bool hasClosure = wrappedCfg.mHasClosure;
-		uword_t firstReturnTypeIndex = wrappedCfg.mFirstReturnTypeIndex;
-		uword_t returnTypesCount = wrappedCfg.mReturnTypesCount;
+		WrappedNativeCFG wrappedCfg = WrappedNativeCFG::wrapCFG(inCFG, offsetType, indexType);
+
+		const NativeType& inputType = wrappedCfg.inputType();
+		const NativeType& closureType = wrappedCfg.closureType();
+		bool hasResultIndex = wrappedCfg.hasResultIndex();
+		bool hasClosure = wrappedCfg.hasClosure();
+		uword_t firstReturnTypeIndex = wrappedCfg.firstReturnTypeIndex();
+		uword_t returnTypesCount = wrappedCfg.returnTypesCount();
 
 		//get the terminal continuation
 		string	exitBlockName = allocateBlockName("exit_");
@@ -494,9 +292,9 @@ private:
 					exitBlockName
 					);
 
-		LOG_DEBUG << "wrappedCFG::\n\n" << prettyPrintString(wrappedCfg.mCfg);
+		LOG_DEBUG << "wrappedCFG::\n\n" << prettyPrintString(wrappedCfg.cfg());
 		pair<string, PTXEntrypointRepresentation>
-				body = computeBody(	wrappedCfg.mCfg,
+				body = computeBody(	wrappedCfg.cfg(),
 									NativeBlockID::entry(),
 									emptyTreeVec() + terminalContinuation,
 									emptyTreeMap()
