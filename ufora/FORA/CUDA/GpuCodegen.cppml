@@ -5,7 +5,7 @@
 #include "../TypedFora/Converter.hppml"
 #include "../TypedFora/TypedFora.hppml"
 #include "../TypedFora/TypedForaUtil.hppml"
-#include "../Native/NativeCFGTransforms/ConvertForGPUExecution.hppml"
+#include "ConvertForGPUExecution.hppml"
 #include "../Native/NativeCFGTransforms/Transforms.hppml"
 #include "NativeCFGToPTX.hppml"
 
@@ -38,7 +38,6 @@ pair<NativeCFG, ImmutableTreeVector<Type> > computeGpuKernelFunction(JOV funJOV,
 		throw UnableToConvertToPTX(msg.str());
 		}
 
-	// Nullable<pair<TypedFora::BlockID, std::string> >
 	auto blockIdAndCode = reasoner->compileEntrypointForApply(JOVT::Unnamed(signatureJOVs));
 
 	lassert(blockIdAndCode->first == TypedFora::BlockID::entry());
@@ -48,18 +47,11 @@ pair<NativeCFG, ImmutableTreeVector<Type> > computeGpuKernelFunction(JOV funJOV,
 			"Reasoning failed to converge."
 			);
 
-	//if the joa() has multiple exit points that are compatible,
-	//we need to wrap them up into a single typed value
-	bool needsReturnTypeModification = false;
-
 	TypedFora::Callable callable =
 			Runtime::getRuntime().getTypedForaCompiler()->getDefinition(blockIdAndCode->second);
 
-	LOG_DEBUG << "Relaxed result signatures : " << prettyPrintString(callable.resultSignature().relaxed());
-
 	TypedFora::Converter converter;
 
-	LOG_DEBUG << "building new callable with relaxed JOVs";
 	callable = adaptSignatureOfCallable(
 					callable,
 					callable.callSignatureAsJovt(blockIdAndCode->first),
@@ -70,24 +62,26 @@ pair<NativeCFG, ImmutableTreeVector<Type> > computeGpuKernelFunction(JOV funJOV,
 
 	NativeCFG cfg = converter.convertCallable(callable);
 
-	cfg = NativeCFGTransforms::convertForGpuExecution(cfg, frame->exits().resultPart().size());
+	cfg = convertForGpuExecution(cfg);
 
 	while (cfg.externalBranches().size())
 		{
 		string nameOfSubbranch = cfg.externalBranches()[0];
+
 		if (Runtime::getRuntime().getTypedForaCompiler()->
 				getMutuallyRecursiveFunctions(nameOfSubbranch).size())
 			{
 			throw UnableToConvertToPTX("contains recursion");
 			}
+
 		NativeCFG cfgToInline =
 				converter.convertCallable(
 						Runtime::getRuntime().getTypedForaCompiler()
 							->getDefinition(nameOfSubbranch));
+
 		cfg = NativeCFGTransforms::inlineCFG(cfg,
-			NativeCFGTransforms::convertForGpuExecution(
-				cfgToInline,
-				cfgToInline.returnTypes().size()
+			convertForGpuExecution(
+				cfgToInline
 				),
 			nameOfSubbranch
 			);

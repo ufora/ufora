@@ -1,0 +1,160 @@
+/***************************************************************************
+    Copyright 2016 Ufora Inc.
+
+    Licensed under the Apache License, Version 2.0 (the "License");
+    you may not use this file except in compliance with the License.
+    You may obtain a copy of the License at
+
+        http://www.apache.org/licenses/LICENSE-2.0
+
+    Unless required by applicable law or agreed to in writing, software
+    distributed under the License is distributed on an "AS IS" BASIS,
+    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    See the License for the specific language governing permissions and
+    limitations under the License.
+****************************************************************************/
+
+#include "GpuDataflowNativeCFG.hppml"
+
+@type ThreadStateWriter = int64_t countOfSlots {
+public:
+	NativeExpression writeValueToThreadStateExpression(
+			NativeExpression toWrite,
+			NativeExpression threadStatePtr,
+			NativeExpression incomingIx
+			)
+		{
+		int64_t slotsUsed = 0;
+
+		Nullable<NativeExpression> res = writeValueToThreadStateExpression(toWrite, threadStatePtr, incomingIx, slotsUsed);
+
+		countOfSlots() = std::max(countOfSlots(), slotsUsed);
+
+		if (!res)
+			return NativeExpression::Constant(NativeConstant::Nothing());
+
+		return *res;
+		}
+
+	Nullable<NativeExpression> writeValueToThreadStateExpression(
+			NativeExpression toWrite,
+			NativeExpression threadStatePtr,
+			NativeExpression incomingIx,
+			int64_t& ioSlotsUsed
+			)
+		{
+		@match NativeType(*toWrite.type())
+			-| Nothing() ->> { return null(); }
+			-| Integer(bits) ->> { 
+				lassert_dump(bits <= 64, 
+					"currently our channels are 64 bits. We don't expect any larger integer primitives in cuda code."
+					);
+				}
+			-| Float(bits) ->> { 
+				lassert_dump(bits <= 64, 
+					"currently our channels are 64 bits. We don't expect any larger integer primitives in cuda code."
+					);
+				}
+			-| Pointer() ->> { 
+				}
+			-| Composite(eltTypes) ->> {
+				Nullable<NativeExpression> res;
+
+				//write each value in turn
+				for (long k = 0; k < eltTypes.size(); k++)
+					{
+					auto subres = writeValueToThreadStateExpression(toWrite[k], threadStatePtr, incomingIx, ioSlotsUsed);
+					if (subres)
+						{
+						if (!res)
+							res = subres;
+						else
+							res = *res >> *subres;
+						}
+					}
+
+				return res;
+				}
+
+		//this is a primitive (int, float, pointer)
+		auto res = null() << threadStatePtr[ioSlotsUsed].load()[incomingIx]
+			//cast as a T*
+			.cast(toWrite.type()->ptr(), false)
+			//and write into it
+			.store(toWrite);
+		ioSlotsUsed++;
+		
+		return res;
+		}
+};
+
+GpuDataflowNativeCfg GpuDataflowNativeCfg::convert(const NativeCFG& inCFG)
+	{
+	NativeCFG originalCFG = inCFG;
+
+	NativeBlock entrypointBlock = *inCFG.blocks()[NativeBlockID::entry()];
+	lassert(entrypointBlock.args().size() == 2);
+
+	NativeVariable ptrToClosure = NativeVariable::Temp(entrypointBlock.args()[0].type().ptr());
+	NativeVariable ptrToThreadBlockIDs = NativeVariable::Temp(NativeType::int32().ptr());
+	NativeVariable ptrToThreadHints = NativeVariable::Temp(NativeType::int64().ptr().ptr());
+	NativeVariable ptrToThreadState = NativeVariable::Temp(NativeType::int64().ptr().ptr());
+	NativeVariable ptrToIncomingIxVals = NativeVariable::Temp(NativeType::int64().ptr());
+	NativeVariable ptrToSharedMemory = NativeVariable::Temp(NativeType::uint8().ptr());
+	NativeVariable incomingIx = NativeVariable::Temp(NativeType::int64());
+	
+	ImmutableTreeVector<NativeContinuation> exitContinuations;
+
+	ThreadStateWriter stateWriter;
+
+	for (long k = 0; k < inCFG.returnTypes().size(); k++)
+		{
+		NativeVariable returnVar = NativeVariable::Temp(inCFG.returnTypes()[k]);
+
+		NativeContinuation cont(
+			returnVar,
+			ptrToThreadBlockIDs.expr()[incomingIx.expr()].store(
+				NativeExpression::Constant(NativeConstant::Int32(k+1))
+				) >> 
+			stateWriter.writeValueToThreadStateExpression(
+				returnVar.expr(), 
+				ptrToThreadState.expr(), 
+				incomingIx.expr()
+				) >>
+			NativeExpression::Return(0, NativeExpression::Constant(NativeConstant::Nothing()))
+			);
+
+		exitContinuations = exitContinuations + cont;
+		}
+
+	NativeExpression invokingExpression = 
+		NativeExpression::Call(
+			NativeCallTarget::Inline(inCFG, NativeBlockID::entry()),
+			exitContinuations,
+			emptyTreeVec() + 
+				ptrToClosure.expr().load() + 
+				ptrToIncomingIxVals.expr()[incomingIx.expr()].load(),
+			emptyTreeVec()
+			);
+
+	NativeCFG newCFG(
+		emptyTreeVec() + 
+			ptrToClosure + 
+			ptrToThreadBlockIDs + 
+			ptrToThreadHints + 
+			ptrToThreadState + 
+			ptrToIncomingIxVals + 
+			ptrToSharedMemory + 
+			incomingIx,
+		invokingExpression
+		);
+
+	return GpuDataflowNativeCfg(
+		inCFG,
+		newCFG,
+		0,
+		emptyTreeVec(),
+		stateWriter.countOfSlots(),
+		0
+		);
+	}
