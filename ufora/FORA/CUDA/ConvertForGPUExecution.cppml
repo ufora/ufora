@@ -1,0 +1,358 @@
+#include "ConvertForGPUExecution.hppml"
+#include "../Native/NativeCode.hppml"
+#include "../Native/NativeTypeFor.hpp"
+#include "../Native/NativeVariable.hppml"
+#include "../Native/NativeCFGTransforms/SimplifyCFGStructure.hppml"
+#include "CUDAVectorRecord.hpp"
+#include "../TypedFora/ABI/VectorRecord.hpp"
+#include "../TypedFora/ABI/VectorRecordCodegen.hppml"
+#include "../../core/cppml/CPPMLTransform.hppml"
+#include "../../core/Logging.hpp"
+
+/// Convert NativeVariables of Vector type to GPU-Vector type
+class VectorRecordForGpuTransformer {
+public:
+	VectorRecordForGpuTransformer()
+		{
+		mVectorDataType = NativeTypeFor<TypedFora::Abi::VectorRecord>::get();
+		lassert(mVectorDataType.isComposite());
+
+		NativeType_CompositeType comp = mVectorDataType.getComposite();
+		lassert(comp.elements().size()==4);
+
+		mGpuVectorDataType = NativeTypeFor<CUDAVectorRecord>::get();
+		}
+
+	template<class T>
+	Nullable<T> processDown(const T& in, bool& out) const
+		{
+		return null();
+		}
+	template<class T>
+	Nullable<T> processUp(const T& in) const
+		{
+		return null();
+		}
+
+	Nullable<NativeVariable> processDown(const NativeVariable& var, bool& cont) const
+		{
+		if (var.type() == mVectorDataType)
+			{
+			if (mGpuVectorsForForaVectors.find(var) == mGpuVectorsForForaVectors.end())
+				{
+				mGpuVectorsForForaVectors[var] = NativeVariable::Temp(mGpuVectorDataType);
+				}
+			cont = false;
+			return null() << mGpuVectorsForForaVectors[var];
+			}
+		return null();
+		}
+
+	Nullable<NativeType> processUp(const NativeType& typ) const
+		{
+		if (typ == mVectorDataType)
+			{
+			return null() << mGpuVectorDataType;
+			}
+		return null();
+		}
+
+private:
+	mutable std::map<NativeVariable, NativeVariable> mGpuVectorsForForaVectors;
+	NativeType mVectorDataType;
+	NativeType mGpuVectorDataType;
+};
+
+class StripIncompatibleForGpuTransformer {
+public:
+	StripIncompatibleForGpuTransformer()
+		{
+		mUnsupported = NativeExpression::Halt("Code not valid on GPU");
+		}
+	
+	template<class T>
+	Nullable<T> processDown(const T& in, bool& out) const
+		{
+		return null();
+		}
+	template<class T>
+	Nullable<T> processUp(const T& in) const
+		{
+		return null();
+		}
+
+	NativeExpression processUp(const NativeExpression& inExp) const
+		{
+		@match NativeExpression(inExp)
+			-|	Let(v, exp, within) ->> {
+				if (exp.type())
+					return inExp;
+				else
+					return mUnsupported;
+				}
+			-|	_ ->> {
+				return inExp;
+				}
+			;
+		}
+
+	NativeExpression processDown(const NativeExpression& inExp, bool& ioCont) const
+		{
+		@match NativeExpression(inExp)
+			-|	Alloc(_) ->> {
+				return mUnsupported;
+				}
+			-|	Selector(_) ->> {
+				return mUnsupported;
+				}
+			-|	ElementAddress(_) ->> {
+				return mUnsupported;
+				}
+			-|	CallLibraryFunction(_) ->> {
+				return mUnsupported;
+				}
+			-|	Continuations(_) ->> {
+				return mUnsupported;
+				}
+			-|	FollowContinuation(_) ->> {
+				return mUnsupported;
+				}
+			-|	Halt()	->> {
+				return mUnsupported;
+				}
+			-|	Tagged(_, Interrupt()) ->> {
+				return NativeExpression::Nothing();
+				}
+			-|	Tagged(_, KickToInterpreterCheck()) ->> {
+				return NativeExpression::Nothing();
+				}
+			-|	Tagged(_, TransferToInterpreter()) ->> {
+				return mUnsupported;
+				}
+			-|	_ ->> {
+				return inExp;
+				}
+			;
+		}
+private:
+	NativeExpression mUnsupported;
+};
+
+class StripAllNativeMetadata {
+public:
+	template<class T>
+	Nullable<T> processDown(const T& in, bool& out) const
+		{
+		return null();
+		}
+	
+	template<class T>
+	Nullable<T> processUp(const T& in) const
+		{
+		return null();
+		}
+
+	Nullable<ImmutableTreeVector<NativeContinuationMetadata>> processDown(const ImmutableTreeVector<NativeContinuationMetadata>& b, bool& outContinue)
+		{
+		outContinue = false;
+
+		return null() << ImmutableTreeVector<NativeContinuationMetadata>();
+		}
+};
+
+class RemoveRuntimeCallbackAndNullArguments {
+public:
+	template<class T>
+	Nullable<T> processDown(const T& in, bool& out) const
+		{
+		return null();
+		}
+	
+	template<class T>
+	Nullable<T> processUp(const T& in) const
+		{
+		return null();
+		}
+
+	Nullable<NativeExpression> processDown(const NativeExpression& b, bool& outContinue) const
+		{
+		@match NativeExpression(b)
+			-| Variable(v) ->> {
+				if (v.type().isNothing())
+					return null() << NativeExpression::Constant(NativeConstant::Nothing());
+				}
+			-| _ ->> { }
+
+		return null();
+		}
+
+	Nullable<NativeBlock> processDown(const NativeBlock& b, bool& outContinue) const
+		{
+		NativeBlock result = b;
+
+		result.args() = filterITV(b.args(), [&](NativeVariable v) { return !isRuntimeCallbackType(v.type()) && !v.type().isNothing(); });
+
+		return null() << result;
+		}
+
+	Nullable<NativeExpression_JumpType> processDown(const NativeExpression_JumpType& b, bool& outContinue) const
+		{
+		NativeExpression_JumpType result = b;
+
+		result.expressions() = filterITV(
+			result.expressions(), 
+			[&](NativeExpression e) { return !e.type() || !isRuntimeCallbackType(*e.type()) && !e.type()->isNothing(); }
+			);
+
+		return null() << result;
+		}
+
+	Nullable<NativeExpression_CallType> processDown(const NativeExpression_CallType& b, bool& outContinue) const
+		{
+		NativeExpression_CallType result = b;
+
+		result.args() = filterITV(
+			result.args(), 
+			[&](NativeExpression e) { return !e.type() || !isRuntimeCallbackType(*e.type()) && !e.type()->isNothing(); }
+			);
+
+		return null() << result;
+		}
+};
+
+class StripUnusedReturnPaths {
+public:
+	template<class T>
+	Nullable<T> processDown(const T& in, bool& out) const
+		{
+		return null();
+		}
+	
+	template<class T>
+	Nullable<T> processUp(const T& in) const
+		{
+		return null();
+		}
+
+	static ImmutableTreeSet<int64_t> returnTypesUsed(const NativeCFG& cfg)
+		{
+		ImmutableTreeSet<int64_t> exitsUsed;
+
+		for (auto blockIdAndBlock: cfg.blocks())
+			for (auto exitIx: blockIdAndBlock.second.expression().exits())
+				exitsUsed = exitsUsed + (int64_t)exitIx;
+
+		return exitsUsed;
+		}
+
+	static NativeCFG transform(const NativeCFG& in)
+		{
+		NativeCFG res = ::transform(in, StripUnusedReturnPaths());
+
+		auto exitsUsed = returnTypesUsed(res);
+
+		res.returnTypes() = mapITVWithIndices(
+			res.returnTypes(), 
+			[&](NativeType type, long index) { 
+				if (exitsUsed.contains(index)) 
+					return type;
+
+				return NativeType::Nothing(); 
+				}
+			);
+
+		return res;
+		}
+
+	NativeExpression_CallType processUp(const NativeExpression_CallType& b) const
+		{
+		@match NativeCallTarget(b.f())
+			-| Inline(cfg, block) ->> {
+				NativeExpression_CallType result = b;
+
+				auto exitsUsed = returnTypesUsed(cfg);
+
+				NativeCFG newCFG = cfg;
+
+				newCFG.returnTypes() = mapITVWithIndices(
+					newCFG.returnTypes(), 
+					[&](NativeType type, long index) { 
+						if (exitsUsed.contains(index)) 
+							return type;
+
+						return NativeType::Nothing(); 
+						}
+					);
+
+				result.f() = NativeCallTarget::Inline(newCFG, block);
+
+				result.returnHandlers() = mapITVWithIndices(
+					result.returnHandlers(),
+					[&](NativeContinuation cont, long ix) {
+						if (exitsUsed.contains(ix))
+							return cont;
+
+						return NativeContinuation(
+							NativeVariable::Temp(NativeType::Nothing()),
+							NativeExpression::Halt("Unreachable")
+							);
+						}
+					);
+
+				return result;
+				}
+			-| _ ->> { return b; }
+		}
+};
+
+class ConvertHomogenousVectorLookup {
+public:
+	ConvertHomogenousVectorLookup() {}
+	template<class T>
+	Nullable<T> processDown(const T& in, bool& out) const
+		{
+		return null();
+		}
+	template<class T>
+	Nullable<T> processUp(const T& in) const
+		{
+		return null();
+		}
+	NativeExpression	processUp(const NativeExpression& inExp) const
+		{
+		@match NativeExpression(inExp)
+			-|	Tagged(e, HomogenousVectorLookup(vectorRecord, index, type)) ->> {
+				auto res = NativeExpression::BinaryOp(
+								NativeBinaryOpcode::Add(),
+								NativeExpression::ValueExtract(
+										emptyTreeVec() + (uword_t)0,
+										vectorRecord).cast(type.ptr(), false),
+								index
+								);
+				lassert_dump(
+					e.type() == res.type(),
+					prettyPrintString(e.type()) << " != " << prettyPrintString(res.type()));
+				return res;
+				}
+
+			-|	_ ->> {
+				return inExp;
+				}
+			;
+		}
+};
+
+NativeCFG convertForGpuExecution(const NativeCFG& in)
+	{
+	NativeCFG cfg(in);
+
+	cfg = transform(cfg, VectorRecordForGpuTransformer());
+	cfg = transform(cfg, ConvertHomogenousVectorLookup());
+	cfg = transform(cfg, StripIncompatibleForGpuTransformer());
+	cfg = transform(cfg, StripAllNativeMetadata());
+	cfg = transform(cfg, RemoveRuntimeCallbackAndNullArguments());
+	cfg = NativeCFGTransforms::simplifyCFGStructure(cfg);
+	cfg = StripUnusedReturnPaths::transform(cfg);
+
+	return cfg;
+	}

@@ -16,11 +16,18 @@ import unittest
 import ufora.FORA.python.FORA as Fora
 import ufora.native.FORA as ForaNative
 import pickle
+import time
 
 class GpuCodegenTest(unittest.TestCase):
     def test_basic_gpu_codegen(self):
-        f = Fora.extractImplValContainer(Fora.eval("fun(e) { `LocalityHint((e,e+1)); e + 1 }"))
-        v = Fora.extractImplValContainer(Fora.eval("[1,2,3,4]"))
+        f = Fora.extractImplValContainer(Fora.eval("""let v = [1.0,2.0,3.0,4.0]; 
+                fun(i) { 
+                    if (i%2 == 0)
+                        return (v[i],i)
+                    return 3
+                    }
+                """))
 
-        #this is a very weak way of testing this, but works as a first pass
-        self.assertTrue("LocalityHint" in ForaNative.compileAndStringifyNativeCfgForGpu(f,v))
+        t0 = time.time()
+        print ForaNative.compileAndStringifyNativeCfgForGpu(f)
+        print "took ", time.time() - t0
