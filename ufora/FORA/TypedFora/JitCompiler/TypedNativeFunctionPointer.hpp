@@ -1233,7 +1233,8 @@ public:
 					vars[2].expr(), 
 					vars[3].expr(), 
 					vars[4].expr(), 
-					vars[5].expr()
+					vars[5].expr(), 
+					vars[6].expr()
 					)
 				),
 			0
@@ -1468,6 +1469,8 @@ private:
 
 	PolymorphicSharedPtr<TypedFora::Compiler> mCompiler;
 };
+
+
 
 
 

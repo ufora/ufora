@@ -52,3 +52,25 @@ class GpuCodegenTest(unittest.TestCase):
         t0 = time.time()
         print ForaNative.compileAndStringifyNativeCfgForGpu(f)
         print "took ", time.time() - t0
+
+    def test_basic_gpu_code_simulation_with_hints(self):
+        f = Fora.extractImplValContainer(Fora.eval("""
+                fun(i) { 
+                    let ix = 0
+                    let result = 0
+                    while (ix < i)
+                        {
+                        result = result + i
+                        ix = ix + 1
+
+                        if (ix % 100 == 0)
+                            `LocalityHint(ix / 100)
+                        }
+
+                    return result
+                    }
+                """))
+
+        t0 = time.time()
+        print ForaNative.compileAndSimulateNativeCfgForGpu(f, 0, 100)
+        print "took ", time.time() - t0

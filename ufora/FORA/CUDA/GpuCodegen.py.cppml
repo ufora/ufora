@@ -22,6 +22,7 @@
 #include "../../core/python/ScopedPyThreads.hpp"
 #include "../../core/python/ValueLikeCPPMLWrapper.hppml"
 #include "../../core/containers/ImmutableTreeVector.py.hpp"
+#include "../TypedFora/JitCompiler/TypedNativeFunctionPointer.hpp"
 #include "GpuCodegen.hppml"
 #include "GpuDataflowNativeCFG.hppml"
 #include "../TypedFora/ABI/VectorRecord.hpp"
@@ -51,9 +52,81 @@ public:
 				);
 			}
 
+		static boost::python::object compileAndSimulateNativeCfgForGpu(
+						const ImplValContainer& inApplyObject,
+						int64_t index,
+						int64_t maxCycles
+						)
+			{
+			JudgmentOnValue	funJOV = JudgmentOnValue::FromLiveValue(inApplyObject.getReference()).relaxedJOV();
+
+			pair<NativeCFG, ImmutableTreeVector<Type> > kernelFunction = 
+				computeGpuKernelFunction(
+					funJOV,
+					JOV::OfType(Type::Integer(64, true))
+					);
+
+			GpuDataflowNativeCfg cfg = GpuDataflowNativeCfg::convert(kernelFunction.first);
+
+			auto compiler = Runtime::getRuntime().getTypedForaCompiler();
+
+			TypedNativeFunctionPointer<void (*)(void*, int32_t*, int64_t**, int64_t**, int64_t*, uint8_t*, int64_t)> fp(
+				compiler,
+				cfg.convertedCFG()
+				);
+
+			std::vector<int32_t> threadBlockIds = { 0 };
+			std::vector<std::vector<int64_t> > threadHints;
+			std::vector<std::vector<int64_t> > threadStackStates;
+			std::vector<int64_t> indices = { index };	
+
+			threadHints.resize(1);
+			threadHints[0].resize(cfg.threadHintChannels());
+
+			threadStackStates.resize(1);
+			threadStackStates[0].resize(cfg.stackDataChannels());
+
+			std::vector<int64_t*> threadHintPtrs = { &threadHints[0][0] };
+			std::vector<int64_t*> threadStackStatePtrs = { &threadStackStates[0][0] };
+
+			boost::python::list ids;
+			
+			long tries = 0;
+			while (threadBlockIds[0] != -1 && threadBlockIds[0] <= kernelFunction.second.size() && tries < maxCycles)
+				{
+				tries++;
+
+				fp(	inApplyObject.data(),
+					&threadBlockIds[0],
+					&threadHintPtrs[0],
+					&threadStackStatePtrs[0],
+					&indices[0],
+					nullptr,
+					0
+					);
+
+				ids.append(threadBlockIds[0]);
+				}
+
+			boost::python::object resultObj;
+
+			if (threadBlockIds[0] > 0 && threadBlockIds[0] <= kernelFunction.second.size())
+				resultObj = boost::python::object(
+					ImplValContainer(
+						ImplVal(
+							kernelFunction.second[threadBlockIds[0]-1],
+							threadStackStatePtrs[0]
+							)
+						)
+					);
+
+			return boost::python::make_tuple(resultObj, ids);
+			}
+
 		void exportPythonWrapper()
 			{
 			boost::python::def("compileAndStringifyNativeCfgForGpu", compileAndDumpNativeCfgForGpu);
+			boost::python::def("compileAndSimulateNativeCfgForGpu", compileAndSimulateNativeCfgForGpu);
 			}
 };
 
