@@ -377,6 +377,8 @@ Nullable<NativeType>	NativeExpression::computeNativeType(void) const
 		-|	Call(f,conts,args) ->> {
 				return contListType(conts);
 				}
+		-|	Resumption(_, e) ->> { return e.type(); }
+		-|	JumpToResumption() ->> { return Nullable<NativeType>(); }
 		-|	Jump() ->> { return Nullable<NativeType>(); }
 		-|	FollowContinuation() ->> { return Nullable<NativeType>(); }
 		-|	Return() ->> { return Nullable<NativeType>(); }
@@ -870,6 +872,15 @@ ImmutableTreeSet<NativeBlockID>		NativeExpression::computeJumpTargets(void) cons
 		-|	FollowContinuation(v,c,i) ->> {
 			return v.jumpTargets() + c.jumpTargets();
 			}
+		-|	Resumption(_,e) ->> {
+			return e.jumpTargets();
+			}
+		-|	JumpToResumption(_,e) ->> {
+			ImmutableTreeSet<NativeBlockID> jumpTargets;
+			for (auto kv: e)
+				jumpTargets = jumpTargets + kv.second.jumpTargets();
+			return jumpTargets;
+			}
 		-|	Return(_,v) ->> {
 			return v.jumpTargets();
 			}
@@ -1075,6 +1086,15 @@ bool	NativeExpression::computeHasSideEffects(void) const
 		-|	FollowContinuation(v,c,i) ->> {
 			return  true;
 			}
+		-|	Resumption(_,e) ->> {
+			return e.hasSideEffects();
+			}
+		-|	JumpToResumption(_,e) ->> {
+			for (auto kv: e)
+				if (kv.second.hasSideEffects())
+					return true;
+			return false;
+			}
 		-|	Return(_,v) ->> {
 			return  v.hasSideEffects();
 			}
@@ -1164,6 +1184,15 @@ ImmutableTreeSet<NativeVariable>	NativeExpression::computeFreeVariables(void) co
 		-|	Return(_,v) ->> {
 			return  v.freeVariables();
 			}
+		-|	Resumption(_,v) ->> {
+			return v.freeVariables();
+			}
+		-|	JumpToResumption(_,v) ->> {
+			ImmutableTreeSet<NativeVariable> vars;
+			for (auto kv: v)
+				vars = vars + kv.second.freeVariables();
+			return vars;
+			}
 		-|	Halt() ->> {
 			return  emptyTreeSet();
 			}
@@ -1174,8 +1203,7 @@ ImmutableTreeSet<NativeVariable>	NativeContinuationMetadata::freeVariables(void)
 	ImmutableTreeSet<NativeVariable> tr;
 
 	for (long k = 0; k < vars().size(); k++)
-		tr = tr + vars()[k].dataVar().freeVariables()
-				;
+		tr = tr + vars()[k].dataVar().freeVariables();
 
 	return tr;
 	}
@@ -1313,6 +1341,15 @@ ImmutableTreeSet<string>			NativeExpression::computeExternalBranches(void) const
 		-|	FollowContinuation(v,c,i) ->> {
 			return  v.externalBranches() + c.externalBranches();
 			}
+		-| Resumption(_, e) ->> {
+			return e.externalBranches();
+			}
+		-| JumpToResumption(_, exprs) ->> {
+			ImmutableTreeSet<string> external;
+			for (auto kv: exprs)
+				external = external + kv.second.externalBranches();
+			return external;
+			}
 		-|	Return(_,v) ->> {
 			return  v.externalBranches();
 			}
@@ -1421,6 +1458,15 @@ ImmutableTreeSet<uword_t>			NativeExpression::computeExits(void) const
 		-|	Jump(_,e) ->> {
 			return  ::exits(e);
 			}
+		-|	Resumption(_,e) ->> {
+			return e.exits();
+			}
+		-|	JumpToResumption(_,e) ->> {
+			ImmutableTreeSet<uword_t> res;
+			for (auto kv: e)
+				res = res + kv.second.exits();
+			return res;
+			}
 		-|	FollowContinuation(v,c,i) ->> {
 			return  v.exits() + c.exits();
 			}
@@ -1432,24 +1478,7 @@ ImmutableTreeSet<uword_t>			NativeExpression::computeExits(void) const
 			}
 		;
 	}
-NativeBlockID NativeBlockID::internal(void)
-	{
-	static AO_t ix = 1000000000000;
-	return NativeBlockID(true, AO_fetch_and_add_full(&ix, 1));
-	}
-NativeBlockID NativeBlockID::external(void)
-	{
-	static AO_t ix = 1000000000000;
-	return NativeBlockID(false, AO_fetch_and_add_full(&ix, 1));
-	}
-NativeBlockID NativeBlockID::external(uword_t branch)
-	{
-	return NativeBlockID(false, branch);
-	}
-NativeBlockID NativeBlockID::entry(void)
-	{
-	return NativeBlockID(false, 0);
-	}
+
 ImmutableTreeSet<string>	NativeContinuation::externalBranches(void) const
 	{
 	return expression().externalBranches();
@@ -1555,6 +1584,15 @@ uint64_t									NativeExpression::computeComplexity(void) const
 		-|	FollowContinuation(x,y,i) ->> {
 			return  x.complexity() + y.complexity();
 			}
+		-|	Resumption(_,e) ->> {
+			return  e.complexity();
+			}
+		-|	JumpToResumption(_,exprs) ->> {
+			int res = 1;
+			for (auto kv: exprs)
+				res = res + kv.second.complexity();
+			return res;
+			}
 		-|	Return(_,e) ->> {
 			return  e.complexity();
 			}
@@ -1634,6 +1672,15 @@ uint64_t									NativeExpression::computeHeight(void) const
 			}
 		-|	FollowContinuation(x,y,i) ->> {
 			return  std::max(x.height(),y.height()) + 1;
+			}
+		-| Resumption(_, e) ->> {
+			return e.height() + 1;
+			}
+		-| JumpToResumption(_, exprs) ->> {
+			long h = 0;
+			for (auto kv: exprs)
+				h = std::max<long>(h, kv.second.height());
+			return h + 1;
 			}
 		-|	Return(_,e) ->> {
 			return  e.height();
@@ -1834,71 +1881,6 @@ NativeExpression NativeExpression::Let(const NativeVariable& var,
 NativeExpression		NativeExpression::If(const NativeExpression& condition, const NativeExpression& ifTrue, const NativeExpression& ifFalse)
 	{
 	return NativeExpression::If(condition, ifTrue, ifFalse, .5);
-	}
-NativeExpression
-		NativeExpression::Loop(
-					const NativeVariable& var,
-					const NativeExpression& initializer,
-					const NativeExpression& condition,
-					const NativeExpression& body,
-					const NativeExpression& update,
-					const NativeExpression& result,
-					double conditionFrequency
-					)
-	{
-	NativeBlockID block = NativeBlockID::entry();
-
-	return NativeExpression::Call(
-		NativeCallTarget::Inline(
-			NativeCFG(
-				emptyTreeVec() + *result.type(),
-				emptyTreeMap() + block +
-					NativeBlock(emptyTreeVec() + var,
-						NativeExpression::If(
-							condition,
-							body >> NativeExpression::Jump(block, emptyTreeVec() + update),
-							NativeExpression::Return(0, result),
-							conditionFrequency
-							)
-						)
-					)
-				,
-			block
-			),
-		emptyTreeVec() +
-			NativeContinuation(*result.type())
-			,
-		emptyTreeVec() +
-			initializer,
-		emptyTreeVec()
-		);
-	}
-NativeExpression		NativeExpression::Loop(const ImmutableTreeVector<NativeVariable>& var, const ImmutableTreeVector<NativeExpression>& initializer, const NativeExpression& condition, const NativeExpression& body, const ImmutableTreeVector<NativeExpression>& update, const NativeExpression& result)
-	{
-	NativeBlockID block = NativeBlockID::entry();
-
-	return NativeExpression::Call(
-		NativeCallTarget::Inline(
-			NativeCFG(
-				emptyTreeVec() + *result.type(),
-				emptyTreeMap() + block +
-					NativeBlock(var,
-						NativeExpression::If(
-							condition,
-							body >> NativeExpression::Jump(block, update),
-							NativeExpression::Return(0, result)
-							)
-						)
-					)
-				,
-			block
-			),
-		emptyTreeVec() +
-			NativeContinuation(*result.type())
-			,
-		initializer,
-		emptyTreeVec()
-		);
 	}
 
 NativeContinuation::NativeContinuation(NativeType t)
