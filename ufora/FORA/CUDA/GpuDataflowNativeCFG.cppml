@@ -16,6 +16,34 @@
 
 #include "GpuDataflowNativeCFG.hppml"
 
+@type ReplaceHaltsWith = NativeExpression targetExpr {
+public:
+	template<class T>
+	Nullable<T> processDown(const T& in, bool& out) const
+		{
+		return null();
+		}
+	
+	template<class T>
+	Nullable<T> processUp(const T& in) const
+		{
+		return null();
+		}
+
+	Nullable<NativeExpression> processDown(const NativeExpression& b, bool& outContinue) const
+		{
+		@match NativeExpression(b)
+			-| Halt() ->> {
+				outContinue = false;
+				return null() << targetExpr();
+				}
+			-| _ ->> { }
+
+		return null();
+		}
+};
+
+
 @type ThreadStateWriter = int64_t countOfSlots {
 public:
 	NativeExpression writeValueToThreadStateExpression(
@@ -86,15 +114,193 @@ public:
 		
 		return res;
 		}
+
+	NativeExpression readValueFromThreadStateExpression(
+			NativeType type,
+			NativeExpression threadStatePtr,
+			NativeExpression incomingIx,
+			int64_t& ioSlotsUsed
+			)
+		{
+		@match NativeType(type)
+			-| Nothing() ->> { return NativeExpression::Constant(NativeConstant::Nothing()); }
+			-| Integer(bits) ->> { 
+				lassert_dump(bits <= 64, 
+					"currently our channels are 64 bits. We don't expect any larger integer primitives in cuda code."
+					);
+				}
+			-| Float(bits) ->> { 
+				lassert_dump(bits <= 64, 
+					"currently our channels are 64 bits. We don't expect any larger integer primitives in cuda code."
+					);
+				}
+			-| Pointer() ->> { 
+				}
+			-| Composite(eltTypes) ->> {
+				ImmutableTreeVector<NativeExpression> res;
+
+				//write each value in turn
+				for (long k = 0; k < eltTypes.size(); k++)
+					res = res + readValueFromThreadStateExpression(eltTypes[k], threadStatePtr, incomingIx, ioSlotsUsed);
+
+				return NativeExpression::CreateComposite(res);
+				}
+
+		//this is a primitive (int, float, pointer)
+		auto res = threadStatePtr[ioSlotsUsed].load()[incomingIx]
+			//cast as a T*
+			.cast(type.ptr(), false)
+			.load()
+			;
+
+		ioSlotsUsed++;
+		
+		return res;
+		}
+};
+
+@type ReplaceLocalityHints = 
+		NativeExpression threadStatePtr,
+		NativeExpression incomingIx,
+		ImmutableTreeVector<NativeBlockID>* exitResumptions,
+		ImmutableTreeVector<NativeExpression>* entryResumptionExprs,
+		ThreadStateWriter* stateWriter,
+		ImmutableTreeSet<NativeVariable> boundAbove
+{
+public:
+	ReplaceLocalityHints withVariableBound(NativeVariable var) const
+		{
+		ReplaceLocalityHints res = *this;
+
+		res.boundAbove() = res.boundAbove() + var;
+		
+		return res;
+		}
+
+	ReplaceLocalityHints withVariableBound(ImmutableTreeVector<NativeVariable> vars) const
+		{
+		ReplaceLocalityHints res = *this;
+
+		for (auto var: vars)
+			res.boundAbove() = res.boundAbove() + var;
+		
+		return res;
+		}
+
+	template<class T>
+	Nullable<T> processDown(const T& in, bool& out) const
+		{
+		return null();
+		}
+	
+	template<class T>
+	Nullable<T> processUp(const T& in) const
+		{
+		return null();
+		}
+
+	NativeExpression processDown(const NativeExpression& b, bool& outContinue) const
+		{
+		@match NativeExpression(b)
+			-| Tagged(_, Generic(name, vars)) ->> {
+				if (name == "LocalityHint")
+					return replaceLocalityHint(*vars["hint"]);
+				}
+			-| Let(var, expr, within) ->> {
+				outContinue = false;
+				NativeExpression tExpr = ::transform(expr, *this);
+				NativeExpression tWithin = ::transform(within, withVariableBound(var));
+
+				return NativeExpression::Let(var, tExpr, tWithin);
+				}
+			-| _ ->> { }
+
+		return b;
+		}
+
+	NativeContinuation processDown(const NativeContinuation& b, bool& outContinue) const
+		{
+		outContinue = false;
+
+		NativeContinuation res = b;
+		res.expression() = ::transform(res.expression(), withVariableBound(res.var()));
+
+		return res;
+		}
+
+	NativeBlock processDown(const NativeBlock& b, bool& outContinue) const
+		{
+		outContinue = false;
+
+		NativeBlock res = b;
+
+		res.expression() = ::transform(res.expression(), withVariableBound(res.args()));
+
+		return res;
+		}
+
+	NativeExpression replaceLocalityHint(NativeExpression hintExpr) const
+		{
+		NativeBlockID exitResumption = NativeBlockID::internal();
+		NativeBlockID entryResumption = NativeBlockID::internal();
+
+		*exitResumptions() = *exitResumptions() + exitResumption;
+
+		NativeExpression writeStateExpression;
+		ImmutableTreeMap<NativeVariable, NativeExpression> readStateExpressions;
+
+		int64_t slotsUsedToWrite = 0;
+		int64_t slotsUsedToRead = 0;
+
+		for (auto var: boundAbove())
+			{
+			auto expr = 
+				stateWriter()->writeValueToThreadStateExpression(
+					var.expr(),
+					threadStatePtr(),
+					incomingIx(),
+					slotsUsedToWrite
+					);
+
+			if (expr)
+				writeStateExpression = writeStateExpression >> *expr;
+
+			readStateExpressions = readStateExpressions + 
+				var + 
+				stateWriter()->readValueFromThreadStateExpression(
+					var.type(),
+					threadStatePtr(),
+					incomingIx(),
+					slotsUsedToRead
+					);
+
+			lassert(slotsUsedToWrite == slotsUsedToRead);
+			}
+
+		NativeExpression resumeExpr = 
+			NativeExpression::JumpToResumption(entryResumption, readStateExpressions);
+
+		*entryResumptionExprs() = *entryResumptionExprs() + resumeExpr;
+
+
+		return NativeExpression::Resumption(
+			entryResumption,
+			writeStateExpression >>
+				NativeExpression::JumpToResumption(exitResumption, emptyTreeMap()),
+			NativeExpression::Nothing()
+			);
+		}
 };
 
 GpuDataflowNativeCfg GpuDataflowNativeCfg::convert(const NativeCFG& inCFG)
 	{
 	NativeCFG originalCFG = inCFG;
+	NativeCFG modifiedCFG = inCFG;
 
 	NativeBlock entrypointBlock = *inCFG.blocks()[NativeBlockID::entry()];
-	lassert(entrypointBlock.args().size() == 2);
+	lassert_dump(entrypointBlock.args().size() == 3, prettyPrintString(inCFG));
 
+	//allocate function signature variables
 	NativeVariable ptrToClosure = NativeVariable::Temp(entrypointBlock.args()[0].type().ptr());
 	NativeVariable ptrToThreadBlockIDs = NativeVariable::Temp(NativeType::int32().ptr());
 	NativeVariable ptrToThreadHints = NativeVariable::Temp(NativeType::int64().ptr().ptr());
@@ -103,13 +309,32 @@ GpuDataflowNativeCfg GpuDataflowNativeCfg::convert(const NativeCFG& inCFG)
 	NativeVariable ptrToSharedMemory = NativeVariable::Temp(NativeType::uint8().ptr());
 	NativeVariable incomingIx = NativeVariable::Temp(NativeType::int64());
 	
-	ImmutableTreeVector<NativeContinuation> exitContinuations;
-
 	ThreadStateWriter stateWriter;
 
-	for (long k = 0; k < inCFG.returnTypes().size(); k++)
+
+	//replace each 'LocalityHint' expression with an exit-resume operation
+	//and pull out the necessary state to produce the appropriate CFG
+	ImmutableTreeVector<NativeBlockID> exitResumptions;
+	ImmutableTreeVector<NativeExpression> entryResumptionExprs;
+
+	modifiedCFG = ::transform(
+		modifiedCFG, 
+		ReplaceLocalityHints(
+			ptrToThreadState.expr(),
+			incomingIx.expr(),
+			&exitResumptions,
+			&entryResumptionExprs,
+			&stateWriter,
+			emptyTreeSet()
+			)
+		);
+
+	//create the exit continuations - one for each exit
+	ImmutableTreeVector<NativeContinuation> exitContinuations;
+
+	for (long k = 0; k < modifiedCFG.returnTypes().size(); k++)
 		{
-		NativeVariable returnVar = NativeVariable::Temp(inCFG.returnTypes()[k]);
+		NativeVariable returnVar = NativeVariable::Temp(modifiedCFG.returnTypes()[k]);
 
 		NativeContinuation cont(
 			returnVar,
@@ -129,14 +354,57 @@ GpuDataflowNativeCfg GpuDataflowNativeCfg::convert(const NativeCFG& inCFG)
 
 	NativeExpression invokingExpression = 
 		NativeExpression::Call(
-			NativeCallTarget::Inline(inCFG, NativeBlockID::entry()),
+			NativeCallTarget::Inline(modifiedCFG, NativeBlockID::entry()),
 			exitContinuations,
 			emptyTreeVec() + 
 				ptrToClosure.expr().load() + 
+				NativeExpression::Nothing() + 
 				ptrToIncomingIxVals.expr()[incomingIx.expr()].load(),
 			emptyTreeVec()
 			);
 
+	//for each exit resumption we need a resumption that bails from the system
+	//and an incoming handler that checks the current thread block and runs with it
+	for (long hintIndex = 0; hintIndex < exitResumptions.size(); hintIndex++)
+		{
+		int32_t threadBlockIndex = modifiedCFG.returnTypes().size() + 1 + hintIndex;
+
+		invokingExpression = NativeExpression::Resumption(
+			exitResumptions[hintIndex],
+			invokingExpression,
+			ptrToThreadBlockIDs.expr()[incomingIx.expr()].store(
+				NativeExpression::Constant(NativeConstant::Int32(threadBlockIndex))
+				) >>
+			NativeExpression::Return(0, NativeExpression::Constant(NativeConstant::Nothing()))
+			);
+		invokingExpression = 
+			NativeExpression::If(
+				ptrToThreadBlockIDs.expr()[incomingIx.expr()].load()
+					== NativeExpression::Constant(NativeConstant::Int32(threadBlockIndex)),
+				entryResumptionExprs[hintIndex],
+				invokingExpression
+				);
+		}
+
+	NativeBlockID haltResumptionBlockId = NativeBlockID::internal();
+
+	//add a handler for Halts and replace halts with jumps to the handler.
+	invokingExpression = 
+		NativeExpression::Resumption(
+			haltResumptionBlockId,
+			invokingExpression,
+			ptrToThreadBlockIDs.expr()[incomingIx.expr()].store(
+				NativeExpression::Constant(NativeConstant::Int32(-1))
+				) >>
+			NativeExpression::Return(0, NativeExpression::Constant(NativeConstant::Nothing()))
+			);
+
+	invokingExpression = ::transform(
+		invokingExpression, 
+		ReplaceHaltsWith(NativeExpression::JumpToResumption(haltResumptionBlockId, emptyTreeMap()))
+		);
+
+	//produce the final CFG
 	NativeCFG newCFG(
 		emptyTreeVec() + 
 			ptrToClosure + 
@@ -153,8 +421,8 @@ GpuDataflowNativeCfg GpuDataflowNativeCfg::convert(const NativeCFG& inCFG)
 		inCFG,
 		newCFG,
 		0,
-		emptyTreeVec(),
 		stateWriter.countOfSlots(),
 		0
 		);
 	}
+
