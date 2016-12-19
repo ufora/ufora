@@ -43,7 +43,7 @@ class GpuCodegenTest(unittest.TestCase):
                         ix = ix + 1
 
                         if (ix % 100 == 0)
-                            `LocalityHint(ix)
+                            `LocalityHint(ix / 100)
                         }
                     return ix
                     }

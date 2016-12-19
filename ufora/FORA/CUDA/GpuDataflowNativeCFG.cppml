@@ -161,28 +161,22 @@ public:
 
 @type ReplaceLocalityHints = 
 		NativeExpression threadStatePtr,
+		NativeExpression threadHintPtr,
 		NativeExpression incomingIx,
 		ImmutableTreeVector<NativeBlockID>* exitResumptions,
 		ImmutableTreeVector<NativeExpression>* entryResumptionExprs,
 		ThreadStateWriter* stateWriter,
-		ImmutableTreeSet<NativeVariable> boundAbove
+		ThreadStateWriter* hintWriter,
+		//what variables are needed to continue calculating AFTER this
+		//expression returns a value?
+		ImmutableTreeSet<NativeVariable> neededToContinue
 {
 public:
-	ReplaceLocalityHints withVariableBound(NativeVariable var) const
+	ReplaceLocalityHints withNeeded(ImmutableTreeSet<NativeVariable> vars) const
 		{
 		ReplaceLocalityHints res = *this;
 
-		res.boundAbove() = res.boundAbove() + var;
-		
-		return res;
-		}
-
-	ReplaceLocalityHints withVariableBound(ImmutableTreeVector<NativeVariable> vars) const
-		{
-		ReplaceLocalityHints res = *this;
-
-		for (auto var: vars)
-			res.boundAbove() = res.boundAbove() + var;
+		res.neededToContinue() = vars;
 		
 		return res;
 		}
@@ -199,44 +193,162 @@ public:
 		return null();
 		}
 
+	//if we're evaluating exprs[0], exprs[1], ..., exprs[n-1], then 
+	//we will always need more variables to 'continue' from exprs[0] than from exprs[1]. This is because
+	//exprs[0] may use a variable that exprs[1] doesn't. So we traverse in reverse order to build up the
+	//needed-vars set.
+	pair<ImmutableTreeVector<NativeExpression>, ImmutableTreeSet<NativeVariable> > 
+				transformExprSeq(ImmutableTreeVector<NativeExpression> exprs) const
+		{
+		ImmutableTreeVector<NativeExpression> subs;
+
+		ImmutableTreeSet<NativeVariable> needed = neededToContinue();
+
+		for (long k = ((long)exprs.size())-1; k >= 0; k--)
+			{
+			subs = ::transform(exprs[k], withNeeded(needed)) + subs;
+			needed = needed + exprs[k].freeVariables();
+			}
+
+		return make_pair(subs, needed);
+		}
+
 	NativeExpression processDown(const NativeExpression& b, bool& outContinue) const
 		{
+		if (!b.type() && neededToContinue().size())
+			{
+			outContinue = false;
+			return ::transform(b, withNeeded(emptyTreeSet()));
+			}
+
 		@match NativeExpression(b)
 			-| Tagged(_, Generic(name, vars)) ->> {
 				if (name == "LocalityHint")
+					{
+					outContinue = false;
 					return replaceLocalityHint(*vars["hint"]);
+					}
 				}
-			-| Let(var, expr, within) ->> {
+			-| CreateComposite(exprs) ->> {
 				outContinue = false;
-				NativeExpression tExpr = ::transform(expr, *this);
-				NativeExpression tWithin = ::transform(within, withVariableBound(var));
+				ImmutableTreeVector<NativeExpression> subs = transformExprSeq(exprs).first;
 
-				return NativeExpression::Let(var, tExpr, tWithin);
+				return NativeExpression::CreateComposite(subs);
+				}
+			-| DiscardFirst(e1, e2) ->> {
+				outContinue = false;
+
+				NativeExpression te2 = ::transform(e2, *this);
+				NativeExpression te1 = ::transform(e1, withNeeded(neededToContinue() + e2.freeVariables()));
+
+				return NativeExpression::DiscardFirst(te1, te2);
+				}
+			-| Store(e1, e2) ->> {
+				outContinue = false;
+
+				NativeExpression te2 = ::transform(e2, *this);
+				NativeExpression te1 = ::transform(e1, withNeeded(neededToContinue() + e2.freeVariables()));
+
+				return NativeExpression::Store(te1, te2);
+				}
+			-| Selector(c, e1, e2) ->> {
+				outContinue = false;
+
+				NativeExpression tc = ::transform(c, withNeeded(neededToContinue() + e1.freeVariables() + e2.freeVariables()));
+				NativeExpression te2 = ::transform(e2, *this);
+				NativeExpression te1 = ::transform(e1, *this);
+
+				return NativeExpression::Selector(tc, te1, te2);
+				}
+			-| BinaryOp(opcode, e1, e2) ->> {
+				outContinue = false;
+
+				NativeExpression te2 = ::transform(e2, *this);
+				NativeExpression te1 = ::transform(e1, withNeeded(neededToContinue() + e2.freeVariables()));
+
+				return NativeExpression::BinaryOp(opcode, te1, te2);
+				}
+			-| ElementAddress(elts, source) ->> {
+				outContinue = false;
+
+				NativeExpression tsource = ::transform(source, *this);
+				ImmutableTreeVector<NativeExpression> telts = 
+					withNeeded(neededToContinue() + source.freeVariables()).transformExprSeq(elts).first;
+
+				return NativeExpression::ElementAddress(telts, tsource);
+				}
+			-| CallLibraryFunction(target, ret, args, passByPtr, resultPassedAsFirstArgPtr) ->> {
+				outContinue = false;
+
+				return NativeExpression::CallLibraryFunction(
+					target,
+					ret,
+					transformExprSeq(args).first,
+					passByPtr,
+					resultPassedAsFirstArgPtr
+					);
+				}
+			-| Continuations() ->> {
+				lassert_dump(false, "these should have been stripped earlier");
+				}
+			-| If(c, e1, e2, fracTrue) ->> {
+				outContinue = false;
+
+				NativeExpression tc = ::transform(c, withNeeded(neededToContinue() + e1.freeVariables() + e2.freeVariables()));
+				NativeExpression te2 = ::transform(e2, *this);
+				NativeExpression te1 = ::transform(e1, *this);
+
+				return NativeExpression::If(tc, te1, te2, fracTrue);
+				}
+			-| Let(v, e, within) ->> {
+				outContinue = false;
+
+				NativeExpression te = ::transform(e, withNeeded(neededToContinue() + within.freeVariables() - v));
+				NativeExpression tWithin = ::transform(within, *this);
+
+				return NativeExpression::Let(v, te, tWithin);
+				}
+			-| Resumption() ->> {
+				lassert_dump(false, "these should not have been created yet");
+				}
+			-| JumpToResumption() ->> {
+				lassert_dump(false, "these should not have been created yet");
+				}
+			-| Call(target, handlers, args, meta) ->> {
+				outContinue = false;
+
+				auto argsAndNeededVars = transformExprSeq(args);
+
+				ImmutableTreeSet<NativeVariable> neededAfterConts = argsAndNeededVars.second;
+
+				auto tHandlers = mapITV(handlers, [&](const NativeContinuation& c) {
+					neededAfterConts = neededAfterConts + c.freeVariables();
+
+					return ::transform(c, withNeeded(argsAndNeededVars.second));
+					});
+
+				return NativeExpression::Call(
+					::transform(target, withNeeded(neededAfterConts)),
+					tHandlers,
+					argsAndNeededVars.first,
+					meta
+					);
+				}
+			-| Jump(target, expressions) ->> {
+				outContinue = false;
+				return NativeExpression::Jump(target, transformExprSeq(expressions).first);
+				}
+			-| FollowContinuation(var, cont, ix) ->> {
+				outContinue = false;
+				return NativeExpression::FollowContinuation(
+					::transform(var, withNeeded(neededToContinue() + cont.freeVariables())),
+					::transform(cont, *this),
+					ix
+					);
 				}
 			-| _ ->> { }
 
 		return b;
-		}
-
-	NativeContinuation processDown(const NativeContinuation& b, bool& outContinue) const
-		{
-		outContinue = false;
-
-		NativeContinuation res = b;
-		res.expression() = ::transform(res.expression(), withVariableBound(res.var()));
-
-		return res;
-		}
-
-	NativeBlock processDown(const NativeBlock& b, bool& outContinue) const
-		{
-		outContinue = false;
-
-		NativeBlock res = b;
-
-		res.expression() = ::transform(res.expression(), withVariableBound(res.args()));
-
-		return res;
 		}
 
 	NativeExpression replaceLocalityHint(NativeExpression hintExpr) const
@@ -252,7 +364,7 @@ public:
 		int64_t slotsUsedToWrite = 0;
 		int64_t slotsUsedToRead = 0;
 
-		for (auto var: boundAbove())
+		for (auto var: neededToContinue())
 			{
 			auto expr = 
 				stateWriter()->writeValueToThreadStateExpression(
@@ -276,6 +388,17 @@ public:
 
 			lassert(slotsUsedToWrite == slotsUsedToRead);
 			}
+
+		NativeVariable hintVar = NativeVariable::Temp(*hintExpr.type());
+
+		writeStateExpression = writeStateExpression >> 
+			NativeExpression::Let(hintVar, hintExpr,
+				hintWriter()->writeValueToThreadStateExpression(
+					hintVar.expr(),
+					threadHintPtr(),
+					incomingIx()
+					)
+				);
 
 		NativeExpression resumeExpr = 
 			NativeExpression::JumpToResumption(entryResumption, readStateExpressions);
@@ -310,7 +433,7 @@ GpuDataflowNativeCfg GpuDataflowNativeCfg::convert(const NativeCFG& inCFG)
 	NativeVariable incomingIx = NativeVariable::Temp(NativeType::int64());
 	
 	ThreadStateWriter stateWriter;
-
+	ThreadStateWriter hintWriter;
 
 	//replace each 'LocalityHint' expression with an exit-resume operation
 	//and pull out the necessary state to produce the appropriate CFG
@@ -321,10 +444,12 @@ GpuDataflowNativeCfg GpuDataflowNativeCfg::convert(const NativeCFG& inCFG)
 		modifiedCFG, 
 		ReplaceLocalityHints(
 			ptrToThreadState.expr(),
+			ptrToThreadHints.expr(),
 			incomingIx.expr(),
 			&exitResumptions,
 			&entryResumptionExprs,
 			&stateWriter,
+			&hintWriter,
 			emptyTreeSet()
 			)
 		);
@@ -422,7 +547,7 @@ GpuDataflowNativeCfg GpuDataflowNativeCfg::convert(const NativeCFG& inCFG)
 		newCFG,
 		0,
 		stateWriter.countOfSlots(),
-		0
+		hintWriter.countOfSlots()
 		);
 	}
 
