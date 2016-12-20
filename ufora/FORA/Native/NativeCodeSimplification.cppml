@@ -45,7 +45,7 @@ public:
 		NativeVariable processDown(const NativeVariable& i, bool& out) const
 			{
 			out = false;
-			if (i == *rewrites())
+			if (rewrites()->find(i) != rewrites()->end())
 				return (*rewrites())[i];
 			return i;
 			}
@@ -291,7 +291,7 @@ void	variableMerge(map<NativeBlockID, NativeCodeFlattened::Block>& outBlocks)
 				)
 			{
 			NativeCodeFlattened::Input i = *it->second.begin();
-			if (i.isVariable() && i.getVariable().var() == graphVisitor.blockVariableInputs())
+			if (i.isVariable() && graphVisitor.blockVariableInputs().find(i.getVariable().var()) != graphVisitor.blockVariableInputs().end())
 				{
 				NativeVariable targetVar = i.getVariable().var();
 				lassert(definedIn.find(targetVar) != definedIn.end());
@@ -311,7 +311,7 @@ void	variableMerge(map<NativeBlockID, NativeCodeFlattened::Block>& outBlocks)
 
 	for (map<NativeVariable, NativeVariable>::iterator it = renames.begin(), it_end = renames.end(); it != it_end; ++it)
 		{
-		if (it->first != groups && it->second != groups)
+		if (groups.find(it->first) == groups.end() && groups.find(it->second) == groups.end())
 			{
 			if (definedIn[it->first] != definedIn[it->second])
 				{
@@ -323,9 +323,9 @@ void	variableMerge(map<NativeBlockID, NativeCodeFlattened::Block>& outBlocks)
 				}
 			}
 			else
-		if (it->first == groups && it->second != groups)
+		if (groups.find(it->first) != groups.end() && groups.find(it->second) == groups.end())
 			{
-			if (definedIn[it->second] != groups[it->first]->blocks())
+			if (groups[it->first]->blocks().find(definedIn[it->second]) == groups[it->first]->blocks().end())
 				{
 				groups[it->second] = groups[it->first];
 				groups[it->second]->variables().insert(it->second);
@@ -333,30 +333,34 @@ void	variableMerge(map<NativeBlockID, NativeCodeFlattened::Block>& outBlocks)
 				}
 			}
 			else
-		if (it->second == groups && it->first != groups)
+		if (groups.find(it->second) != groups.end() && groups.find(it->first) == groups.end())
 			{
-			if (definedIn[it->first] != groups[it->second]->blocks())
+			if (groups[it->second]->blocks().find(definedIn[it->first]) == groups[it->second]->blocks().end())
 				{
 				groups[it->first] = groups[it->second];
 				groups[it->first]->variables().insert(it->first);
 				groups[it->first]->blocks().insert(definedIn[it->first]);
 				}
 			}
-			else
+		else
 			{
 			NativeVariableGroup* g1 = groups[it->first];
 			NativeVariableGroup* g2 = groups[it->second];
 			bool OK = true;
 			for (set<NativeBlockID>::iterator it = g1->blocks().begin(), it_end= g1->blocks().end(); it != it_end && OK; ++it)
-				if (*it == g2->blocks())
+				if (g2->blocks().find(*it) != g2->blocks().end())
 					OK = false;
 			if (OK)
 				{
 				//we can merge the blocks
-				g1->blocks() += g2->blocks();
-				g1->variables() += g2->variables();
-				for (set<NativeVariable>::iterator it = g2->variables().begin(), it_end = g2->variables().end(); it != it_end; ++it)
-					groups[*it] = g1;
+				for (auto b: g2->blocks())
+					g1->blocks().insert(b);
+				for (auto v: g2->variables())
+					g1->variables().insert(v);
+
+				for (auto v: g2->variables())
+					groups[v] = g1;
+
 				delete g2;
 				}
 			}
@@ -384,8 +388,9 @@ void promoteInBlockUseVariables(map<NativeBlockID, NativeCodeFlattened::Block>& 
 
 	//now look for any variable only used in the block it's created in. It can be taken out of the 'dump' list
 	for (map<NativeVariable, NativeBlockID>::iterator it = vis.created().begin(), it_end = vis.created().end(); it != it_end; ++it)
-		if ((vis.used()[it->first].size() == 1 && *vis.used()[it->first].begin() == it->second && it->second != vis.blocksWithContinuations())
-			|| vis.used()[it->first].size() == 0)
+		if ((vis.used()[it->first].size() == 1 && *vis.used()[it->first].begin() == it->second && 
+				vis.blocksWithContinuations().find(it->second) == vis.blocksWithContinuations().end())
+				|| vis.used()[it->first].size() == 0)
 			outBlocks[it->second].dontWriteVariable(it->first);
 	}
 
@@ -483,32 +488,34 @@ void removeUnusedBlocks(map<NativeBlockID, NativeCodeFlattened::Block>& outBlock
 
 	while (toCheck.size())
 		{
-		NativeBlockID id = pop(toCheck);
+		NativeBlockID id = *toCheck.begin();
+		toCheck.erase(id);
+
 		reachable.insert(id);
 
 			{
 			const set<NativeBlockID>& down = vis.edges().getValues(id);
 			for (set<NativeBlockID>::iterator it = down.begin(), it_end = down.end(); it != it_end; ++it)
-				if (*it != reachable)
+				if (reachable.find(*it) == reachable.end())
 					toCheck.insert(*it);
 			}
 
 			{
 			const set<NativeBlockID>& down = vis.continuationEdges().getValues(id);
 			for (set<NativeBlockID>::iterator it = down.begin(), it_end = down.end(); it != it_end; ++it)
-				if (*it != reachable)
+				if (reachable.find(*it) == reachable.end())
 					toCheck.insert(*it);
 			}
 		}
 
 	for (map<NativeBlockID, NativeCodeFlattened::Block>::iterator it = outBlocks.begin(); it != outBlocks.end();)
-		if (it->first != reachable)
+		if (reachable.find(it->first) == reachable.end())
 			{
 			NativeBlockID id = it->first;
 			++it;
 			outBlocks.erase(id);
 			}
-			else
+		else
 			++it;
 	}
 

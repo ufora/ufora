@@ -13,13 +13,11 @@
    See the License for the specific language governing permissions and
    limitations under the License.
 ****************************************************************************/
-#ifndef TwoWaySetMap_hpp_
-#define TwoWaySetMap_hpp_
+#pragma once
 
 #include <map>
 #include <set>
 #include <stdint.h>
-#include "../STLOps.hpp"
 #include "../lassert.hpp"
 
 template<class key_type, class value_type, class key_compare = std::less<key_type>, class value_compare = std::less<value_type> >
@@ -121,13 +119,16 @@ public:
 			{
 			if (!hasKey(inKey))
 				return;
-			if (inValue != mKeysToValues[inKey])
+
+			auto& values = mKeysToValues[inKey];
+
+			if (values.find(inValue) == values.end())
 				return;
 
-			mKeysToValues[inKey].erase(inValue);
+			values.erase(inValue);
 			mValuesToKeys[inValue].erase(inKey);
 
-			if (mKeysToValues[inKey].size() == 0)
+			if (values.size() == 0)
 				mKeysToValues.erase(inKey);
 
 			if (mValuesToKeys[inValue].size() == 0)
@@ -244,18 +245,18 @@ void minimumGraphCovering(TwoWaySetMap<T, T, compare, compare> tree, std::set<T,
 		{
 		T t = it->first;
 
-		if (t != required)
+		if (required.find(t) == required.end())
 			{
-			if (t != tree.getValues(t) && (pruneRootNodes || tree.getKeys(t).size()))
+			if (tree.getValues(t).find(t) == tree.getValues(t).end() && (pruneRootNodes || tree.getKeys(t).size()))
 				{
 				set<T, compare> down = tree.getValues(t);
 				set<T, compare> up = tree.getKeys(t);
 				tree.drop(up, t);
 				tree.drop(t, down);
-				for (typename set<T>::iterator it2 = up.begin(), it_end2 = up.end(); it2 != it_end2; ++it2)
-					tree.insert(*it2, down);
+				for (auto t2: up)
+					tree.insert(t2, down);
 				}
-				else
+			else
 				out.insert(t);
 			}
 		}
@@ -270,13 +271,11 @@ void minimumGraphCovering(TwoWaySetMap<T, T, compare, compare> tree, std::set<T,
 
 	out = required;
 
-	for (typename std::vector<T>::const_iterator it = removalOrder.begin(), it_end = removalOrder.end(); it != it_end; ++it)
+	for (auto t: removalOrder)
 		{
-		T t = *it;
-
-		if (t != required)
+		if (required.find(t) == required.end())
 			{
-			if (t != tree.getValues(t) && (pruneRootNodes || tree.getKeys(t).size()))
+			if (tree.getValues(t).find(t) == tree.getValues(t).end() && (pruneRootNodes || tree.getKeys(t).size()))
 				{
 				set<T, compare> down = tree.getValues(t);
 				set<T, compare> up = tree.getKeys(t);
@@ -285,7 +284,7 @@ void minimumGraphCovering(TwoWaySetMap<T, T, compare, compare> tree, std::set<T,
 				for (typename set<T>::iterator it2 = up.begin(), it_end2 = up.end(); it2 != it_end2; ++it2)
 					tree.insert(*it2, down);
 				}
-				else
+			else
 				out.insert(t);
 			}
 		}
@@ -302,18 +301,13 @@ void graphRestriction(TwoWaySetMap<T, T, compare, compare> &tree, const std::set
 	{
 	using namespace std;
 
-	for (typename set<T, compare>::const_iterator it = toRemove.begin(), it_end = toRemove.end(); it != it_end; ++it)
+	for (auto t: toRemove)
 		{
-		T t = *it;
-
 		set<T> down = tree.getValues(t);
 		set<T> up = tree.getKeys(t);
 		tree.drop(up, t);
 		tree.drop(t, down);
-		for (typename set<T>::iterator it2 = up.begin(), it_end2 = up.end(); it2 != it_end2; ++it2)
-			tree.insert(*it2, down);
+		for (auto t2: up)
+			tree.insert(t2, down);
 		}
 	}
-
-#endif //TwoWaySetMap_hpp_
-
