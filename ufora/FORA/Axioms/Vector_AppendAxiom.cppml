@@ -113,7 +113,7 @@ Fora::ReturnValue<VectorRecord, TypedFora::Abi::VectorLoadRequest>	appendToPoole
 	return slot0(vecDataTR);
 	}
 
-NativeExpression loadcheckOrExtractVectorRecord(NativeExpression vectorOrLoadcheckExpr)
+NativeExpression loadcheckOrExtractVectorRecord(NativeVariable callbacksVar, NativeExpression vectorOrLoadcheckExpr)
 	{
 	using namespace TypedNativeExpressionHelpers;
 
@@ -130,18 +130,20 @@ NativeExpression loadcheckOrExtractVectorRecord(NativeExpression vectorOrLoadche
 			if_(vectorOrLoad.getIndex() == TypedNativeExpression<uint64_t>(0),
 				vectorOrLoad.get0(),
 				TypedNativeExpression<VectorRecord>(
-					vectorOrLoad.get1().loadCheck().getExpression()
+					vectorOrLoad.get1().loadCheck(callbacksVar).getExpression()
 					)
 				)
 			).wrapInEmptyCFGLayer().getExpression();
 	}
 
 NativeExpression callAppendFunction(
+							NativeVariable callbacksVar,
 							NativeExpression vecExpr,
 							NativeExpression implValToAppendExpr
 							)
 	{
 	return loadcheckOrExtractVectorRecord(
+		callbacksVar,
 		makeTypedNativeLibraryFunction(&appendToPooledVector)(
 			TypedNativeExpression<VectorRecord>(vecExpr),
 			TypedNativeExpression<ImplValContainer>(implValToAppendExpr)
@@ -150,6 +152,7 @@ NativeExpression callAppendFunction(
 	}
 
 NativeExpression callAppendFunctionTyped(
+							NativeVariable callbacksVar,
 							NativeExpression vecExpr,
 							NativeExpression valueData,
 							JudgmentOnValue valueJOV
@@ -167,6 +170,7 @@ NativeExpression callAppendFunctionTyped(
 	uword_t valueJOVAsUword = *((uword_t*)&valueJOV);
 
 	return loadcheckOrExtractVectorRecord(
+		callbacksVar,
 		NativeExpression::Let(
 			var,
 			NativeExpression::Alloc(*valueData.type(), 1, false),
@@ -213,6 +217,8 @@ Axiom	generateHomogenousPushAppendAxiom(
 
 	using namespace TypedNativeExpressionHelpers;
 
+	auto callbacksVar = NativeVariable::Temp(NativeTypeFor<NativeRuntimeCallbacks>::get().ptr());
+
 	TypedNativeExpression<VectorRecord> appendExpr =
 		if_(
 			if_(vecExpr.isAppendable(),
@@ -229,12 +235,14 @@ Axiom	generateHomogenousPushAppendAxiom(
 			TypedNativeExpression<VectorRecord>(
 				argumentJOV.isValidVectorElementJOV() ?
 					callAppendFunctionTyped(
+						callbacksVar,
 						vecExpr.getExpression(),
 						builder.nativeVar(2).expr(),
 						argumentJOV
 						)
 				:
 					callAppendFunction(
+						callbacksVar,
 						vecExpr.getExpression(),
 						TypedFora::Abi::typecastForaValue(
 							builder.nativeVar(2).expr(),
@@ -248,6 +256,7 @@ Axiom	generateHomogenousPushAppendAxiom(
 			);
 
 	return builder.axiomForNativeExpression(
+		callbacksVar,
 		appendExpr.getExpression(),
 		TypedFora::RefcountStyle::Pooled(),
 		newVecJOV,
@@ -370,13 +379,17 @@ Nullable<Axiom> VectorAppendAxiom::axiom(
 						TypedFora::RefcountStyle::Pooled()
 						);
 
+		auto callbacksVar = NativeVariable::Temp(NativeTypeFor<NativeRuntimeCallbacks>::get().ptr());
+
 		NativeExpression expr =
 			callAppendFunction(
+				callbacksVar,
 				builder.nativeVar(0).expr(),
 				builder.nativeVar(2).expr()
 				);
 
 		return null() << builder.axiomForNativeExpression(
+			callbacksVar,
 			expr,
 			TypedFora::RefcountStyle::Pooled(),
 			jovAnyVector(),

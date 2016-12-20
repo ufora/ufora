@@ -120,7 +120,9 @@ NativeBlock Converter::convertBlock(
 	{
 	ImmutableTreeVector<NativeVariable> args;
 
-	ExpressionConversionContext newContext = context;
+ 	NativeVariable callbackVar = NativeVariable::Temp(NativeTypeFor<NativeRuntimeCallbacks>::get().ptr());
+
+	ExpressionConversionContext newContext = context.withCallbacksVar(callbackVar);
 
 	for (long k = 0; k< inBlock.args().size(); k++)
 		{
@@ -138,23 +140,27 @@ NativeBlock Converter::convertBlock(
  	lassert_dump(!expression.type(),
 		"Block expressions can't have a type. They are supposed to return or throw."
 		);
+	ImmutableTreeSet<NativeVariable> argsSet(args + callbackVar);
 
-	ImmutableTreeSet<NativeVariable> argsSet(args +  NativeRuntimeCallbacks::callbackVar());
+	ImmutableTreeVector<NativeVariable> freeVars(expression.freeVariables() - context.boundVars() - argsSet);
 
 	lassert_dump(
-		(expression.freeVariables() - context.boundVars() - argsSet).size() == 0,
+		freeVars.size() == 0,
 		"evaluating expression " << prettyPrintString(inBlock.expression())
 			<< " produced free variables:\n"
-			<< prettyPrintString(expression.freeVariables() - context.boundVars() - argsSet)
+			<< prettyPrintString(freeVars)
+			<< " with types "
+			<< prettyPrintString(mapITV(freeVars, [&](NativeVariable v) { return v.type(); }))
 			<< " in\n" << prettyPrintString(expression)
 		);
 
 	return NativeBlock(
-		NativeRuntimeCallbacks::callbackVar() + args,
+		callbackVar + args,
 		expression,
 		inBlock.relativeFrequency()
 		);
 	}
+
 NativeExpression
 	Converter::convertLocalityHintExpression(
 			const TypedFora::Expression& inExpression,
@@ -376,7 +382,7 @@ NativeExpression
 							NativeExpression::Return(0, NativeExpression::Nothing()),
 							.000001	//almost certainly no interrupt, so set to 1 in a million.
 							)
-						)(NativeRuntimeCallbacks::callbackVar().expr()),
+						)(context.callbacksVariable()->expr()),
 					NativeExpressionTag::Interrupt()
 					);
 			}
@@ -527,7 +533,8 @@ NativeExpression
 					mapVariablesInNativeExpressionToSpecificVars(
 						*nativeExpr,
 						varmap,
-						vars
+						vars,
+						*context.callbacksVariable()
 						)
 					);
 
@@ -702,7 +709,7 @@ NativeExpression
 				tr = NativeExpression::Call(
 					nativeCallTarget,
 					conts,
-					NativeRuntimeCallbacks::callbackVar().expr() + callArgList,
+					context.callbacksVariable()->expr() + callArgList,
 					convertMetadata(
 						stackMetadata,
 						context.withNewTeardown(teardowns),
@@ -932,7 +939,7 @@ NativeExpression Converter::computeTransferToExternalSubgraph(
 			NativeCallTarget::External(inTargetName, convertBlockID(blockID)),
 			continuations,
 			emptyTreeVec() +
-				NativeRuntimeCallbacks::callbackVar().expr() +
+				context.callbacksVariable()->expr() +
 				jumpExpressions,
 			convertMetadata(stackMetadata, subcontext)
 			)
@@ -1018,7 +1025,7 @@ NativeExpression
 							);
 
 			ImmutableTreeVector<NativeExpression> jumpExpressions;
-			jumpExpressions = jumpExpressions + NativeRuntimeCallbacks::callbackVar().expr();
+			jumpExpressions = jumpExpressions + context.callbacksVariable()->expr();
 
 			jumpExpressions = jumpExpressions + teardownsAndExpressions.second;
 
