@@ -370,6 +370,118 @@ int64_t PyObjectWalker::walkFileDescription(const FileDescription& fileDescripti
     }
 
 
+namespace {
+std::string _rootNameOfVarWithPosition(PyObject* varWithPosition)
+    {
+    //VarWithPosition(var=('x',), pos=PositionInFile(lineno=519, col_offset=19))
+    PyObjectPtr varMember = PyObjectPtr::unincremented(
+        PyObject_GetAttrString(varWithPosition, "var"));
+    if (varMember == nullptr) {
+        throw std::runtime_error(
+            "py error in PyObjectWalker::<anonymous>::_rootNameOfVarWithPosition "
+            "getting var member: " +
+            PyObjectUtils::format_exc()
+            );
+        }
+
+    if (not PyTuple_Check(varMember.get())) {
+        throw std::runtime_error(
+            "PyObjectWalker::<anonymous>::_rootNameOfVarWithPosition "
+            "expects var member to be a tuple"
+            );
+        }
+    if (PyTuple_GET_SIZE(varMember.get()) == 0) {
+        throw std::runtime_error(
+            "PyObjectWalker::<anonymous>::_rootNameOfVarWithPosition "
+            "expects its var member tuple to have length at least one"
+            );
+        }
+    
+    // borrowed reference
+    PyObject* rootName = PyTuple_GET_ITEM(varMember.get(), 0);
+    if (not PyString_Check(rootName)) {
+        throw std::runtime_error(
+            "PyObjectWalker::<anonymous>::_rootNameOfVarWithPosition expects "
+            "its var member tuple to contain strings"
+            );
+        }
+
+    return std::string(PyString_AS_STRING(rootName),
+                       PyString_GET_SIZE(rootName));
+    }
+
+
+std::pair<int64_t, int64_t> _lineAndColumn(PyObject* varWithPosition)
+    {
+    //VarWithPosition(var=('x',), pos=PositionInFile(lineno=519, col_offset=19))
+    PyObjectPtr posMember = PyObjectPtr::unincremented(
+        PyObject_GetAttrString(varWithPosition, "pos"));
+    if (posMember == nullptr) {
+        throw std::runtime_error(
+            "py error in PyObjectWalker::<anonymous>::_rootNameOfVarWithPosition "
+            "getting pos member: " + PyObjectUtils::format_exc()
+            );
+        }
+
+    PyObjectPtr lineno = PyObjectPtr::unincremented(
+        PyObject_GetAttrString(posMember.get(), "lineno")
+        );
+    PyObjectPtr col_offset = PyObjectPtr::unincremented(
+        PyObject_GetAttrString(posMember.get(), "col_offset")
+        );
+
+    if (lineno == nullptr) {
+        throw std::runtime_error(
+            "py error in PyObjectWalker::<anonymous>::_rootNameOfVarWithPosition "
+            "getting lineno member: " + PyObjectUtils::format_exc()
+            );        
+        }
+    if (col_offset == nullptr) {
+        throw std::runtime_error(
+            "py error in PyObjectWalker::<anonymous>::_rootNameOfVarWithPosition "
+            "getting col_offset member: " + PyObjectUtils::format_exc()
+            );        
+        }
+
+    if (not PyInt_Check(lineno.get())) {
+        throw std::runtime_error(
+            "PyObjectWalker::<anonymous>::_rootNameOfVarWithPosition expects "
+            "lineno to be an int"
+            );
+        }
+    if (not PyInt_Check(col_offset.get())) {
+        throw std::runtime_error(
+            "PyObjectWalker::<anonymous>::_rootNameOfVarWithPosition expects "
+            "col_offset to be an int"
+            );
+        }
+
+    int64_t linenoCpp = PyInt_AS_LONG(lineno.get());
+    int64_t col_offset_cpp = PyInt_AS_LONG(col_offset.get());
+
+    return std::make_pair(linenoCpp, col_offset_cpp);
+    }
+}
+
+int64_t PyObjectWalker::walkUnresolvedVarWithPosition(PyObject* varWithPosition)
+    {
+    //VarWithPosition(var=('x',), pos=PositionInFile(lineno=519, col_offset=19))
+
+    std::string rootNameCpp = _rootNameOfVarWithPosition(varWithPosition);
+    std::pair<int64_t, int64_t> lineAndCol = _lineAndColumn(varWithPosition);
+
+    int64_t objectId = mObjectRegistry.allocateObject();
+
+    mObjectRegistry.defineUnresolvedVarWithPosition(
+        objectId,
+        rootNameCpp,
+        lineAndCol.first,
+        lineAndCol.second);
+    
+    return objectId;
+    }
+
+
 PyObject* PyObjectWalker::_pureInstanceReplacement(const PyObject* pyObject)
     {
     PyObject* pureInstance = mPureImplementationMappings.mappableInstanceToPure(
@@ -879,11 +991,11 @@ PyObjectWalker::_registerPyforaWithBlock(
             );
         }
 
-    PyObjectPtr resolutions = PyObjectPtr::unincremented(
+    ResolutionResult resolutions =
         mFreeVariableResolver.resolveFreeVariableMemberAccessChains(
             chainsWithPositions.get(),
             boundVariables.get(),
-            pyConvertedObjectCache));
+            pyConvertedObjectCache);
 
     PyObjectPtr filename = PyObjectPtr::unincremented(
         PyObject_GetAttrString(pyObject, "sourceFileName"));
@@ -895,14 +1007,12 @@ PyObjectWalker::_registerPyforaWithBlock(
             );
         }
 
-    if (resolutions == nullptr) {
-        return _handleUnresolvedFreeVariableException(filename.get());
-        }
-
     variant<
         std::map<FreeVariableMemberAccessChain, int64_t>,
         std::shared_ptr<PyforaError>> processedResolutionsOrErr =
-            _processFreeVariableMemberAccessChainResolutions(resolutions.get());
+            _processFreeVariableMemberAccessChainResolutions(
+                resolutions
+                );
 
     int64_t sourceFileId = walkFileDescription(
         FileDescription::cachedFromArgs(
@@ -1245,19 +1355,15 @@ PyObjectWalker::_classOrFunctionInfo(PyObject* obj, bool isFunction)
             );
         }
 
-    PyObjectPtr resolutions = PyObjectPtr::unincremented(
-        _computeAndResolveFreeVariableMemberAccessChainsInAst(obj, pyAst.get()));
-    if (resolutions == nullptr) {
-        std::shared_ptr<PyforaError> err =
-            _handleUnresolvedFreeVariableException(filename);
-        tr.set<std::shared_ptr<PyforaError>>(err);
-        return tr;
-        }
+    ResolutionResult resolutions =
+        _computeAndResolveFreeVariableMemberAccessChainsInAst(obj, pyAst.get());
 
     variant<
         std::map<FreeVariableMemberAccessChain, int64_t>,
         std::shared_ptr<PyforaError>> processedResolutionsOrErr =
-            _processFreeVariableMemberAccessChainResolutions(resolutions.get());
+            _processFreeVariableMemberAccessChainResolutions(
+                resolutions
+                );
 
     if (processedResolutionsOrErr.is<std::map<FreeVariableMemberAccessChain, int64_t>>())
         {
@@ -1292,21 +1398,51 @@ PyObjectWalker::_classOrFunctionInfo(PyObject* obj, bool isFunction)
 variant<std::map<FreeVariableMemberAccessChain, int64_t>,
         std::shared_ptr<PyforaError>>
 PyObjectWalker::_processFreeVariableMemberAccessChainResolutions(
-        PyObject* pyResolutions
+        const ResolutionResult& resolutions
         )
     {
     variant<std::map<FreeVariableMemberAccessChain, int64_t>,
             std::shared_ptr<PyforaError>> tr;
 
-    if (not PyDict_Check(pyResolutions)) {
-        throw std::runtime_error("expected a dict argument");
+    std::map<FreeVariableMemberAccessChain, int64_t> cppResolutions;
+
+    PyObject* resolvedChainsDict = resolutions.resolvedChainsDict.get();
+    auto res = _processResolvedChainsDict(resolvedChainsDict, cppResolutions);
+
+    if (res) {
+        tr.set<std::shared_ptr<PyforaError>>(*res);
+        return tr;
+        }
+
+    PyObject* unresolvedChainsSet = resolutions.unresolvedChainsSet.get();
+    res = _processUnresolvedChainsSet(unresolvedChainsSet, cppResolutions);
+
+    if (res) {
+        tr.set<std::shared_ptr<PyforaError>>(*res);
+        return tr;
+        }
+
+    tr.set<std::map<FreeVariableMemberAccessChain, int64_t>>(cppResolutions);
+    return tr;
+    }
+
+
+PyObjectWalker::PyforaErrorOrNull
+PyObjectWalker::_processResolvedChainsDict(
+        PyObject* resolvedChainsDict,
+        std::map<FreeVariableMemberAccessChain, int64_t>& ioResolutions
+        )
+    {
+    if (not PyDict_Check(resolvedChainsDict)) {
+        throw std::runtime_error(
+            "PyObjectWalker::_processResolvedChainsDict expects a dict argument"
+            );
         }
 
     PyObject * key, * value;
     Py_ssize_t pos = 0;
-    std::map<FreeVariableMemberAccessChain, int64_t> resolutions;
 
-    while (PyDict_Next(pyResolutions, &pos, &key, &value)) {
+    while (PyDict_Next(resolvedChainsDict, &pos, &key, &value)) {
         /*
           Values should be length-two tuples: (resolution, location)
          */
@@ -1321,17 +1457,57 @@ PyObjectWalker::_processFreeVariableMemberAccessChainResolutions(
         auto resolutionIdOrErr = walkPyObject(resolution);
         
         if (resolutionIdOrErr.is<std::shared_ptr<PyforaError>>()) {
-            tr.set<std::shared_ptr<PyforaError>>(
-                resolutionIdOrErr.get<std::shared_ptr<PyforaError>>()
-                );
-            return tr;
+            return resolutionIdOrErr.get<std::shared_ptr<PyforaError>>();
             }
 
-        resolutions[toChain(key)] = resolutionIdOrErr.get<int64_t>();
+        ioResolutions[toChain(key)] = resolutionIdOrErr.get<int64_t>();
         }
-    
-    tr.set<std::map<FreeVariableMemberAccessChain, int64_t>>(resolutions);
-    return tr;
+
+    return {};
+    }
+
+
+PyObjectWalker::PyforaErrorOrNull PyObjectWalker::_processUnresolvedChainsSet(
+        PyObject* unresolvedChainsSet,
+        std::map<FreeVariableMemberAccessChain, int64_t>& ioResolutions
+        )
+    {
+    if (not PySet_Check(unresolvedChainsSet)) {
+        throw std::runtime_error(
+            "PyObjectWalker::_processResolvedChainsSet expects a set argument"
+            );
+        }
+
+    PyObjectPtr iterator = PyObjectPtr::unincremented(
+        PyObject_GetIter(unresolvedChainsSet));
+    if (iterator == nullptr) {
+        throw std::runtime_error(
+            "py err in PyObjectWalker::_processResolvedChainsSet: " +
+            PyObjectUtils::exc_string()
+            );
+        }
+
+    PyObjectPtr item;
+    while ((item = PyObjectPtr::unincremented(PyIter_Next(iterator.get())))) {
+        int64_t objectId = walkUnresolvedVarWithPosition(item.get());
+
+        PyObjectPtr pyChain = PyObjectPtr::unincremented(
+            PyObject_GetAttrString(
+                item.get(),
+                "var"
+                )
+            );
+        if (pyChain == nullptr) {
+            throw std::runtime_error(
+                "PyObjectWalker::_processResolvedChainsSet py error: " +
+                PyObjectUtils::format_exc()
+                );
+            }
+
+        ioResolutions[toChain(pyChain.get())] = objectId;
+        }
+
+    return {};
     }
 
 
@@ -1359,7 +1535,8 @@ PyObject* PyObjectWalker::_getPyConvertedObjectCache() const
     }
 
 
-PyObject* PyObjectWalker::_computeAndResolveFreeVariableMemberAccessChainsInAst(
+ResolutionResult
+PyObjectWalker::_computeAndResolveFreeVariableMemberAccessChainsInAst(
         const PyObject* pyObject,
         const PyObject* pyAst
         ) const
@@ -1367,23 +1544,28 @@ PyObject* PyObjectWalker::_computeAndResolveFreeVariableMemberAccessChainsInAst(
     PyObjectPtr chainsWithPositions = PyObjectPtr::unincremented(
         _freeMemberAccessChainsWithPositions(pyAst));
     if (chainsWithPositions == nullptr) {
-        return nullptr;
+        throw std::runtime_error(
+            "py error getting free member access chains in PyObjectWalker::"
+            "_computeAndResolveFreeVariableMemberAccessChainsInAst: " +
+            PyObjectUtils::format_exc()
+            );
         }
 
     PyObjectPtr pyConvertedObjectCache = PyObjectPtr::unincremented(
         _getPyConvertedObjectCache());
     if (pyConvertedObjectCache == nullptr) {
-        return nullptr;
+        throw std::runtime_error(
+            "py error getting converted object cache in PyObjectWalker::"
+            "_computeAndResolveFreeVariableMemberAccessChainsInAst: " +
+            PyObjectUtils::format_exc()
+            );
         }
 
-    PyObject* resolutions = 
-        mFreeVariableResolver.resolveFreeVariableMemberAccessChainsInAst(
-            pyObject,
-            pyAst,
-            chainsWithPositions.get(),
-            pyConvertedObjectCache.get());
-
-    return resolutions;
+    return mFreeVariableResolver.resolveFreeVariableMemberAccessChainsInAst(
+        pyObject,
+        pyAst,
+        chainsWithPositions.get(),
+        pyConvertedObjectCache.get());
     }
 
 

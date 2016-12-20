@@ -38,6 +38,7 @@
 
 class ClassOrFunctionInfo;
 class FileDescription;
+struct ResolutionResult;
 
 
 class PyObjectWalker {
@@ -58,6 +59,7 @@ public:
 
     WalkResult walkPyObject(PyObject* pyObject);
     int64_t walkFileDescription(const FileDescription& fileDescription);
+    int64_t walkUnresolvedVarWithPosition(PyObject* varWithPosition);
 
     static FreeVariableMemberAccessChain toChain(const PyObject*);
 
@@ -130,7 +132,7 @@ private:
       returns a new reference to a dict: FVMAC -> (resolution, location)
      FVMAC here is a tuple of strings
      */
-    PyObject* _computeAndResolveFreeVariableMemberAccessChainsInAst(
+    ResolutionResult _computeAndResolveFreeVariableMemberAccessChainsInAst(
         const PyObject* pyObject,
         const PyObject* pyAst
         ) const;
@@ -161,7 +163,17 @@ private:
 
     variant<std::map<FreeVariableMemberAccessChain, int64_t>,
             std::shared_ptr<PyforaError>>
-    _processFreeVariableMemberAccessChainResolutions(PyObject* resolutions);
+    _processFreeVariableMemberAccessChainResolutions(const ResolutionResult& resolutions);
+
+    PyforaErrorOrNull _processUnresolvedChainsSet(
+        PyObject* unresolvedChainsSet,
+        std::map<FreeVariableMemberAccessChain, int64_t>& ioResolutions
+        );
+
+    PyforaErrorOrNull _processResolvedChainsDict(
+        PyObject* resolvedChainsDict,
+        std::map<FreeVariableMemberAccessChain, int64_t>& ioResolutions
+        );
 
     std::string _fileText(const std::string& filename) const;
     std::string _fileText(const PyObject* filename) const;

@@ -41,8 +41,16 @@ Symbol_CreateInstance = ForaNative.makeSymbol("CreateInstance")
 Symbol_unconvertible = ForaNative.makeSymbol("PyforaUnconvertibleValue")
 
 def isUnconvertibleValueTuple(implVal):
-    if isinstance(implVal, ForaNative.ImplValContainer) and implVal.isTuple() and len(implVal) == 1:
+    if isinstance(implVal, ForaNative.ImplValContainer) and \
+       implVal.isTuple() and len(implVal) == 1:
         if implVal.getTupleNames()[0] == "PyforaUnconvertibleValue":
+            return True
+    return False
+
+def isNameErrorTuple(implVal):
+    if isinstance(implVal, ForaNative.ImplValContainer) and \
+       implVal.isTuple() and len(implVal) == 1:
+        if implVal.getTupleNames()[0] == "PyforaNameError":
             return True
     return False
 
@@ -474,6 +482,11 @@ class NativeConverterAdaptor(object):
             renamedVariableMapping
             )
 
+        foraExpression = self._handleNameErrorsInExpression(
+            foraExpression,
+            renamedVariableMapping
+            )
+
         return self._specializeFreeVariablesAndEvaluate(
             foraExpression,
             renamedVariableMapping
@@ -489,9 +502,26 @@ class NativeConverterAdaptor(object):
                 if isUnconvertibleValueTuple(v)
             ]
 
-        foraExpression = self.nativeConverter.replaceUnconvertiblesWithThrowExprs(
+        foraExpression = self.nativeConverter.replaceSymbolsWithCheckValidityExpressions(
             foraExpression,
             unconvertibles
+            )
+
+        return foraExpression
+
+    def _handleNameErrorsInExpression(
+            self,
+            foraExpression,
+            renamedVariableMapping
+            ):
+        nameErrorSymbols = [
+            k for k, v in renamedVariableMapping.iteritems()
+                if isNameErrorTuple(v)
+            ]
+
+        foraExpression = self.nativeConverter.replaceSymbolsWithCheckValidityExpressions(
+            foraExpression,
+            nameErrorSymbols
             )
 
         return foraExpression

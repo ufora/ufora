@@ -22,6 +22,17 @@
 #include <map>
 
 
+struct ResolutionResult {
+    ResolutionResult(
+        const PyObjectPtr& inResolvedChainsDict,
+        const PyObjectPtr& inUnresolvedChainsSet
+        );
+
+    PyObjectPtr resolvedChainsDict;
+    PyObjectPtr unresolvedChainsSet;
+};
+
+
 class FreeVariableResolver {
 public:
     FreeVariableResolver(
@@ -29,15 +40,13 @@ public:
         const PyObjectPtr& terminal_value_filter
         );
 
-    // returns a new reference to a dict: FVMAC -> (resolution, location)
-    // FVMAC here is a tuple of strings
-    PyObject* resolveFreeVariableMemberAccessChainsInAst(
+    ResolutionResult resolveFreeVariableMemberAccessChainsInAst(
         const PyObject* pyObject,
         const PyObject* pyAst,
         const PyObject* freeMemberAccessChainsWithPositions,
         const PyObject* convertedObjectCache) const;
 
-    PyObject* resolveFreeVariableMemberAccessChains(
+    ResolutionResult resolveFreeVariableMemberAccessChains(
         const PyObject* freeMemberAccessChainsWithPositions,
         const PyObject* boundVariables,
         const PyObject* convertedObjectCache) const;

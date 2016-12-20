@@ -163,3 +163,5 @@ HomogenousListAsNumpyArray = type_description("HomogenousListAsNumpyArray", "arr
 StackTraceAsJson = type_description("StackTraceAsJson", "trace")
 
 PyAbortException = type_description("PyAbortException", "typename, argsId")
+
+UnresolvedVarWithPosition = type_description("UnresolvedVarWithPosition", "varname, lineno, col_offset")

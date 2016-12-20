@@ -32,6 +32,7 @@
 #include "TypeDescriptions/TupleTypeDescription.hpp"
 #include "TypeDescriptions/TypeDescription.hpp"
 #include "TypeDescriptions/UnconvertibleTypeDescription.hpp"
+#include "TypeDescriptions/UnresolvedSymbolTypeDescription.hpp"
 
 #include <sstream>
 #include <stdexcept>
@@ -198,6 +199,24 @@ void ObjectRegistry::defineUnconvertible(
         std::shared_ptr<TypeDescription>(
             new UnconvertibleTypeDescription(
                 stringTupleOrNone
+                )
+            );
+    }
+
+
+void ObjectRegistry::defineUnresolvedSymbol(
+        int64_t objectId,
+        const std::string& varname,
+        int64_t lineno,
+        int64_t col_offset
+        )
+    {
+    mObjectIdToObjectDefinition[objectId] =
+        std::shared_ptr<TypeDescription>(
+            new UnresolvedSymbolTypeDescription(
+                varname,
+                lineno,
+                col_offset
                 )
             );
     }

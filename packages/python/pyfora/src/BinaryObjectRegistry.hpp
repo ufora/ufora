@@ -17,14 +17,14 @@
 
 #include <Python.h>
 
+#include "BinaryObjectRegistryHelpers.hpp"
+#include "Json.hpp"
+#include "StringBuilder.hpp"
+
 #include <map>
 #include <set>
 #include <stdint.h>
 #include <string>
-
-#include "BinaryObjectRegistryHelpers.hpp"
-#include "Json.hpp"
-#include "StringBuilder.hpp"
 
 
 class FreeVariableMemberAccessChain;
@@ -55,6 +55,7 @@ public:
     constexpr static uint8_t CODE_WITH_BLOCK=21;
     constexpr static uint8_t CODE_PY_ABORT_EXCEPTION=22;
     constexpr static uint8_t CODE_STACKTRACE_AS_JSON=23;
+    constexpr static uint8_t CODE_UNRESOLVED_SYMBOL=24;
 
 public:
     BinaryObjectRegistry();
@@ -173,6 +174,11 @@ public:
                           const PyObject* stacktraceAsJson);
     void definePackedHomogenousData(int64_t objectId,
                                     PyObject* val);
+
+    void defineUnresolvedVarWithPosition(int64_t objectId,
+                                         const std::string& varname,
+                                         int64_t lineno,
+                                         int64_t col_offset);
 
     bool isUnconvertible(int64_t classId) {
         return mUnconvertibleIndices.find(classId) != mUnconvertibleIndices.end();

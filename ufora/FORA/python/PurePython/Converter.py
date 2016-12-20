@@ -38,10 +38,18 @@ class UnconvertibleToken:
     pass
 
 def isUnconvertibleValueTuple(implVal):
-    if isinstance(implVal, ForaNative.ImplValContainer) and implVal.isTuple() and len(implVal) == 1:
+    if isinstance(implVal, ForaNative.ImplValContainer) \
+       and implVal.isTuple() and len(implVal) == 1:
         if implVal.getTupleNames()[0] == "PyforaUnconvertibleValue":
             return True
     return False
+
+def isPyforaNameErrorTuple(implVal):
+    if isinstance(implVal, ForaNative.ImplValContainer) \
+       and implVal.isTuple() and len(implVal) == 1:
+        if implVal.getTupleNames()[0] == "PyforaNameError":
+            return True
+    return False    
 
 def convertNativePythonToForaConversionError(err, path):
     """Convert a ForaNative.PythonToForaConversionError to a python version of the exception"""
@@ -225,6 +233,8 @@ class Converter(object):
                 )
         elif isinstance(objectDefinition, TypeDescription.Unconvertible):
             return self.convertUnconvertibleValue(objectId, objectDefinition.module_path)
+        elif isinstance(objectDefinition, TypeDescription.UnresolvedVarWithPosition):
+            return self.convertUnresolvedVarWithPosition(objectId, objectDefinition)
         else:
             raise pyfora.PythonToForaConversionError(
                 "don't know how to convert %s of type %s" % (
@@ -278,7 +288,17 @@ class Converter(object):
 
     def convertUnconvertibleValue(self, objectId, module_path):
         # uh, yeah ... this guy probably needs a better name. Sorry.
-        tr = ForaNative.CreateNamedTuple((tuple(module_path) if module_path is not None else None,), ("PyforaUnconvertibleValue",))
+        tr = ForaNative.CreateNamedTuple(
+            (tuple(module_path) if module_path is not None else None,),
+            ("PyforaUnconvertibleValue",))
+        self.convertedValues[objectId] = tr
+        return tr
+
+    def convertUnresolvedVarWithPosition(self, objectId, arg):
+        # arg should be a TypeDescription.UnresolvedVarWithPosition
+        tr = ForaNative.CreateNamedTuple(
+            ((arg.varname, arg.lineno, arg.col_offset),),
+            ("PyforaNameError",))
         self.convertedValues[objectId] = tr
         return tr
 
@@ -504,6 +524,11 @@ class Converter(object):
                     objectId,
                     objectIdToObjectDefinition
                     )
+        elif isinstance(objectDefinition, TypeDescription.UnresolvedVarWithPosition):
+            self.convertedValues[objectId] = self.convertUnresolvedVarWithPosition(
+                objectId,
+                objectDefinition
+                )
         else:
             assert False, "haven't gotten to this yet %s" % type(objectDefinition)
 
@@ -641,6 +666,20 @@ class Converter(object):
             if isUnconvertibleValueTuple(implval):
                 path = implval[0].pyval
                 stream.defineUnconvertible(objId, path)
+                return objId
+
+            if isPyforaNameErrorTuple(implval):
+                payload = implval[0]
+
+                varname = payload[0].pyval
+                lineno = payload[1].pyval
+                col_offset = payload[2].pyval
+                
+                stream.defineUnresolvedVarWithPosition(
+                    objId,
+                    varname,
+                    lineno,
+                    col_offset)
                 return objId
 
             if implval.isString():

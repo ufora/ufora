@@ -211,6 +211,17 @@ void BinaryObjectRegistryDeserializer::deserializeFromStream(
                     Py_None);
                 }
             }
+        else if (code == BinaryObjectRegistry::CODE_UNRESOLVED_SYMBOL) {
+            std::string varname = stream->readString();
+            int64_t lineno = stream->readInt64();
+            int64_t col_offset = stream->readInt64();
+
+            objectRegistry.defineUnresolvedSymbol(
+                objectId,
+                varname,
+                lineno,
+                col_offset);
+            }
         else if (code == BinaryObjectRegistry::CODE_CLASS_INSTANCE) {
             int64_t classId = stream->readInt64();
             std::map<std::string, int64_t> classMembers;

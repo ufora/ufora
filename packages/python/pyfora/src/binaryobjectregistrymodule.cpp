@@ -705,6 +705,35 @@ PyBinaryObjectRegistry_defineFile(PyBinaryObjectRegistry* self,
 
 
 PyObject*
+PyBinaryObjectRegistry_defineUnresolvedVarWithPosition(
+        PyBinaryObjectRegistry* self,
+        PyObject* args
+        )
+    {
+    int objectId, lineno, col_offset, varname_len;
+    const char* varname;
+    
+    if (!PyArg_ParseTuple(args,
+                          "is#ii",
+                          &objectId,
+                          &varname,
+                          &varname_len,
+                          &lineno,
+                          &col_offset)) {
+        return nullptr;
+        }
+
+    self->nativeBinaryObjectRegistry->defineUnresolvedVarWithPosition(
+        objectId,
+        std::string(varname, varname_len),
+        lineno,
+        col_offset);
+
+    Py_RETURN_NONE;
+    }
+
+
+PyObject*
 PyBinaryObjectRegistry_defineStacktrace(PyBinaryObjectRegistry* self,
                                         PyObject* args)
     {
@@ -804,6 +833,9 @@ static PyMethodDef PyBinaryObjectRegistry_methods[] = {
     {"defineStacktrace",
      (PyCFunction)PyBinaryObjectRegistry_defineStacktrace,
      METH_VARARGS},
+    {"defineUnresolvedVarWithPosition",
+     (PyCFunction)PyBinaryObjectRegistry_defineUnresolvedVarWithPosition,
+     METH_VARARGS},
     {nullptr} /* Sentinel */
     };
 
@@ -886,7 +918,8 @@ int _initBinaryObjectRegistryCodes(PyObject* binaryObjectRegistryModule)
         PyModule_AddIntConstant(binaryObjectRegistryModule, "CODE_INSTANCE_METHOD", BinaryObjectRegistry::CODE_INSTANCE_METHOD) or
         PyModule_AddIntConstant(binaryObjectRegistryModule, "CODE_WITH_BLOCK", BinaryObjectRegistry::CODE_WITH_BLOCK) or
         PyModule_AddIntConstant(binaryObjectRegistryModule, "CODE_PY_ABORT_EXCEPTION", BinaryObjectRegistry::CODE_PY_ABORT_EXCEPTION) or
-        PyModule_AddIntConstant(binaryObjectRegistryModule, "CODE_STACKTRACE_AS_JSON", BinaryObjectRegistry::CODE_STACKTRACE_AS_JSON);
+        PyModule_AddIntConstant(binaryObjectRegistryModule, "CODE_STACKTRACE_AS_JSON", BinaryObjectRegistry::CODE_STACKTRACE_AS_JSON) or
+        PyModule_AddIntConstant(binaryObjectRegistryModule, "CODE_UNRESOLVED_SYMBOL", BinaryObjectRegistry::CODE_UNRESOLVED_SYMBOL);
     }
 }
 

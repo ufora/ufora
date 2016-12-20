@@ -204,6 +204,11 @@ def deserializeFromStream(stream, objectVisitor, convertJsonToObject):
         elif code == BinaryObjectRegistry.CODE_STACKTRACE_AS_JSON:
             stackAsJson = stream.readString()
             objectVisitor.defineStacktrace(objectId, json.loads(stackAsJson))
+        elif code == BinaryObjectRegistry.CODE_UNRESOLVED_SYMBOL:
+            varname = stream.readString()
+            lineno = stream.readInt64()
+            col_offset = stream.readInt64()
+            objectVisitor.defineUnresolvedVarWithPosition(objectId, varname, lineno, col_offset)
         else:
-            assert False, "unknown code: " + str(code)
+            assert False, "BinaryStreamDeserializer.deserializeFromStream: unknown code: " + str(code)
 

@@ -650,6 +650,10 @@ void PythonBinaryStreamToImplval::readFunctionOrClass(IBinaryStream& stream, uin
             createFuncExpr,
             chainResolutions);
 
+        createFuncExpr = replaceNameErrorsWithThrows(
+            createFuncExpr,
+            chainResolutions);
+
         mValues[objectId] = bindValuesAndEvaluate(
             createFuncExpr,
             chainResolutions);
@@ -776,6 +780,9 @@ void PythonBinaryStreamToImplval::read(IBinaryStream& stream)
                     break;
                 case PythonBinaryStreamCommon::CODE_PY_ABORT_EXCEPTION:
                     readPyAbortException(stream, objectId);
+                    break;
+                case PythonBinaryStreamCommon::CODE_UNRESOLVED_SYMBOL:
+                    readUnresolvedVarWithPosition(stream, objectId);
                     break;
                 default:
                     lassert_dump(false, "Invalid code " << (int)code << " encountered");
@@ -1092,7 +1099,27 @@ Expression PythonBinaryStreamToImplval::replaceUnconvertiblesWithThrows(
             varNamesVec = varNamesVec + Symbol(kv.first);
 
     if (varNamesVec.size())
-        return mAstConverter->replaceUnconvertiblesWithThrowExprs(
+        return mAstConverter->replaceSymbolsWithCheckValidityExpressions(
+                expr, 
+                varNamesVec
+                );
+    return expr;
+    }
+
+
+Expression PythonBinaryStreamToImplval::replaceNameErrorsWithThrows(
+        Expression expr,
+        const map<string, ImplValContainer>& vars
+        ) const
+    {
+    ImmutableTreeVector<Symbol> varNamesVec;
+
+    for (const auto& kv: vars)
+        if (PythonBinaryStreamCommon::isNameErrorTuple(kv.second))
+            varNamesVec = varNamesVec + Symbol(kv.first);
+
+    if (varNamesVec.size())
+        return mAstConverter->replaceSymbolsWithCheckValidityExpressions(
                 expr, 
                 varNamesVec
                 );
@@ -1131,6 +1158,37 @@ PythonAstStatementOrExpr PythonBinaryStreamToImplval::functionClassOrLambdaDefAt
         return PythonAstStatementOrExpr::Expr(matches2[0]);
 
     return PythonAstStatementOrExpr::None();
+    }
+
+
+void PythonBinaryStreamToImplval::readUnresolvedVarWithPosition(
+        IBinaryStream& stream,
+        int64_t objectId)
+    {
+    std::string varname;
+    stream >> varname;
+    
+    int64_t lineno, col_offset;
+    stream >> lineno;
+    stream >> col_offset;
+    
+    ImplValContainer payload;
+        {
+        ImmutableTreeVector<ImplValContainer> vals;
+
+        vals = vals + ImplValContainerUtilities::createString(
+            String(varname, mTargetPool)
+            );
+        vals = vals + ImplValContainerUtilities::createSignedInteger(lineno);
+        vals = vals + ImplValContainerUtilities::createSignedInteger(col_offset);
+        
+        payload = ImplValContainerUtilities::createTuple(vals);
+        }
+    
+    mValues[objectId] = ImplValContainerUtilities::createTuple(
+        emptyTreeVec() + payload,
+        emptyTreeVec() + Nullable<Symbol>(Symbol("PyforaNameError"))
+        );
     }
 
 

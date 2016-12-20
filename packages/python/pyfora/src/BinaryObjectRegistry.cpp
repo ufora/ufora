@@ -285,3 +285,17 @@ std::string BinaryObjectRegistry::_computedValueDataString(
     }
 
 
+void BinaryObjectRegistry::defineUnresolvedVarWithPosition(
+        int64_t objectId,
+        const std::string& varname,
+        int64_t lineno,
+        int64_t col_offset
+        )
+    {
+    mStringBuilder.addInt64(objectId);
+    mStringBuilder.addByte(CODE_UNRESOLVED_SYMBOL);
+
+    mStringBuilder.addString(varname);
+    mStringBuilder.addInt64(lineno);
+    mStringBuilder.addInt64(col_offset);
+    }

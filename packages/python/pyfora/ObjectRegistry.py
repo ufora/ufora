@@ -91,13 +91,18 @@ class ObjectRegistry(object):
                 )
 
     def isUnconvertible(self, objectId):
-        return objectId in self.objectIdToObjectDefinition and isinstance(self.objectIdToObjectDefinition[objectId], TypeDescription.Unconvertible)
+        return objectId in self.objectIdToObjectDefinition and \
+            isinstance(self.objectIdToObjectDefinition[objectId], TypeDescription.Unconvertible)
 
     def defineUnconvertible(self, objectId, modulePath):
         assert objectId not in self.objectIdToObjectDefinition
 
         self.objectIdToObjectDefinition[objectId] = \
             TypeDescription.Unconvertible(modulePath)
+
+    def defineUnresolvedVarWithPosition(self, objectId, varname, lineno, col_offset):
+        self.objectIdToObjectDefinition[objectId] = \
+            TypeDescription.UnresolvedVarWithPosition(varname, lineno, col_offset)
 
     def _processFreeVariableMemberAccessChainResolution(
             self,
@@ -162,7 +167,8 @@ class ObjectRegistry(object):
                            (TypeDescription.File, TypeDescription.RemotePythonObject,
                             TypeDescription.NamedSingleton, list,
                             TypeDescription.Unconvertible,
-                            TypeDescription.PackedHomogenousData
+                            TypeDescription.PackedHomogenousData,
+                            TypeDescription.UnresolvedVarWithPosition
                             )):
             return []
         elif isinstance(objectDefinition, (TypeDescription.BuiltinExceptionInstance)):

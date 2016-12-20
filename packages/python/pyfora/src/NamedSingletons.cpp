@@ -56,6 +56,13 @@ PyObject* NamedSingletons::singletonNameToObject(const std::string& s) const
         mSingletonNameToObjectDict.get(),
         s.c_str()
         );
+    
+    if (tr == nullptr) {
+        throw std::runtime_error(
+            "py error in NamedSingletons::singletonNameToObject: "
+            "KeyError: " + s
+            );
+        }
 
     // borrowed reference, so we incref it
     Py_INCREF(tr);

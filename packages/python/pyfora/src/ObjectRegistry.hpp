@@ -95,8 +95,12 @@ public:
         int64_t argsId);
     void defineStacktrace(
         int64_t objectId,
-        PyObject* stackTraceAsJson
-        );
+        PyObject* stackTraceAsJson);
+    void defineUnresolvedSymbol(
+        int64_t objectId,
+        const std::string& varname,
+        int64_t lineno,
+        int64_t col_offset);
 
     std::shared_ptr<TypeDescription> getDefinition(int64_t objectId) const;
 

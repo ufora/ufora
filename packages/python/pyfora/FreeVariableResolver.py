@@ -14,12 +14,42 @@
 import pyfora.Exceptions as Exceptions
 import pyfora.PyforaInspect as PyforaInspect
 from pyfora.Unconvertible import Unconvertible
-from pyfora.UnresolvedFreeVariableExceptions import UnresolvedFreeVariableException
 
 import __builtin__
 import ast
+from collections import namedtuple
 import logging
 import traceback
+
+
+class ResolutionResult(object):
+    Resolution = namedtuple("Resolution", "subchain resolution position")
+    Unbound = namedtuple("Unbound", "name")
+
+    is_resolution_flag, is_unbound_flag = 0, 1
+
+    def __init__(self, flag, value):
+        self.flag = flag
+        self.value = value
+
+    @staticmethod
+    def resolution(subchain, resolution, position):
+        value = ResolutionResult.Resolution(subchain=subchain,
+                                            resolution=resolution,
+                                            position=position)
+        return ResolutionResult(flag=ResolutionResult.is_resolution_flag, value=value)
+
+    @staticmethod
+    def unbound(name):
+        value = ResolutionResult.Unbound(name=name)
+        return ResolutionResult(flag=ResolutionResult.is_unbound_flag, value=value)
+
+    def isResultion(self):
+        return self.flag == ResolutionResult.is_resolution_flag
+
+    def isUnbound(self):
+        return self.flag == ResolutionResult.is_unbound_flag
+
 
 class FreeVariableResolver(object):
     def __init__(self,
@@ -36,42 +66,57 @@ class FreeVariableResolver(object):
                                                    freeMemberAccessChainsWithPositions,
                                                    convertedObjectCache):
         resolutions = {}
+        unresolvable_symbols = set()
 
         for chainWithPosition in freeMemberAccessChainsWithPositions:
             if chainWithPosition and \
                chainWithPosition.var[0] in self.exclude_list:
                 continue
 
-            subchain, resolution, position = self._resolveChainInPyObject(
+            resolutionResult = self._resolveChainInPyObject(
                 chainWithPosition, pyObject, pyAst, convertedObjectCache
                 )
-            resolutions[subchain] = (resolution, position)
 
-        return resolutions
+            if resolutionResult.isResultion():
+                subchain, resolution, position = resolutionResult.value
+                resolutions[subchain] = (resolution, position)
+            else:
+                unresolvable_symbols.add(resolutionResult.value.name)
+
+        return resolutions, unresolvable_symbols
 
     def resolveFreeVariableMemberAccessChains(self,
                                               freeVariableMemberAccessChainsWithPositions,
                                               boundVariables,
                                               convertedObjectCache):
-        """ Return a dictionary mapping subchains to resolved ids."""
+        """ Return a pair: a dictionary mapping subchains to resolved ids,
+                           and a set giving the names of the unresolvable symbols.
+        """
         resolutions = dict()
+        unresolvable_symbols = set()
 
         for chainWithPosition in freeVariableMemberAccessChainsWithPositions:
-            subchain, resolution, position = self.resolveChainByDict(
-                chainWithPosition, boundVariables)
+            resolutionResult = self.resolveChainByDict(chainWithPosition, boundVariables)
 
-            if id(resolution) in convertedObjectCache:
-                resolution = convertedObjectCache[id(resolution)][1]
+            if resolutionResult.isResultion():
+                subchain, resolution, position = resolutionResult.value
 
-            resolutions[subchain] = (resolution, position)
+                if id(resolution) in convertedObjectCache:
+                    resolution = convertedObjectCache[id(resolution)][1]
 
-        return resolutions
+                resolutions[subchain] = (resolution, position)
+            else:
+                unresolvable_symbols.add(resolutionResult.value.name)
+
+        return resolutions, unresolvable_symbols
 
     def resolveChainByDict(self, chainWithPosition, boundVariables):
         """
         `_resolveChainByDict`: look up a free variable member access chain, `chain`,
         in a dictionary of resolutions, `boundVariables`, or in `__builtin__` and
         return a tuple (subchain, resolution, location).
+
+        returns a ResolutionResult
         """
         freeVariable = chainWithPosition.var[0]
 
@@ -82,7 +127,7 @@ class FreeVariableResolver(object):
             rootValue = getattr(__builtin__, freeVariable)
 
         else:
-            raise UnresolvedFreeVariableException(chainWithPosition, None)
+            return ResolutionResult.unbound(chainWithPosition)
 
         return self.computeSubchainAndTerminalValueAlongModules(
             rootValue, chainWithPosition)
@@ -94,37 +139,35 @@ class FreeVariableResolver(object):
                                 pyAst,
                                 convertedObjectCache):
         """
-        This name could be improved.
-
-        Returns a `subchain, terminalPyValue, location` tuple: this represents
+        Returns a ResolutionResult.Resolution 
+        `subchain, terminalPyValue, location` tuple: this represents
         the deepest value we can get to in the member chain `chain` on `pyObject`
         taking members only along modules (or "empty" modules)
 
         """
-        subchainAndResolutionOrNone = self._subchainAndResolutionOrNone(pyObject,
-                                                                        pyAst,
-                                                                        chainWithPosition)
-        if subchainAndResolutionOrNone is None:
-            raise Exceptions.PythonToForaConversionError(
-                "don't know how to resolve %s in %s (line:%s)"
-                % (chainWithPosition.var, pyObject, chainWithPosition.pos.lineno)
-                )
+        resolutionResult = self._lookupChainInFunctionOrClass(pyObject,
+                                                              pyAst,
+                                                              chainWithPosition)
 
-        subchain, terminalValue, location = subchainAndResolutionOrNone
+        if resolutionResult.isResultion():
+            subchain, terminalValue, position = resolutionResult.value
 
-        if id(terminalValue) in convertedObjectCache:
-            terminalValue = convertedObjectCache[id(terminalValue)]
+            if id(terminalValue) in convertedObjectCache:
+                terminalValue = convertedObjectCache[id(terminalValue)]
+                resolutionResult = ResolutionResult.resolution(subchain=subchain,
+                                                               resolution=terminalValue,
+                                                               position=position)
 
-        return subchain, terminalValue, location
+        return resolutionResult
 
-    def _subchainAndResolutionOrNone(self, pyObject, pyAst, chainWithPosition):
+    def _lookupChainInFunctionOrClass(self, pyObject, pyAst, chainWithPosition):
         if PyforaInspect.isfunction(pyObject):
             return self._lookupChainInFunction(pyObject, chainWithPosition)
 
         if PyforaInspect.isclass(pyObject):
             return self._lookupChainInClass(pyObject, pyAst, chainWithPosition)
 
-        return None
+        assert False, "should only have functions or classes here"
 
     @staticmethod
     def _classMemberFunctions(pyObject):
@@ -135,8 +178,7 @@ class FreeVariableResolver(object):
 
     def _lookupChainInClass(self, pyClass, pyAst, chainWithPosition):
         """
-        return a pair `(subchain, subchainResolution)`
-        where subchain resolves to subchainResolution in pyClass
+        returns a ResolutionResult
         """
         memberFunctions = self._classMemberFunctions(pyClass)
 
@@ -144,18 +186,12 @@ class FreeVariableResolver(object):
             # lookup should be indpendent of which function we
             # actually choose. However, the unbound chain may not
             # appear in every member function
-            try:
-                return self._lookupChainInFunction(func, chainWithPosition)
-            except UnresolvedFreeVariableException:
-                pass
+            candidate = self._lookupChainInFunction(func, chainWithPosition)
 
-        baseClassResolutionOrNone = self._resolveChainByBaseClasses(
-            pyClass, pyAst, chainWithPosition
-            )
-        if baseClassResolutionOrNone is not None:
-            return baseClassResolutionOrNone
+            if candidate.isResultion():
+                return candidate
 
-        raise UnresolvedFreeVariableException(chainWithPosition, None)
+        return self._resolveChainByBaseClasses(pyClass, pyAst, chainWithPosition)
 
     def _resolveChainByBaseClasses(self, pyClass, pyAst, chainWithPosition):
         chain = chainWithPosition.var
@@ -165,11 +201,14 @@ class FreeVariableResolver(object):
 
         if chain in baseClassChains:
             resolution = pyClass.__bases__[baseClassChains.index(chain)]
-            return chain, resolution, position
+            return ResolutionResult.resolution(
+                subchain=chain,
+                resolution=resolution,
+                position=position)
 
         # note: we could do better here. we could search the class
         # variables of the base class as well
-        return None
+        return ResolutionResult.unbound(chainWithPosition)
 
     def _getBaseClassChain(self, baseAst):
         if isinstance(baseAst, ast.Name):
@@ -179,8 +218,6 @@ class FreeVariableResolver(object):
 
     def _lookupChainInFunction(self, pyFunction, chainWithPosition):
         """
-        return a tuple `(subchain, subchainResolution, location)`
-        where subchain resolves to subchainResolution in pyFunction
         """
         freeVariable = chainWithPosition.var[0]
 
@@ -191,10 +228,11 @@ class FreeVariableResolver(object):
             except Exception as e:
                 logging.error("Encountered Exception: %s: %s", type(e).__name__, e)
                 logging.error(
-                    "Failed to get value for free variable %s\n%s",
-                    freeVariable, traceback.format_exc())
-                raise UnresolvedFreeVariableException(
-                    chainWithPosition, pyFunction.func_name)
+                    "Failed to get value for free variable %s in function %s\n%s",
+                    freeVariable,
+                    pyFunction.func_name,
+                    traceback.format_exc())
+                return ResolutionResult.unbound(chainWithPosition)
 
         elif freeVariable in pyFunction.func_globals:
             rootValue = pyFunction.func_globals[freeVariable]
@@ -203,13 +241,15 @@ class FreeVariableResolver(object):
             rootValue = getattr(__builtin__, freeVariable)
 
         else:
-            raise UnresolvedFreeVariableException(
-                chainWithPosition, pyFunction.func_name)
+            return ResolutionResult.unbound(chainWithPosition)
 
         return self.computeSubchainAndTerminalValueAlongModules(
             rootValue, chainWithPosition)
 
     def computeSubchainAndTerminalValueAlongModules(self, rootValue, chainWithPosition):
+        """
+        Return a ResultionResult or raise a PythonToForaConversionError
+        """
         ix = 1
         chain = chainWithPosition.var
         position = chainWithPosition.pos
@@ -231,5 +271,7 @@ class FreeVariableResolver(object):
             ix += 1
             subchain = chain[:ix]
 
-        return subchain, terminalValue, position
+        return ResolutionResult.resolution(subchain=subchain,
+                                           resolution=terminalValue,
+                                           position=position)
 
