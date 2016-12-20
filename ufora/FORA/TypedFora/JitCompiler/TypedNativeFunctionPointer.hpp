@@ -922,8 +922,552 @@ private:
 	PolymorphicSharedPtr<TypedFora::Compiler> mCompiler;
 };
 
+template<class A1, class A2, class A3, class A4>
+class TypedNativeFunctionPointer<void (*)(A1, A2, A3, A4)> : public TypedNativeFunctionPointerBase {
+public:
+	TypedNativeFunctionPointer(
+						const NativeFunctionPointer& inPtr,
+						uword_t inEntryBlock,
+						PolymorphicSharedPtr<TypedFora::Compiler> inCompiler
+						) :
+			mPtr(inPtr, inEntryBlock),
+			mCompiler(inCompiler)
+		{
+		}
+
+	TypedNativeFunctionPointer(
+						PolymorphicSharedPtr<TypedFora::Compiler> inCompiler,
+						NativeCFG inCFG,
+						uword_t inEntryBlock = 0
+						) :
+			mCompiler(inCompiler)
+		{
+		initializeFromCFG(inCFG, inEntryBlock);
+		}
+
+	template<class expression_builder_type>
+	TypedNativeFunctionPointer(
+						PolymorphicSharedPtr<TypedFora::Compiler> inCompiler,
+						expression_builder_type expressionBuilder
+						) :
+			mCompiler(inCompiler)
+		{
+		ImmutableTreeVector<NativeVariable> vars;
+		vars = vars + NativeVariable::Temp(NativeTypeFor<A1>::get());
+		vars = vars + NativeVariable::Temp(NativeTypeFor<A2>::get());
+		vars = vars + NativeVariable::Temp(NativeTypeFor<A3>::get());
+		vars = vars + NativeVariable::Temp(NativeTypeFor<A4>::get());
 
 
+		initializeFromCFG(
+			NativeCFG(
+				vars,
+				expressionBuilder(vars[0].expr(), vars[1].expr(), vars[2].expr(), vars[3].expr())
+				),
+			0
+			);
+		}
+
+	void operator()(A1 a1, A2 a2, A3 a3, A4 a4)
+		{
+		lassert(!mPtr.isEmpty());
+
+		StackFrameAllocator allocator(4 * 1024, MemoryPool::getFreeStorePool());
+
+		char toReturn;
+
+		uword_t whichContinuationWasFollowed = -1;
+
+		std::vector<char> stackArgs;
+
+		NativeRuntimeContinuationValue<1> args =
+			mCompiler->generateDummyContinuation(
+				&toReturn,
+				&whichContinuationWasFollowed,
+				0
+				);
+
+		packIntoVector(stackArgs, args);
+		packIntoVector(stackArgs, a1);
+		packIntoVector(stackArgs, a2);
+		packIntoVector(stackArgs, a3);
+		packIntoVector(stackArgs, a4);
+
+		char* newStackFrame = (char*)allocator.allocate(stackArgs.size());
+		memcpy(newStackFrame, &stackArgs[0], stackArgs.size());
+
+
+		NativeRuntimeCallTarget target(mPtr.ptr(), mPtr.entrypoint(), newStackFrame);
+
+		mCompiler->callFunction(target, allocator.getMemBlockPtr());
+
+		lassert(whichContinuationWasFollowed == 0);
+		}
+
+private:
+	void initializeFromCFG(NativeCFG inCFG, long inEntryBlock)
+		{
+		ImmutableTreeVector<NativeType> ourReturnTypes =
+			emptyTreeVec() + NativeTypeFor<void>::get();
+
+		ImmutableTreeVector<NativeType> ourArgumentTypes =
+			emptyTreeVec() + NativeTypeFor<A1>::get() +
+			emptyTreeVec() + NativeTypeFor<A2>::get() +
+			emptyTreeVec() + NativeTypeFor<A3>::get() +
+			emptyTreeVec() + NativeTypeFor<A4>::get()
+			;
+
+		lassert_dump(
+			inCFG.returnTypes() == ourReturnTypes,
+			"native CFG had return types " << prettyPrintString(inCFG) << " but our "
+				<< " signature has types " << prettyPrintString(ourReturnTypes)
+			);
+
+		lassert_dump(
+			varsToTypes(inCFG[NativeBlockID::external(inEntryBlock)].args()) == ourArgumentTypes,
+			"native CFG had arguments "
+				<< prettyPrintString(
+					varsToTypes(inCFG[NativeBlockID::external(inEntryBlock)].args())
+					)
+				<< " but our "
+				<< " signature has types " << prettyPrintString(ourArgumentTypes)
+			);
+
+		std::string name = "cfg_by_hash_" + hashToString(hashValue(inCFG));
+
+		if (!mCompiler->isDefined(name))
+			mCompiler->define(name, inCFG);
+
+		FunctionPointerHandle handle =
+			mCompiler->getJumpTarget(name, NativeBlockID::external(inEntryBlock), true);
+
+		mPtr = handle.get();
+		}
+
+	NativeFunctionPointerAndEntrypointId mPtr;
+
+	PolymorphicSharedPtr<TypedFora::Compiler> mCompiler;
+};
+
+template<class A1, class A2, class A3, class A4, class A5>
+class TypedNativeFunctionPointer<void (*)(A1, A2, A3, A4, A5)> : public TypedNativeFunctionPointerBase {
+public:
+	TypedNativeFunctionPointer(
+						const NativeFunctionPointer& inPtr,
+						uword_t inEntryBlock,
+						PolymorphicSharedPtr<TypedFora::Compiler> inCompiler
+						) :
+			mPtr(inPtr, inEntryBlock),
+			mCompiler(inCompiler)
+		{
+		}
+
+	TypedNativeFunctionPointer(
+						PolymorphicSharedPtr<TypedFora::Compiler> inCompiler,
+						NativeCFG inCFG,
+						uword_t inEntryBlock = 0
+						) :
+			mCompiler(inCompiler)
+		{
+		initializeFromCFG(inCFG, inEntryBlock);
+		}
+
+	template<class expression_builder_type>
+	TypedNativeFunctionPointer(
+						PolymorphicSharedPtr<TypedFora::Compiler> inCompiler,
+						expression_builder_type expressionBuilder
+						) :
+			mCompiler(inCompiler)
+		{
+		ImmutableTreeVector<NativeVariable> vars;
+		vars = vars + NativeVariable::Temp(NativeTypeFor<A1>::get());
+		vars = vars + NativeVariable::Temp(NativeTypeFor<A2>::get());
+		vars = vars + NativeVariable::Temp(NativeTypeFor<A3>::get());
+		vars = vars + NativeVariable::Temp(NativeTypeFor<A4>::get());
+		vars = vars + NativeVariable::Temp(NativeTypeFor<A5>::get());
+
+
+		initializeFromCFG(
+			NativeCFG(
+				vars,
+				expressionBuilder(
+					vars[0].expr(), 
+					vars[1].expr(), 
+					vars[2].expr(), 
+					vars[3].expr(), 
+					vars[4].expr()
+					)
+				),
+			0
+			);
+		}
+
+	void operator()(A1 a1, A2 a2, A3 a3, A4 a4, A5 a5)
+		{
+		lassert(!mPtr.isEmpty());
+
+		StackFrameAllocator allocator(4 * 1024, MemoryPool::getFreeStorePool());
+
+		char toReturn;
+
+		uword_t whichContinuationWasFollowed = -1;
+
+		std::vector<char> stackArgs;
+
+		NativeRuntimeContinuationValue<1> args =
+			mCompiler->generateDummyContinuation(
+				&toReturn,
+				&whichContinuationWasFollowed,
+				0
+				);
+
+		packIntoVector(stackArgs, args);
+		packIntoVector(stackArgs, a1);
+		packIntoVector(stackArgs, a2);
+		packIntoVector(stackArgs, a3);
+		packIntoVector(stackArgs, a4);
+		packIntoVector(stackArgs, a5);
+
+		char* newStackFrame = (char*)allocator.allocate(stackArgs.size());
+		memcpy(newStackFrame, &stackArgs[0], stackArgs.size());
+
+
+		NativeRuntimeCallTarget target(mPtr.ptr(), mPtr.entrypoint(), newStackFrame);
+
+		mCompiler->callFunction(target, allocator.getMemBlockPtr());
+
+		lassert(whichContinuationWasFollowed == 0);
+		}
+
+private:
+	void initializeFromCFG(NativeCFG inCFG, long inEntryBlock)
+		{
+		ImmutableTreeVector<NativeType> ourReturnTypes =
+			emptyTreeVec() + NativeTypeFor<void>::get();
+
+		ImmutableTreeVector<NativeType> ourArgumentTypes =
+			emptyTreeVec() + NativeTypeFor<A1>::get() +
+			emptyTreeVec() + NativeTypeFor<A2>::get() +
+			emptyTreeVec() + NativeTypeFor<A3>::get() +
+			emptyTreeVec() + NativeTypeFor<A4>::get() +
+			emptyTreeVec() + NativeTypeFor<A5>::get()
+			;
+
+		lassert_dump(
+			inCFG.returnTypes() == ourReturnTypes,
+			"native CFG had return types " << prettyPrintString(inCFG) << " but our "
+				<< " signature has types " << prettyPrintString(ourReturnTypes)
+			);
+
+		lassert_dump(
+			varsToTypes(inCFG[NativeBlockID::external(inEntryBlock)].args()) == ourArgumentTypes,
+			"native CFG had arguments "
+				<< prettyPrintString(
+					varsToTypes(inCFG[NativeBlockID::external(inEntryBlock)].args())
+					)
+				<< " but our "
+				<< " signature has types " << prettyPrintString(ourArgumentTypes)
+			);
+
+		std::string name = "cfg_by_hash_" + hashToString(hashValue(inCFG));
+
+		if (!mCompiler->isDefined(name))
+			mCompiler->define(name, inCFG);
+
+		FunctionPointerHandle handle =
+			mCompiler->getJumpTarget(name, NativeBlockID::external(inEntryBlock), true);
+
+		mPtr = handle.get();
+		}
+
+	NativeFunctionPointerAndEntrypointId mPtr;
+
+	PolymorphicSharedPtr<TypedFora::Compiler> mCompiler;
+};
+
+template<class A1, class A2, class A3, class A4, class A5, class A6>
+class TypedNativeFunctionPointer<void (*)(A1, A2, A3, A4, A5, A6)> : public TypedNativeFunctionPointerBase {
+public:
+	TypedNativeFunctionPointer(
+						const NativeFunctionPointer& inPtr,
+						uword_t inEntryBlock,
+						PolymorphicSharedPtr<TypedFora::Compiler> inCompiler
+						) :
+			mPtr(inPtr, inEntryBlock),
+			mCompiler(inCompiler)
+		{
+		}
+
+	TypedNativeFunctionPointer(
+						PolymorphicSharedPtr<TypedFora::Compiler> inCompiler,
+						NativeCFG inCFG,
+						uword_t inEntryBlock = 0
+						) :
+			mCompiler(inCompiler)
+		{
+		initializeFromCFG(inCFG, inEntryBlock);
+		}
+
+	template<class expression_builder_type>
+	TypedNativeFunctionPointer(
+						PolymorphicSharedPtr<TypedFora::Compiler> inCompiler,
+						expression_builder_type expressionBuilder
+						) :
+			mCompiler(inCompiler)
+		{
+		ImmutableTreeVector<NativeVariable> vars;
+		vars = vars + NativeVariable::Temp(NativeTypeFor<A1>::get());
+		vars = vars + NativeVariable::Temp(NativeTypeFor<A2>::get());
+		vars = vars + NativeVariable::Temp(NativeTypeFor<A3>::get());
+		vars = vars + NativeVariable::Temp(NativeTypeFor<A4>::get());
+		vars = vars + NativeVariable::Temp(NativeTypeFor<A5>::get());
+		vars = vars + NativeVariable::Temp(NativeTypeFor<A6>::get());
+
+
+		initializeFromCFG(
+			NativeCFG(
+				vars,
+				expressionBuilder(
+					vars[0].expr(), 
+					vars[1].expr(), 
+					vars[2].expr(), 
+					vars[3].expr(), 
+					vars[4].expr(), 
+					vars[5].expr()
+					)
+				),
+			0
+			);
+		}
+
+	void operator()(A1 a1, A2 a2, A3 a3, A4 a4, A5 a5, A6 a6)
+		{
+		lassert(!mPtr.isEmpty());
+
+		StackFrameAllocator allocator(4 * 1024, MemoryPool::getFreeStorePool());
+
+		char toReturn;
+
+		uword_t whichContinuationWasFollowed = -1;
+
+		std::vector<char> stackArgs;
+
+		NativeRuntimeContinuationValue<1> args =
+			mCompiler->generateDummyContinuation(
+				&toReturn,
+				&whichContinuationWasFollowed,
+				0
+				);
+
+		packIntoVector(stackArgs, args);
+		packIntoVector(stackArgs, a1);
+		packIntoVector(stackArgs, a2);
+		packIntoVector(stackArgs, a3);
+		packIntoVector(stackArgs, a4);
+		packIntoVector(stackArgs, a5);
+		packIntoVector(stackArgs, a6);
+
+		char* newStackFrame = (char*)allocator.allocate(stackArgs.size());
+		memcpy(newStackFrame, &stackArgs[0], stackArgs.size());
+
+
+		NativeRuntimeCallTarget target(mPtr.ptr(), mPtr.entrypoint(), newStackFrame);
+
+		mCompiler->callFunction(target, allocator.getMemBlockPtr());
+
+		lassert(whichContinuationWasFollowed == 0);
+		}
+
+private:
+	void initializeFromCFG(NativeCFG inCFG, long inEntryBlock)
+		{
+		ImmutableTreeVector<NativeType> ourReturnTypes =
+			emptyTreeVec() + NativeTypeFor<void>::get();
+
+		ImmutableTreeVector<NativeType> ourArgumentTypes =
+			emptyTreeVec() + NativeTypeFor<A1>::get() +
+			emptyTreeVec() + NativeTypeFor<A2>::get() +
+			emptyTreeVec() + NativeTypeFor<A3>::get() +
+			emptyTreeVec() + NativeTypeFor<A4>::get() +
+			emptyTreeVec() + NativeTypeFor<A5>::get() +
+			emptyTreeVec() + NativeTypeFor<A6>::get()
+			;
+
+		lassert_dump(
+			inCFG.returnTypes() == ourReturnTypes,
+			"native CFG had return types " << prettyPrintString(inCFG) << " but our "
+				<< " signature has types " << prettyPrintString(ourReturnTypes)
+			);
+
+		lassert_dump(
+			varsToTypes(inCFG[NativeBlockID::external(inEntryBlock)].args()) == ourArgumentTypes,
+			"native CFG had arguments "
+				<< prettyPrintString(
+					varsToTypes(inCFG[NativeBlockID::external(inEntryBlock)].args())
+					)
+				<< " but our "
+				<< " signature has types " << prettyPrintString(ourArgumentTypes)
+			);
+
+		std::string name = "cfg_by_hash_" + hashToString(hashValue(inCFG));
+
+		if (!mCompiler->isDefined(name))
+			mCompiler->define(name, inCFG);
+
+		FunctionPointerHandle handle =
+			mCompiler->getJumpTarget(name, NativeBlockID::external(inEntryBlock), true);
+
+		mPtr = handle.get();
+		}
+
+	NativeFunctionPointerAndEntrypointId mPtr;
+
+	PolymorphicSharedPtr<TypedFora::Compiler> mCompiler;
+};
+
+template<class A1, class A2, class A3, class A4, class A5, class A6, class A7>
+class TypedNativeFunctionPointer<void (*)(A1, A2, A3, A4, A5, A6, A7)> : public TypedNativeFunctionPointerBase {
+public:
+	TypedNativeFunctionPointer(
+						const NativeFunctionPointer& inPtr,
+						uword_t inEntryBlock,
+						PolymorphicSharedPtr<TypedFora::Compiler> inCompiler
+						) :
+			mPtr(inPtr, inEntryBlock),
+			mCompiler(inCompiler)
+		{
+		}
+
+	TypedNativeFunctionPointer(
+						PolymorphicSharedPtr<TypedFora::Compiler> inCompiler,
+						NativeCFG inCFG,
+						uword_t inEntryBlock = 0
+						) :
+			mCompiler(inCompiler)
+		{
+		initializeFromCFG(inCFG, inEntryBlock);
+		}
+
+	template<class expression_builder_type>
+	TypedNativeFunctionPointer(
+						PolymorphicSharedPtr<TypedFora::Compiler> inCompiler,
+						expression_builder_type expressionBuilder
+						) :
+			mCompiler(inCompiler)
+		{
+		ImmutableTreeVector<NativeVariable> vars;
+		vars = vars + NativeVariable::Temp(NativeTypeFor<A1>::get());
+		vars = vars + NativeVariable::Temp(NativeTypeFor<A2>::get());
+		vars = vars + NativeVariable::Temp(NativeTypeFor<A3>::get());
+		vars = vars + NativeVariable::Temp(NativeTypeFor<A4>::get());
+		vars = vars + NativeVariable::Temp(NativeTypeFor<A5>::get());
+		vars = vars + NativeVariable::Temp(NativeTypeFor<A6>::get());
+		vars = vars + NativeVariable::Temp(NativeTypeFor<A7>::get());
+
+
+		initializeFromCFG(
+			NativeCFG(
+				vars,
+				expressionBuilder(
+					vars[0].expr(), 
+					vars[1].expr(), 
+					vars[2].expr(), 
+					vars[3].expr(), 
+					vars[4].expr(), 
+					vars[5].expr(), 
+					vars[6].expr()
+					)
+				),
+			0
+			);
+		}
+
+	void operator()(A1 a1, A2 a2, A3 a3, A4 a4, A5 a5, A6 a6, A7 a7)
+		{
+		lassert(!mPtr.isEmpty());
+
+		StackFrameAllocator allocator(4 * 1024, MemoryPool::getFreeStorePool());
+
+		char toReturn;
+
+		uword_t whichContinuationWasFollowed = -1;
+
+		std::vector<char> stackArgs;
+
+		NativeRuntimeContinuationValue<1> args =
+			mCompiler->generateDummyContinuation(
+				&toReturn,
+				&whichContinuationWasFollowed,
+				0
+				);
+
+		packIntoVector(stackArgs, args);
+		packIntoVector(stackArgs, a1);
+		packIntoVector(stackArgs, a2);
+		packIntoVector(stackArgs, a3);
+		packIntoVector(stackArgs, a4);
+		packIntoVector(stackArgs, a5);
+		packIntoVector(stackArgs, a6);
+		packIntoVector(stackArgs, a7);
+
+		char* newStackFrame = (char*)allocator.allocate(stackArgs.size());
+		memcpy(newStackFrame, &stackArgs[0], stackArgs.size());
+
+
+		NativeRuntimeCallTarget target(mPtr.ptr(), mPtr.entrypoint(), newStackFrame);
+
+		mCompiler->callFunction(target, allocator.getMemBlockPtr());
+
+		lassert(whichContinuationWasFollowed == 0);
+		}
+
+private:
+	void initializeFromCFG(NativeCFG inCFG, long inEntryBlock)
+		{
+		ImmutableTreeVector<NativeType> ourReturnTypes =
+			emptyTreeVec() + NativeTypeFor<void>::get();
+
+		ImmutableTreeVector<NativeType> ourArgumentTypes =
+			emptyTreeVec() + NativeTypeFor<A1>::get() +
+			emptyTreeVec() + NativeTypeFor<A2>::get() +
+			emptyTreeVec() + NativeTypeFor<A3>::get() +
+			emptyTreeVec() + NativeTypeFor<A4>::get() +
+			emptyTreeVec() + NativeTypeFor<A5>::get() +
+			emptyTreeVec() + NativeTypeFor<A6>::get() +
+			emptyTreeVec() + NativeTypeFor<A7>::get()
+			;
+
+		lassert_dump(
+			inCFG.returnTypes() == ourReturnTypes,
+			"native CFG had return types " << prettyPrintString(inCFG) << " but our "
+				<< " signature has types " << prettyPrintString(ourReturnTypes)
+			);
+
+		lassert_dump(
+			varsToTypes(inCFG[NativeBlockID::external(inEntryBlock)].args()) == ourArgumentTypes,
+			"native CFG had arguments "
+				<< prettyPrintString(
+					varsToTypes(inCFG[NativeBlockID::external(inEntryBlock)].args())
+					)
+				<< " but our "
+				<< " signature has types " << prettyPrintString(ourArgumentTypes)
+			);
+
+		std::string name = "cfg_by_hash_" + hashToString(hashValue(inCFG));
+
+		if (!mCompiler->isDefined(name))
+			mCompiler->define(name, inCFG);
+
+		FunctionPointerHandle handle =
+			mCompiler->getJumpTarget(name, NativeBlockID::external(inEntryBlock), true);
+
+		mPtr = handle.get();
+		}
+
+	NativeFunctionPointerAndEntrypointId mPtr;
+
+	PolymorphicSharedPtr<TypedFora::Compiler> mCompiler;
+};
 
 
 
