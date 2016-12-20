@@ -21,8 +21,10 @@
 #include "../../core/cppml/CPPMLTransform.hppml"
 #include "../../core/ScopedProfiler.hppml"
 
-
-@type FindRewritesVisitor = map<NativeVariable, NativeCodeFlattened::Input> rewrites {
+@type FindRewritesVisitor = 
+		map<NativeVariable, NativeCodeFlattened::Input> rewrites,
+		std::map<NativeVariable, long> timesDefined
+{
 public:
 		template<class T>
 		void processDown(const T& in)
@@ -37,6 +39,15 @@ public:
 		StopVisiting processDown(const NativeType& in)
 			{
 			return StopVisiting();
+			}
+
+		void processDown(const NativeCodeFlattened::Block& in)
+			{
+			for (auto var: in.args())
+				timesDefined()[var]++;
+
+			for (auto varAndDef: in.defs())
+				timesDefined()[varAndDef.first]++;
 			}
 
 		template<class T>
@@ -65,7 +76,20 @@ public:
 
 		void complete(void)
 			{
-			//first complete the rewrites map
+			//remove from consideration anything defined multiple times.
+			std::set<NativeVariable> toRemove;
+			for (auto& kv: rewrites())
+				{
+				if (timesDefined()[kv.first] > 1)
+					toRemove.insert(kv.first);
+				if (kv.second.isVariable() && timesDefined()[kv.second.getVariable().var()] > 1)
+					toRemove.insert(kv.first);
+				}
+
+			for (auto v: toRemove)
+				rewrites().erase(v);
+
+			//then make sure all chains are completed
 			for (map<NativeVariable, NativeCodeFlattened::Input>::iterator it = rewrites().begin(), it_end = rewrites().end(); it != it_end; ++it)
 				if (it->second.isVariable() && rewrites().find(it->second.getVariable().var()) != rewrites().end())
 					{

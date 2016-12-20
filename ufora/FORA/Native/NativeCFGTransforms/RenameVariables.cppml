@@ -77,272 +77,117 @@ public:
 
 };
 
-template<class new_variable_factory>
-class RenameVariablesTransformer {
+@type RenameAllVariablesTransformer = std::map<NativeVariable, NativeVariable>* varsSeen, bool startAtZero {
 public:
-		RenameVariablesTransformer(
-					std::map<NativeVariable, NativeVariable>& inRenamingMap,
-					const new_variable_factory& inFactory
-					) :
-				mMapPtr(&inRenamingMap),
-				mFactory(inFactory)
-			{
-			}
+	template<class T>
+	Nullable<T> processDown(const T& t, bool& b) const { return null(); }
 
-		//renames variable 'from' to variable 'to' during the life of the
-		//ScopedRename. Destruction replaces the original value on the map.
-		class ScopedRename {
-		public:
-				ScopedRename(
-						std::map<NativeVariable, NativeVariable>& inRenamingMap,
-						NativeVariable from,
-						NativeVariable to
-						) :
-						mMap(inRenamingMap)
-					{
-					lassert(from.type() == to.type());
+	template<class T>
+	Nullable<T> processUp(const T& t) const { return null(); }
 
-					mFrom = from;
-
-					map<NativeVariable, NativeVariable>::iterator it;
-					it = mMap.find(from);
-
-					if (it != mMap.end())
-						mOrigValue = it->second;
-
-					mMap[from] = to;
-					}
-
-				~ScopedRename()
-					{
-					if (mOrigValue)
-						mMap[mFrom] = *mOrigValue;
-					else
-						mMap.erase(mFrom);
-					}
-		private:
-				NativeVariable 								mFrom;
-				Nullable<NativeVariable> 					mOrigValue;
-				std::map<NativeVariable, NativeVariable>& 	mMap;
-		};
-
-		template<class T>
-		Nullable<T> processDown(const T& t, bool& b) const { return null(); }
-
-		Nullable<NativeType> processDown(const NativeType& t, bool& b) const
-			{
-			b = false;
-			return null();
-			}
-
-		template<class T>
-		Nullable<T> processUp(const T& t) const { return null(); }
-
-		//we dont modify free variables
-		NativeVariable	renameFor(const NativeVariable& in) const
-			{
-			map<NativeVariable, NativeVariable>::iterator it = mMapPtr->find(in);
-
-			if (it == mMapPtr->end())
-				return in;
-
-			lassert(in.type() == it->second.type());
-
-			return it->second;
-			}
-
-		Nullable<NativeVariable>	processDown(const NativeVariable& in,
-												bool& out) const
-			{
-			NativeVariable r = renameFor(in);
-			if (r == in)
-				return null();
-			return null() << renameFor(in);
-			}
-
-		Nullable<NativeExpression>	processDown(const NativeExpression& in,
-												bool& out) const
-			{
-			@match NativeExpression(in)
-				-|	Variable(v) ->> {
-						return null() << NativeExpression::Variable(renameFor(v));
-						}
-				-|	Let(v, e, within) ->> {
-
-						//this is a terminal node in this particular
-						//transformation.
-						out = false;
-
-						//transform 'e' with our current bindings
-						Nullable<NativeExpression> eTransformed =
-								transformNullable(e, *this);
-
-						NativeVariable newVar = mFactory(v.type());
-
-						ScopedRename scope(*mMapPtr, v, newVar);
-
-						Nullable<NativeExpression> withinTransformed =
-								transformNullable(within, *this);
-
-						return null() <<
-							NativeExpression::Let(
-								newVar,
-								eTransformed ? *eTransformed : e,
-								withinTransformed ?
-											*withinTransformed : within
-								);
-						}
-				-|	_ ->> {
-					return null();
-					}
-				;
-			}
-
-		Nullable<NativeBlock>	processDown(const NativeBlock& in,
-											bool& out) const
-			{
-			//this is a terminal node in this particular transform
-			//since we're going to call 'transform' down below
-			out = false;
-
-			//each of the block variables is a rebinding
-			vector<boost::shared_ptr<ScopedRename> > ptrs;
-			ImmutableTreeVector<NativeVariable> vars;
-
-			for (long k = 0; k < in.args().size(); k++)
-				{
-				vars = vars + mFactory(in.args()[k].type());
-				ptrs.push_back(
-					boost::shared_ptr<ScopedRename>(
-						new ScopedRename(*mMapPtr, in.args()[k], vars[k])
-						)
-					);
-				}
-
-			return null() <<
-				NativeBlock(
-					vars,
-					transform(in.expression(), *this),
-					in.relativeFrequency()
-					);
-			}
-
-		NativeContinuation	processDown(const NativeContinuation& in,
-										bool& out) const
-			{
-			//this is a terminal node in this particular transform
-			//since we're going to call 'transform' down below
-			out = false;
-
-			NativeVariable newVar = mFactory(in.var().type());
-
-			ScopedRename scope(*mMapPtr, in.var(), newVar);
-
-			return NativeContinuation(
-				newVar,
-				transform(in.expression(), *this),
-				in.relativeFrequency(),
-				transform(in.continuationMetadata(), *this)
-				);
-			}
-
-		template<class T>
-		static T	apply(const T& in, const new_variable_factory& factory)
-			{
-			std::map<NativeVariable, NativeVariable> renamingMap;
-
-			RenameVariablesTransformer<new_variable_factory> t(renamingMap, factory);
-
-			return transform(in, t);
-			}
-
-private:
-		std::map<NativeVariable, NativeVariable>* const	mMapPtr;
-
-		new_variable_factory mFactory;
-};
-
-class TempVarFactory {
-public:
-	NativeVariable operator()(const NativeType& inType) const
+	Nullable<NativeType> processDown(const NativeType& t, bool& b) const
 		{
-		return NativeVariable::Temp(inType);
+		b = false;
+		return null();
+		}
+
+	Nullable<NativeVariable> processDown(const NativeVariable& v, bool& outContinue) const
+		{
+		std::map<NativeVariable, NativeVariable>& vars(*varsSeen());
+
+		if (vars.find(v) == vars.end())
+			{
+			if (startAtZero())
+				vars[v] = NativeVariable(vars.size(), v.type());
+			else
+				vars[v] = NativeVariable::Temp(v.type());
+			}
+
+		return null() << vars[v];
+		}
+
+	template<class T>
+	static T apply(const T& in, bool startAtZero)
+		{
+		std::map<NativeVariable, NativeVariable> vars;
+
+		RenameAllVariablesTransformer transformer(&vars, startAtZero);
+
+		return ::transform(in, transformer);
+		}
+
+	template<class T>
+	static T applyToNonfree(const T& in)
+		{
+		std::map<NativeVariable, NativeVariable> vars;
+
+		for (auto f: in.freeVariables())
+			vars[f] = f;
+
+		RenameAllVariablesTransformer transformer(&vars, false);
+
+		return ::transform(in, transformer);
 		}
 };
 
-class VarsStartingAtIndexFactory {
-public:
-	VarsStartingAtIndexFactory(uword_t inIndex) : mIndex(inIndex)
-		{
-		}
-
-	NativeVariable operator()(const NativeType& inType) const
-		{
-		return NativeVariable(mIndex++, inType);
-		}
-
-	mutable uword_t mIndex;
-};
-
-NativeCFG			renameVariables(const NativeCFG& in)
+NativeCFG renameVariables(const NativeCFG& in)
 	{
-	return RenameVariablesTransformer<TempVarFactory>::apply(in, TempVarFactory());
+	return RenameAllVariablesTransformer::apply(in, false);
 	}
 
-NativeBlock			renameVariables(const NativeBlock& in)
+NativeBlock renameVariables(const NativeBlock& in)
 	{
-	return RenameVariablesTransformer<TempVarFactory>::apply(in, TempVarFactory());
+	return RenameAllVariablesTransformer::apply(in, false);
 	}
 
-NativeExpression	renameVariables(const NativeExpression& in)
+NativeContinuation renameVariables(const NativeContinuation& in)
 	{
-	TempVarFactory factory;
-
-	std::map<NativeVariable, NativeVariable> renamingMap;
-
-	ImmutableTreeSet<NativeVariable> freeVariables = in.freeVariables();
-	for (long k = 0; k < freeVariables.size(); k++)
-		renamingMap[freeVariables[k]] = factory(freeVariables[k].type());
-
-	RenameVariablesTransformer<TempVarFactory> t(renamingMap, factory);
-
-	return transform(in, t);
+	return RenameAllVariablesTransformer::apply(in, false);
 	}
 
-NativeCFG			renameVariables(const NativeCFG& in, uword_t inIndex)
+NativeExpression renameVariables(const NativeExpression& in)
 	{
-	return RenameVariablesTransformer<VarsStartingAtIndexFactory>::apply(
-		in,
-		VarsStartingAtIndexFactory(inIndex)
-		);
+	return RenameAllVariablesTransformer::apply(in, false);
 	}
 
-NativeBlock			renameVariables(const NativeBlock& in, uword_t inIndex)
+NativeCFG renameNonfreeVariables(const NativeCFG& in)
 	{
-	return RenameVariablesTransformer<VarsStartingAtIndexFactory>::apply(
-		in,
-		VarsStartingAtIndexFactory(inIndex)
-		);
+	return RenameAllVariablesTransformer::applyToNonfree(in);
 	}
 
-NativeExpression	renameVariables(const NativeExpression& in, uword_t inIndex)
+NativeBlock renameNonfreeVariables(const NativeBlock& in)
 	{
-	VarsStartingAtIndexFactory factory(inIndex);
-
-	std::map<NativeVariable, NativeVariable> renamingMap;
-
-	ImmutableTreeSet<NativeVariable> freeVariables = in.freeVariables();
-	for (long k = 0; k < freeVariables.size(); k++)
-		renamingMap[freeVariables[k]] = factory(freeVariables[k].type());
-
-	RenameVariablesTransformer<VarsStartingAtIndexFactory> t(renamingMap, factory);
-
-	return transform(in, t);
+	return RenameAllVariablesTransformer::applyToNonfree(in);
 	}
 
+NativeContinuation renameNonfreeVariables(const NativeContinuation& in)
+	{
+	return RenameAllVariablesTransformer::applyToNonfree(in);
+	}
+
+NativeExpression renameNonfreeVariables(const NativeExpression& in)
+	{
+	return RenameAllVariablesTransformer::applyToNonfree(in);
+	}
+
+NativeCFG renameVariablesStably(const NativeCFG& in)
+	{
+	return RenameAllVariablesTransformer::apply(in, true);
+	}
+
+NativeBlock renameVariablesStably(const NativeBlock& in)
+	{
+	return RenameAllVariablesTransformer::apply(in, true);
+	}
+
+NativeExpression renameVariablesStably(const NativeExpression& in)
+	{
+	return RenameAllVariablesTransformer::apply(in, true);
+	}
 
 
 /****************
+
 SimpleVariableRenameTransformer
 
 Applies a simple renaming of some NativeVariables.  Doesn't try to do anything
@@ -353,29 +198,29 @@ that.
 
 class	SimpleVariableRenameTransformer {
 public:
-		SimpleVariableRenameTransformer (
-				const map<NativeVariable, NativeVariable>&	inRenames
-				) :
-				mRenames(inRenames)
-			{
-			}
+	SimpleVariableRenameTransformer (
+			const map<NativeVariable, NativeVariable>&	inRenames
+			) :
+			mRenames(inRenames)
+		{
+		}
 
 
-		template<class T>
-		Nullable<T> processDown(const T& t, bool& b) const { return null(); }
+	template<class T>
+	Nullable<T> processDown(const T& t, bool& b) const { return null(); }
 
-		Nullable<NativeVariable> processDown(const NativeVariable& t,
-											 bool& b) const
-			{
-			if (mRenames.find(t) == mRenames.end())
-				return null();
-			return null() << mRenames.find(t)->second;
-			}
+	Nullable<NativeVariable> processDown(const NativeVariable& t,
+										 bool& b) const
+		{
+		if (mRenames.find(t) == mRenames.end())
+			return null();
+		return null() << mRenames.find(t)->second;
+		}
 
-		template<class T>
-		Nullable<T> processUp(const T& t) const { return null(); }
+	template<class T>
+	Nullable<T> processUp(const T& t) const { return null(); }
 private:
-		const map<NativeVariable, NativeVariable>& mRenames;
+	const map<NativeVariable, NativeVariable>& mRenames;
 };
 
 NativeCFG			renameVariables(const NativeCFG& in,
@@ -416,8 +261,6 @@ ImmutableTreeSet<NativeVariable>	verifyNoVarsBoundTwice(const NativeCFG& in)
 
 	return vis.mBoundMultiply;
 	}
-
-
 
 ImmutableTreeSet<NativeVariable>	verifyNoVarsBoundTwice(const NativeExpression& in)
 	{
