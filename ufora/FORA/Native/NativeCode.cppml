@@ -397,7 +397,7 @@ Nullable<NativeType>	NativeExpression::computeNativeType(void) const
 @type NativeReturnTypeExtractor = ImmutableTreeMap<uint64_t, NativeType> elts {
 public:
 		template<class T>
-		void processDown(const T& in, bool& shouldContinue)
+		void processDown(const T& in)
 			{
 			}
 		template<class T>
@@ -405,7 +405,7 @@ public:
 			{
 			}
 
-		void processDown(const NativeExpression& in, bool& shouldContinue)
+		void processDown(const NativeExpression& in)
 			{
 			@match NativeExpression(in)
 				-|	Return(exit, expr) ->> {
@@ -417,12 +417,14 @@ public:
 							elts() = elts() + make_pair(exit, *expr.type());
 							}
 						}
-				-|	_ ->> {;};
+				-|	_ ->> {}
 			}
-		void processDown(const NativeCallTarget& t, bool& shouldContinue)
+
+		ContinueOrStop processDown(const NativeCallTarget& t)
 			{
 			if (t.isInline())
-				shouldContinue = false;
+				return ContinueOrStop::Stop;
+			return ContinueOrStop::Continue;
 			}
 };
 
@@ -436,7 +438,7 @@ ImmutableTreeMap<uint64_t, NativeType> extractReturnTypes(const NativeExpression
 @type NativeJumpTargetExtractor = ImmutableTreeVector<pair<NativeBlockID, ImmutableTreeVector<NativeType> > > elts {
 public:
 		template<class T>
-		void processDown(const T& in, bool& shouldContinue)
+		void processDown(const T& in)
 			{
 			}
 		template<class T>
@@ -444,7 +446,7 @@ public:
 			{
 			}
 
-		void processDown(const NativeExpression& in, bool& shouldContinue)
+		void processDown(const NativeExpression& in)
 			{
 			@match NativeExpression(in)
 				-|	Jump(target, expressions) ->> {
@@ -460,12 +462,14 @@ public:
 
 						elts() = elts() + make_pair(target, types);
 						}
-				-|	_ ->> {;};
+				-|	_ ->> {}
 			}
-		void processDown(const NativeCallTarget& t, bool& shouldContinue)
+
+		ContinueOrStop processDown(const NativeCallTarget& t)
 			{
 			if (t.isInline())
-				shouldContinue = false;
+				return ContinueOrStop::Stop;
+			return ContinueOrStop::Continue;
 			}
 };
 
@@ -534,16 +538,15 @@ public:
 	map<NativeVariable, uint64_t> mVarsDefined;
 
 	template<class T>
-	void processDown(const T& in, bool& shouldContinue)
+	void processDown(const T& in)
 		{
 		}
 	template<class T>
 	void processUp(const T& in)
 		{
 		}
-	void processDown(const NativeContinuation& in, bool& shouldContinue)
+	StopVisiting processDown(const NativeContinuation& in)
 		{
-		shouldContinue = false;
 		@match NativeContinuation(in)
 			-|	(v,x) ->> {
 				if (mVarsDefined.find(v) != mVarsDefined.end())
@@ -556,13 +559,14 @@ public:
 					mVarsDefined.erase(v);
 				}
 			;
+
+		return StopVisiting();
 		}
-	void processDown(const NativeExpression& in, bool& shouldContinue)
+
+	ContinueOrStop processDown(const NativeExpression& in)
 		{
 		@match NativeExpression(in)
 			-|	Call(Inline(f, b), rets, args) ->> {
-
-				shouldContinue = false;
 
 				if (f.returnTypes().size() != rets.size())
 					throw InvalidNativeCallTarget(
@@ -608,9 +612,10 @@ public:
 							boost::lexical_cast<string>(k)
 							);
 					}
+
+				return ContinueOrStop::Stop;
 				}
 			-|	Call(f, rets, args) ->> {
-				shouldContinue = false;
 				//rets need to either have same out type or be empty
 				Nullable<NativeType> t;
 				for (long k = 0; k < rets.size();k++)
@@ -631,19 +636,20 @@ public:
 					visit(rets[k], *this);
 					}
 				visit(args, *this);
+				
+				return ContinueOrStop::Stop;
 				}
 			-|	Continuations(conts, meta) ->> {
-				shouldContinue = false;
 				for (long k = 0; k < conts.size();k++)
 					if (conts[k].expression().type())
 						throw InvalidNativeCallTarget(
 							"continuation created in 'Continuations' should not "
 							"continue flow control"
 							);
+
+				return ContinueOrStop::Stop;
 				}
 			-|	Let(v, within, x) ->> {
-				shouldContinue = false;
-
 				visit(within, *this);
 
 				mVarsDefined[v]++;
@@ -651,7 +657,7 @@ public:
 				mVarsDefined[v]--;
 				if (mVarsDefined[v] == 0)
 					mVarsDefined.erase(v);
-
+				return ContinueOrStop::Stop;
 				}
 			-|	Jump(id, args) ->> {
 				if (!fun()->blocks()[id])
@@ -672,8 +678,9 @@ public:
 							" in slot " + boost::lexical_cast<string>(k)
 							);
 				}
-			-|	_ ->> {;}
-			;
+			-|	_ ->> {}
+
+		return ContinueOrStop::Continue;
 		}
 
 };
