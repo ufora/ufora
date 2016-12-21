@@ -19,40 +19,6 @@ import pickle
 import time
 
 class GpuCodegenTest(unittest.TestCase):
-    def test_basic_gpu_codegen(self):
-        f = Fora.extractImplValContainer(Fora.eval("""let v = [1.0,2.0,3.0,4.0]; 
-                fun(i) { 
-                    if (i%2 == 0)
-                        return (v[i],i)
-                    if (i%4 == 0)
-                        return String(i)
-                    return 3
-                    }
-                """))
-
-        t0 = time.time()
-        print ForaNative.compileAndStringifyNativeCfgForGpu(f)
-        print "took ", time.time() - t0
-
-    def test_basic_gpu_codegen_with_hints(self):
-        f = Fora.extractImplValContainer(Fora.eval("""
-                fun(i) { 
-                    let ix = 0
-                    while (ix < 1000)
-                        {
-                        ix = ix + 1
-
-                        if (ix % 100 == 0)
-                            `LocalityHint(ix / 100)
-                        }
-                    return ix
-                    }
-                """))
-
-        t0 = time.time()
-        print ForaNative.compileAndStringifyNativeCfgForGpu(f)
-        print "took ", time.time() - t0
-
     def test_basic_gpu_code_simulation_with_hints(self):
         f = Fora.extractImplValContainer(Fora.eval("""
                 fun(i) { 
@@ -60,17 +26,23 @@ class GpuCodegenTest(unittest.TestCase):
                     let result = 0
                     while (ix < i)
                         {
-                        result = result + i
+                        result = result + ix
                         ix = ix + 1
 
                         if (ix % 100 == 0)
-                            `LocalityHint(ix / 100)
+                            `LocalityHint(ix / 10)
                         }
 
                     return result
                     }
                 """))
 
-        t0 = time.time()
-        print ForaNative.compileAndSimulateNativeCfgForGpu(f, 0, 100)
-        print "took ", time.time() - t0
+        result, threadPoints = ForaNative.compileAndSimulateNativeCfgForGpu(f, 1000, 100)
+
+        for p in threadPoints:
+            print p
+
+        self.assertEqual(result.pyval, sum(xrange(1000)))
+
+        #we should interrupt 10 times and then exit with a value
+        self.assertEqual(len(threadPoints), 11)
