@@ -18,6 +18,7 @@
 #include "../../Native/NativeTypeFor.hpp"
 #include "../../Native/NativeFunctionPointer.hpp"
 #include "../../Native/NativeRuntimeCallTarget.hppml"
+#include "../../Native/NativeCode.hppml"
 
 #include "../../Axioms/ReturnValue.hpp"
 #include "../../Core/StackFrameAllocator.hpp"

@@ -1196,6 +1196,51 @@ ImmutableTreeSet<NativeBlockID>	NativeExpression::computeResumptions() const
 	return out;
 	}
 
+template<class T>
+ImmutableTreeMap<NativeVariable, long> boundVariablesIn(const T& in)
+	{
+	ImmutableTreeMap<NativeVariable, long> out;
+
+	auto visitVariable = [&](NativeVariable v, long c=1) {
+		out = out + v + (out.contains(v) ? *out[v] + c : c);
+		};
+
+	CPPMLVisitor<>()
+		.template down<NativeExpression::LetType>(
+			[&](const NativeExpression::LetType& l) {
+				visitVariable(l.var());
+				}
+			)
+		.template down<NativeExpression>(
+			[&](const NativeExpression& e) {
+				for (auto kv: e.boundVariables())
+					visitVariable(kv.first, kv.second);
+				return StopVisiting();
+				}
+			)
+		.template down<NativeContinuation>(
+			[&](const NativeContinuation& e) {
+				visitVariable(e.var());
+				}
+			)
+		.template down<NativeBlock>(
+			[&](const NativeBlock& e) {
+				for (auto a: e.args())
+					visitVariable(a);
+				}
+			)
+		.template stopAt<NativeType>()
+		.template stopAt<NativeConstant>()
+		.visitInternals(in)
+		;
+
+	return out;
+	}
+
+ImmutableTreeMap<NativeVariable, long>	NativeExpression::computeBoundVariables() const
+	{
+	return boundVariablesIn(*this);
+	}
 
 ImmutableTreeSet<NativeVariable>	NativeExpression::computeFreeVariables(void) const
 	{
@@ -2219,6 +2264,16 @@ NativeExpression NativeExpression::Nothing()
 	}
 
 namespace CPPML {
+
+void Validator<NativeCFG, void>::operator()(NativeCFG& in) const
+	{
+	for (auto kv: boundVariablesIn(in))
+		lassert_dump(
+			kv.second == 1,
+			"Expected " << prettyPrintString(kv.first) << " to have only one binding in \n"
+				<< prettyPrintString(in)
+			);
+	}
 
 void Validator<NativeExpression_CallType, void>::operator()(NativeExpression_CallType& in) const
 	{
