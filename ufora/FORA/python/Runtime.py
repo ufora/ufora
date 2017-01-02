@@ -60,7 +60,6 @@ def initialize(setupObjectToUse = None):
             cfg.unrollHotLoopsWithComparisons = True
             cfg.enableDoubleVectorStashing = True
             cfg.kickIntoInterpreterOnInline = True
-            cfg.useReasoningCompiler = configObjectToUse.useReasoningCompiler
             cfg.disableSplitting = configObjectToUse.compilerDisableSplitting
             cfg.enableCodeExpansionRewriteRules = True
 

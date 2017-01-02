@@ -203,8 +203,6 @@ class Config(object):
                                 2 if self.maxLocalThreads < 4 else 4)
             )
 
-        self.useReasoningCompiler = parseBool(self.getConfigValue("FORA_COMPILER_USE_REASONER", True))
-
         self.compilerDisableSplitting = parseBool(self.getConfigValue("FORA_COMPILER_DISABLE_SPLITTING", False))
 
         if sys.platform == "linux2":
