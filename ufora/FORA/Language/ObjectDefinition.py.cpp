@@ -26,6 +26,7 @@
 #include "FunctionToCFG.hppml"
 
 #include "../Core/ClassMediator.hppml"
+#include "../Runtime.hppml"
 
 class ObjectDefinitionWrapper :
 		public native::module::Exporter<ObjectDefinitionWrapper> {
