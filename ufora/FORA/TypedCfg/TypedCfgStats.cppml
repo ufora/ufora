@@ -1,0 +1,189 @@
+/***************************************************************************
+    Copyright 2016 Ufora Inc.
+ 
+    Licensed under the Apache License, Version 2.0 (the "License");
+    you may not use this file except in compliance with the License.
+    You may obtain a copy of the License at
+ 
+        http://www.apache.org/licenses/LICENSE-2.0
+ 
+    Unless required by applicable law or agreed to in writing, software
+    distributed under the License is distributed on an "AS IS" BASIS,
+    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    See the License for the specific language governing permissions and
+    limitations under the License.
+****************************************************************************/
+
+#include "TypedCfgStats.hppml"
+#include "../TypedFora/TypedFora.hppml"
+#include "../TypedFora/TypedForaUtil.hppml"
+#include "../TypedFora/JitCompiler/Compiler.hppml"
+#include "../TypedFora/JitCompiler/TypedJumpTarget.hppml"
+
+using namespace TypedCfgStatsClasses;
+
+TypedCfgStats::TypedCfgStats(PolymorphicSharedPtr<TypedFora::Compiler> inCompiler) : mCompiler(inCompiler)
+	{
+	}
+
+void TypedCfgStats::addGraphSet(ImmutableTreeMap<TypedCfgGraphIdentity, TypedCfgGraph> inGraphSet)
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+
+	for (auto idAndGraph: inGraphSet)
+		if (mGraphSets.find(idAndGraph.first) == mGraphSets.end())
+			addGraph(idAndGraph.first, idAndGraph.second, mNodes[idAndGraph.first]);
+	}
+
+void TypedCfgStats::addGraph(
+			TypedCfgGraphIdentity curId,
+			const TypedCfgGraph& graph, 
+			map<hash_type, TypedCfgStats::Node>& graphNodeMap
+			)
+	{
+	for (auto hashAndNode: graph.nodes())
+		graphNodeMap[hashAndNode.first] = convertNode(hashAndNode.second, graphNodeMap);
+	}
+
+Node TypedCfgStats::convertNode(
+					const TypedCfgNode& node, 
+					map<hash_type, Node>& graphNodeMap
+					)
+	{
+	return Node(
+		node.label(),
+		node.judgments(),
+		convertNodeBody(node.body(), graphNodeMap)
+		);
+	}
+
+NodeBody TypedCfgStats::convertNodeBody(
+				const TypedCfgNodeBody& node,
+				map<hash_type, Node>& graphNodeMap
+				)
+	{
+	auto convertContinuationFun = 
+		[&](const TypedCfgContinuation& cont) { 
+			return convertContinuation(cont, graphNodeMap);
+			};
+
+	@match TypedCfgNodeBody(node)
+		-| Apply(args, target, normal, exception) ->> {
+			return NodeBody::Apply(
+				args, 
+				convertApplyTarget(target), 
+				mapITV(normal, convertContinuationFun),
+				mapITV(exception, convertContinuationFun)
+				);
+			}
+		-| Cached(args, normal, exception) ->> {
+			return NodeBody::Cached(
+				args, 
+				convertContinuationFun(normal), 
+				convertContinuationFun(exception)
+				);
+			}
+		-| Branch(arg, normal, exception) ->> {
+			return NodeBody::Branch(
+				arg,
+				convertContinuationFun(normal),
+				convertContinuationFun(exception)
+				);
+			}
+		-| TupleExpand(argIndex, (arity, exact, ifMatch), ifNoMatch) ->> {
+			return NodeBody::TupleExpand(
+				argIndex,
+				TupleContinuation(arity, exact, convertContinuationFun(ifMatch)),
+				convertContinuationFun(ifNoMatch)
+				);
+			}
+		-| Switch(arg, branches, otherwise) ->> {
+			ImmutableTreeMap<CSTValue, Continuation> convertedBranches;
+
+			for (auto valAndBranch: branches)
+				convertedBranches = convertedBranches + valAndBranch.first + convertContinuationFun(valAndBranch.second);
+
+			return NodeBody::Switch(
+				arg,
+				convertedBranches,
+				convertContinuationFun(otherwise)
+				);
+			}
+		-| Jump(cont) ->> {
+			return NodeBody::Jump(convertContinuationFun(cont));
+			}
+		-| TransferToInterpreter() ->> {
+			return NodeBody::TransferToInterpreter();
+			}
+	}
+
+Continuation TypedCfgStats::convertContinuation(const TypedCfgContinuation& cont, map<hash_type, TypedCfgStats::Node>& graphNodeMap)
+	{
+	@match TypedCfgContinuation(cont)
+		-| Return(arg, isException, indexInExits) ->> {
+			return Continuation::Return(
+				boost::shared_ptr<ContinuationStats>(new ContinuationStats()),
+				arg, 
+				isException, 
+				indexInExits
+				);
+			}
+		-| Node(label, args) ->> {
+			return Continuation::Jump(
+				boost::shared_ptr<ContinuationStats>(new ContinuationStats()),
+				label, 
+				args, 
+				&graphNodeMap[label]
+				);
+			}
+	}
+
+TypedCfgStats::ApplyTarget TypedCfgStats::convertApplyTarget(
+			const TypedCfgApplyTarget& target
+			)
+	{
+	@match TypedCfgApplyTarget(target)
+		-| Graph(identity, node) ->> {
+			return ApplyTarget::Graph(&mNodes[identity][node]);
+			}
+		-| NativeAxiom(axiom) ->> {
+			JudgmentOnValueTuple callSignature = axiom.callSignature();
+			JudgmentOnAction resultSignature = axiom.resultSignature();
+			TypedFora::Callable callTarget = *axiom.callTarget();
+
+			callTarget = 
+				TypedFora::adaptSignatureOfCallable(
+					callTarget,
+					callSignature,
+					callSignature,
+					TypedFora::interpreterResultSignature(),
+					false
+					);
+
+			string axiomName = "TypedCfgStatsAxiom_" + hashToString(callSignature.hash());
+
+			mCompiler->define(axiomName, callTarget);
+
+			TypedFora::TypedJumpTarget jumpTarget =
+				mCompiler->getJumpTarget(axiomName, TypedFora::BlockID::entry(), true);
+
+			NativeFunctionPointerAndEntrypointId ptr = jumpTarget.functionPointer().get();
+
+			return ApplyTarget::NativeAxiom(axiom, ptr);
+			}
+	}
+
+Node* TypedCfgStats::getNode(TypedCfgGraphIdentity graph, hash_type nodeHash)
+	{
+	boost::mutex::scoped_lock lock(mMutex);
+
+	auto it = mNodes.find(graph);
+	if (it == mNodes.end())
+		return nullptr;
+
+	auto it2 = it->second.find(nodeHash);
+	if (it2 == it->second.end())
+		return nullptr;
+
+	return &it2->second;
+	}

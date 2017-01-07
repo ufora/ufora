@@ -1,0 +1,389 @@
+/***************************************************************************
+    Copyright 2015 Ufora Inc.
+
+    Licensed under the Apache License, Version 2.0 (the "License");
+    you may not use this file except in compliance with the License.
+    You may obtain a copy of the License at
+
+        http://www.apache.org/licenses/LICENSE-2.0
+
+    Unless required by applicable law or agreed to in writing, software
+    distributed under the License is distributed on an "AS IS" BASIS,
+    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    See the License for the specific language governing permissions and
+    limitations under the License.
+****************************************************************************/
+
+#include "ReasonerTypedCfgBuilder.hppml"
+#include "../TypedFora/TypedForaUtil.hppml"
+#include "../TypedFora/Transforms/RenameVariables.hppml"
+#include "../TypedFora/Transforms/PushDownMetadata.hppml"
+#include "../TypedFora/TypedForaUtil.hppml"
+#include "../TypedFora/ABI/NativeLayoutType.hppml"
+#include "../TypedFora/ABI/TestTypedForaValuesIdentical.hppml"
+#include "../Axioms/Axiom.hppml"
+#include "../Interpreter/Instruction.hppml"
+#include "../Judgment/ControlFlowGraphJudgmentUtil.hppml"
+#include "../../core/cppml/CPPMLTransform.hppml"
+
+namespace Fora {
+
+TypedCfgGraph ReasonerTypedCfgBuilderForFrame::getGraph()
+    {
+    TypedFora::ResultSignature signature =
+        TypedFora::resultSignatureFromJoa(
+            reasonerFrame()->exits(),
+            TypedFora::RefcountStyle::Pooled()
+            );
+
+    ImmutableTreeMap<hash_type, TypedCfgNode> nodes;
+
+    for (auto& rootAndNodes: reasonerFrame()->getNodeRootToNodeMap().getKeysToValues())
+        {
+        ReasonerFrame::NodeRoot root = rootAndNodes.first;
+
+        for (auto node: rootAndNodes.second)
+            {
+            nodes = nodes + 
+                nodeIdFor(node) + 
+                TypedCfgNode(
+                    node.label(),
+                    node.jovs(),
+                    ReasonerTypedCfgBuilderForNode(
+                        *this,
+                        node
+                        ).getBody()
+                    );
+            }
+        }
+
+    return TypedCfgGraph(
+        reasonerFrame()->graph(),
+        nodes,
+        reasonerFrame()->exits()
+        );
+    }
+
+hash_type ReasonerTypedCfgBuilderForFrame::nodeIdFor(ReasonerFrame::Node node)
+    {
+    return hashValue(node);
+    }
+
+TypedCfgGraphIdentity ReasonerTypedCfgBuilderForFrame::entrypointNameFor(ReasonerFrameId frameId)
+    {
+    return frameId.hash();
+    }
+
+namespace {
+
+bool isCanonicalReturn(ControlFlowContinuation cont)
+    {
+    @match ControlFlowContinuation(cont)
+        -| Return(Result(), isException) ->> { return isException == false; }
+        -| _ ->> { return false; }
+    }
+
+bool isCanonicalThrow(ControlFlowContinuation cont)
+    {
+    @match ControlFlowContinuation(cont)
+        -| Return(Result(), isException) ->> { return isException == true; }
+        -| _ ->> { return false; }
+    }
+
+}
+
+TypedCfgNodeBody ReasonerTypedCfgBuilderForNode::getBody()
+    {
+    ControlFlowNodeBody nodeBody = forFrame().reasonerFrame()->graph()[node().label()].body();
+
+    try {
+        @match ControlFlowNodeBody(nodeBody)
+            -|  Jump(cont) ->> {
+                return TypedCfgNodeBody::Jump(getContinuation(cont));
+                }
+            -|  Branch(arg, ifTrue, ifFalse) ->> {
+                JOV branchJov = getJudgment(arg, node().jovs());
+
+                Nullable<bool> which = branchJov.convertToBoolean();
+
+                if (which)
+                    return TypedCfgNodeBody::Jump(getContinuation(*which ? ifTrue : ifFalse));
+
+                return TypedCfgNodeBody::Branch(arg, getContinuation(ifTrue), getContinuation(ifFalse));
+                }
+            -|  Switch(arg, branches, otherwise) ->> {
+                JOV switchJov = getJudgment(arg, node().jovs());
+
+                if (switchJov.constant())
+                    return TypedCfgNodeBody::Jump(
+                        getContinuation(
+                            branches.contains(*switchJov.constant()) ? 
+                                *branches[*switchJov.constant()]
+                            :   otherwise
+                            )
+                        );
+
+                ImmutableTreeMap<CSTValue, TypedCfgContinuation> newBranches;
+                
+                for (auto valueAndContinuation: branches)
+                    if (!switchJov.disjoint(valueAndContinuation.first))
+                        newBranches = newBranches + 
+                            valueAndContinuation.first + 
+                            getContinuation(valueAndContinuation.second);
+
+                if (!newBranches.size())
+                    return TypedCfgNodeBody::Jump(getContinuation(otherwise));
+
+                return TypedCfgNodeBody::Switch(arg, newBranches, getContinuation(otherwise));
+                }
+            -|  TupleExpand(arg, (arity, arityExact, ifMatch), ifNoMatch) ->> {
+                Nullable<bool> possible = jovIsTupleOfArity(node().jovs()[arg], arity, arityExact);
+
+                if (possible && !*possible)
+                    return TypedCfgNodeBody::Jump(getContinuation(ifNoMatch));
+                if (possible && *possible)
+                    return TypedCfgNodeBody::Jump(
+                        getContinuation(ifMatch, node().jovs()[arg])
+                        );
+
+                return TypedCfgNodeBody::TupleExpand(
+                    arg, 
+                    TypedCfgTupleContinuation(arity, arityExact, getContinuation(ifMatch)),
+                    getContinuation(ifNoMatch)
+                    );
+                }
+            -|  Cached(args, normal, exception) ->> {
+                //the reasoner currently just bails on interpreter calls...
+                return TypedCfgNodeBody::TransferToInterpreter();
+
+                /*
+                return TypedCfgNodeBody::Cached(
+                    args, 
+                    getContinuation(normal),
+                    getContinuation(exception)
+                    );*/
+                }
+            -|  Apply(args, normal, exception) ->> {
+                JOVT applyJOVt = getApplyTupleJudgment(args, node().jovs(), null() << nodeBody);
+
+                auto axiomJOA = forFrame().axioms()->axiomJOA(applyJOVt);
+
+                if (!axiomJOA)
+                    return TypedCfgNodeBody::TransferToInterpreter();
+
+                JudgmentOnAction applyResults;
+                
+                TypedCfgApplyTarget applyTarget;
+
+                @match AxiomJOA(*axiomJOA)
+                    -| Expands() ->> {
+                        ReasonerFrameId target = forFrame().reasonerFrame()->getCalledFrames().getValue(node());
+                        JudgmentOnAction targetJOA = forFrame().reasonerFrame()->getCalledFrameJOAs().getValue(make_pair(node(), target));
+
+                        auto targetFrame = forFrame().reasoner()->getFrameFor(target);
+
+                        while (targetFrame->relaxesTo())
+                            {
+                            targetFrame = forFrame().reasoner()->getFrameFor(*targetFrame->relaxesTo());
+                            target = targetFrame->frameId();
+                            }
+
+                        if (targetFrame->exitsAreConstants())
+                            {
+                            JudgmentOnAction res = targetFrame->exits();
+                            auto jovAndIsException = res.jovAndIsExceptionByIndex(0);
+
+                            auto pathToUse = (jovAndIsException.second ? exception : normal);
+
+                            return TypedCfgNodeBody::Jump(getContinuation(pathToUse, jovAndIsException.first));
+                            }
+
+                        ImmutableTreeVector<JOV> childJOVs =
+                            mapITV(
+                                args,
+                                [&](ControlFlowApplyArg arg) -> JOV {
+                                    return getApplyJovJudgment(arg, node().jovs(), null() << nodeBody);
+                                    }
+                                );
+
+                        ReasonerFrame::NodeRoot root = *targetFrame->entrypointRootFor(childJOVs);
+
+                        if (targetFrame->frameId() == forFrame().reasonerFrame()->frameId() && isCanonicalReturn(normal) && isCanonicalThrow(exception))
+                            {
+                            return TypedCfgNodeBody::Jump(
+                                TypedCfgContinuation::Node(
+                                    ReasonerTypedCfgBuilderForFrame::nodeIdFor(ReasonerFrame::Node(root)),
+                                    mapITV(args, [&](ControlFlowApplyArg applyArg) { 
+                                        @match ControlFlowApplyArg(applyArg)
+                                            -| Normal(_, arg) ->> {
+                                                return ControlFlowContinuationArg::Arg(arg);
+                                                }
+                                            -| TupleCall(a) ->> {
+                                                return ControlFlowContinuationArg::Arg(a);
+                                                }
+                                        })
+                                    )
+                                );
+                            }
+
+                        ReasonerFrame::Node node(root);
+
+                        applyTarget = TypedCfgApplyTarget::Graph(
+                            ReasonerTypedCfgBuilderForFrame::entrypointNameFor(targetFrame->frameId()),
+                            ReasonerTypedCfgBuilderForFrame::nodeIdFor(node)
+                            );
+
+                        applyResults = targetFrame->exits();
+                        }
+                    -| Native(result) ->> {
+                        if (applyJOVt.computeConstant())
+                            {
+                            JudgmentOnAction possibleResults =
+                                forFrame().axioms()->resolveAxiomDirectly(*forFrame().typedForaCompiler(), applyJOVt);
+
+                            if (possibleResults.size() == 1 && possibleResults.jovAndIsExceptionByIndex(0).first.constant())
+                                {
+                                auto jovAndIsException = possibleResults.jovAndIsExceptionByIndex(0);
+
+                                if (!jovAndIsException.second)
+                                    {
+                                    return TypedCfgNodeBody::Jump(
+                                        getContinuation(
+                                            jovAndIsException.second ? exception : normal,
+                                            jovAndIsException.first
+                                            )
+                                        );
+                                    }
+                                else
+                                    //this definitely throws.
+                                    return TypedCfgNodeBody::TransferToInterpreter();
+                                }
+                            }
+
+                        Nullable<Axiom> axiom = forFrame().axioms()->axiom(*forFrame().typedForaCompiler(), applyJOVt);
+
+                        @match Nullable<Axiom>(axiom)
+                            -|  Value(Native(callSignature, sig, graph)) ->> {
+                                applyTarget = TypedCfgApplyTarget::NativeAxiom(axiom->getNative());
+                                }
+                            -| _ ->> {
+                                return TypedCfgNodeBody::TransferToInterpreter();
+                                }
+                        }
+
+                ImmutableTreeVector<TypedCfgContinuation> normalConts;
+                ImmutableTreeVector<TypedCfgContinuation> exceptionConts;
+
+                for (auto t: applyResults.resultPart().vals())
+                    normalConts = normalConts + getContinuation(normal, t);
+
+                for (auto t: applyResults.throwPart().vals())
+                    exceptionConts = exceptionConts + getContinuation(exception, t);
+
+                return TypedCfgNodeBody::Apply(args, applyTarget, normalConts, exceptionConts);
+                }
+        }
+    catch(...)
+        {
+        LOG_ERROR << nodeBody << " with " << node().jovs();
+
+        throw;
+        }
+
+    lassert(false);
+    }
+
+
+TypedCfgContinuation ReasonerTypedCfgBuilderForNode::getContinuation(ControlFlowContinuation cont)
+    {
+    return getContinuation(cont, null());
+    }
+
+TypedCfgContinuation ReasonerTypedCfgBuilderForNode::getContinuation(ControlFlowContinuation cont, JOV j)
+    {
+    return getContinuation(cont, null() << j);
+    }
+
+@type ReplaceResultWithConstant = CSTValue toUse {
+public:
+    template<class T>
+    Nullable<T> processDown(const T& in, bool& outContinue) const
+        {
+        return null();
+        }
+
+    Nullable<ControlFlowContinuationArg> processDown(const ControlFlowContinuationArg& in, bool& outContinue) const
+        {
+        @match ControlFlowContinuationArg(in)
+            -| Result() ->> {
+                return null() << ControlFlowContinuationArg::Arg(ControlFlowArg::Constant(toUse()));
+                }
+            -| _ ->> {
+                return null();
+                }
+        }
+
+    template<class T>
+    Nullable<T> processUp(const T& in) const
+        {
+        return null();
+        }
+};
+
+int64_t indexOfJovIn(JudgmentOnValue j, JudgmentOnResult jor)
+    {
+    for (long k = 0; k < jor.size(); k++)
+        if (jor[k].covers(j))
+            return k;
+    lassert_dump(false, "can't find " << prettyPrintString(j) << " in " << prettyPrintString(jor));
+    }
+
+TypedCfgContinuation ReasonerTypedCfgBuilderForNode::getContinuation(ControlFlowContinuation cont, Nullable<JOV> resultJOV)
+    {
+    //if our result is a constant, just replace it, so that we have no reference to 'result' at all.
+    if (resultJOV && resultJOV->constant())
+        cont = ::transform(cont, ReplaceResultWithConstant(*resultJOV->constant()));
+
+    ControlFlowNodeBody nodeBody =
+        forFrame().reasonerFrame()->graph()[node().label()].body();
+
+    @match ControlFlowContinuation(cont)
+        -| Return(arg, isException) ->> {
+            JudgmentOnAction frameJOA = forFrame().reasonerFrame()->exits();
+
+            JOV returnJOV = 
+                getJudgment(
+                    arg,
+                    node().jovs(),
+                    resultJOV,
+                    null() << nodeBody
+                    );
+
+            return TypedCfgContinuation::Return(arg, isException, indexOfJovIn(returnJOV, frameJOA.jorByIsException(isException)));
+            }
+        -| Node(label, args) ->> {
+            ImmutableTreeVector<JOV> targetNodeJOVs =
+                getJudgment(
+                    args,
+                    node().jovs(),
+                    resultJOV,
+                    null() << nodeBody
+                    );
+
+            //if there's a NodeRoot covering this point, we transfer to it
+            //otherwise, we just compute subexpressions with appropriate "let" statements
+            ReasonerFrame::Node targetNode;
+
+            if (forFrame().reasonerFrame()->isMergeNode(ControlFlowGraphLabel(label)))
+                {
+                auto targetRoot = *forFrame().reasonerFrame()->bestRootFor(ControlFlowGraphLabel(label), targetNodeJOVs);
+
+                targetNode = ReasonerFrame::Node(targetRoot);
+                }
+            else
+                targetNode = ReasonerFrame::Node(node().root(), ControlFlowGraphLabel(label), targetNodeJOVs);
+
+            return TypedCfgContinuation::Node(ReasonerTypedCfgBuilderForFrame::nodeIdFor(targetNode), args);
+            }
+    }
+}

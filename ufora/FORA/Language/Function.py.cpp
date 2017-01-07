@@ -32,6 +32,7 @@
 #include "FunctionStage2.hppml"
 #include "FunctionStage2Converter.hppml"
 #include "FunctionStage3.hppml"
+#include "../Runtime.hppml"
 
 class FunctionWrapper :
 		public native::module::Exporter<FunctionWrapper> {
