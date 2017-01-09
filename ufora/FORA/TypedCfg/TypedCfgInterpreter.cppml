@@ -1,0 +1,487 @@
+/***************************************************************************
+    Copyright 2016 Ufora Inc.
+ 
+    Licensed under the Apache License, Version 2.0 (the "License");
+    you may not use this file except in compliance with the License.
+    You may obtain a copy of the License at
+ 
+        http://www.apache.org/licenses/LICENSE-2.0
+ 
+    Unless required by applicable law or agreed to in writing, software
+    distributed under the License is distributed on an "AS IS" BASIS,
+    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    See the License for the specific language governing permissions and
+    limitations under the License.
+****************************************************************************/
+
+#include "TypedCfgInterpreter.hppml"
+#include "../Core/ExecutionContextScope.hppml"
+#include "../Core/ExecutionContext.hppml"
+#include "../Core/StackFrame.hpp"
+#include "../Core/StackFrameAllocator.hpp"
+#include "../Core/RefcountPool.hppml"
+#include "../Runtime.hppml"
+#include "../TypedFora/ABI/VectorLoadRequest.hppml"
+
+using namespace Fora::Interpreter;
+
+TypedCfgInterpreter::TypedCfgInterpreter(
+				TypedCfgInterpreterStackFrame* inFrame, 
+				StackFrameAllocator& allocator, 
+				uword_t curCont
+				) :
+		mCurrentFrame(inFrame),
+		mStackAllocator(allocator),
+		mCurrentContinuation(curCont),
+		mTypedForaCompiler(&*Runtime::getRuntime().getTypedForaCompiler()),
+		mRefcountPool(ExecutionContext::currentExecutionContext()->getRefcountPool())
+	{
+
+	}
+
+NativeRuntimeContinuationValue<1> TypedCfgInterpreter::interpreter(
+                                StackFrame** memory,
+                                uword_t continuation,
+                                void* typedCfgInterpStackFramePtr
+                                )
+	{
+	ExecutionContext* executionContextPtr = ExecutionContext::currentExecutionContext();
+	lassert(executionContextPtr);
+
+	//track the fact that we're in the interpreter
+	ExecutionContextScope ecScope(*executionContextPtr, ExecutionContextScope::interpreter);
+
+	TypedCfgInterpreterStackFrame* frame = (TypedCfgInterpreterStackFrame*)typedCfgInterpStackFramePtr;
+
+	TypedCfgInterpreter interpreter(frame, *(*memory)->allocator(), continuation);
+
+	while (!interpreter.done())
+		interpreter.step();
+
+	return interpreter.toFollow();
+	}
+
+bool TypedCfgInterpreter::done() const
+	{
+	return (bool)mContinuationToExitAndFollow;
+	}
+
+NativeRuntimeContinuationValue<1> TypedCfgInterpreter::toFollow() const
+	{
+	return *mContinuationToExitAndFollow;
+	}
+
+void TypedCfgInterpreter::followContinuation(const TypedCfgStats::Continuation& cont)
+	{
+	@match TypedCfgStats::Continuation(cont)
+		-| Return(arg, isException, indexInParentConts) ->> {
+			auto parentFrame = mCurrentFrame->getParentFrame();
+			if (parentFrame)
+				{
+				//we're returning to another typedCFG frame
+				mIndexOfReturnInParent = indexInParentConts;
+				parentFrame->getResultValue() = constructArgument(arg);
+				mCurrentContinuation = isException ? 
+					continuation_resume_with_exception_result : 
+					continuation_resume_with_normal_result
+					;
+
+				TypedCfgInterpreterStackFrame::destroy(parentFrame, mStackAllocator);
+
+				mCurrentFrame = parentFrame;
+				}
+			else
+				{
+				mIndexOfReturnInParent = null();
+				NativeRuntimeContinuationValue<1> toFollow = 
+					mCurrentFrame->getContinuations()[isException ? 1 : 0];
+
+				((ImplVal*)toFollow.slots()[0].target())[0] = constructArgument(arg);
+
+				mContinuationToExitAndFollow = toFollow;
+				}
+			}
+		-| Jump(args, nodePtr) ->> {
+			uint8_t newValStorage[args.size() * sizeof(ImplVal)];
+			ImplVal* newVals = (ImplVal*)newValStorage;
+
+			for (long k = 0; k < args.size(); k++)
+				newVals[k] = constructArgument(args[k]);
+
+			for (long k = 0; k < args.size(); k++)
+				mCurrentFrame->frameValue(k) = newVals[k];
+
+			mCurrentFrame->advanceNodePtrTo(nodePtr);
+
+			mCurrentContinuation = continuation_continue;
+			}
+	}
+
+namespace {
+
+bool tupleMatchesArity(ImplVal value, int arity, bool arityExact)
+	{
+	auto t = value.type();
+	if (t.isTuple())
+		{
+		int64_t arityOfInterpreterValue = t.getTuple().types().size();
+		if (arityOfInterpreterValue == arity || !arityExact && arityOfInterpreterValue >= arity)
+			return true;
+		}
+
+	return false;
+	}
+
+}
+
+ImplVal TypedCfgInterpreter::constructApplyArgumentWithoutNameInfo(const ControlFlowApplyArg& arg)
+	{
+	@match ControlFlowApplyArg(arg)
+		-| Normal(_, a) ->> { return constructArgument(a); }
+		-| TupleCall(a) ->> { return constructArgument(a); }
+	}
+
+ImplVal TypedCfgInterpreter::constructArgument(const ControlFlowArg& arg)
+	{
+	@match ControlFlowArg(arg)
+		-| Arg(i) ->> {
+			return mCurrentFrame->frameValue(i);
+			}
+		-| Constant(c) ->> {
+			return c.getReference();
+			}
+	}
+
+ImplVal TypedCfgInterpreter::constructArgument(const ControlFlowContinuationArg& arg)
+	{
+	@match ControlFlowContinuationArg(arg)
+		-| Result() ->> {
+			return mCurrentFrame->getResultValue();
+			}
+		-| TupleElement(k) ->> {
+			int64_t argIndex = mCurrentFrame->getNodePtr()->body().getTupleExpand().argIndex();
+
+			ImplVal resVal = mCurrentFrame->frameValue(argIndex);
+
+			lassert(resVal.type().isTuple());
+
+			//because these are pooled values, this is OK
+			return ImplVal(
+				resVal.type().getTuple().types()[k], 
+				(uint8_t*)resVal.data() + resVal.type().byteOffsets()[k]
+				);
+			}
+		-| TupleRemainingElements() ->> {
+			ImplVal resVal = mCurrentFrame->getResultValue();
+
+			int64_t targetArity = mCurrentFrame->getNodePtr()->body().getTupleExpand().ifMatch().arity();
+
+			return ImplVal(
+				Type::Tuple(
+					resVal.type().getTuple().types().slice(targetArity),
+					resVal.type().getTuple().names().slice(targetArity)
+					),
+				(uint8_t*)resVal.data() + resVal.type().byteOffsets()[targetArity]
+				);
+			}
+		-| MakeTuple(args) ->> {
+			ImmutableTreeVector<std::pair<ImplValContainer, Nullable<Symbol>>> tupleElts;
+
+			for (auto arg: args)
+				{
+				@match ControlFlowContinuationTupleArg(arg)
+					-| Normal(name, arg) ->> {
+						tupleElts = tupleElts + make_pair(ImplValContainer(constructArgument(arg)), name);
+						}
+					-| TupleCall(arg) ->> {
+						ImplValContainer val(constructArgument(arg));
+						Nullable<uword_t> size = val.tupleGetSize();
+						if (!size)
+							tupleElts = tupleElts + make_pair(val, Nullable<Symbol>());
+						else
+							for (long k = 0; k < *size; k++)
+								tupleElts = tupleElts + make_pair(*val.tupleGetItem(k), val.tupleGetName(k));
+						}
+				}
+
+			ImplValContainer tuple(tupleElts);
+
+			return mRefcountPool->add(tuple.getReference());
+			}
+	}
+
+void TypedCfgInterpreter::step()
+	{
+	if (mCurrentContinuation == continuation_continue)
+		{
+		if (mCurrentFrame->getCallbacks()->checkInterruptFlag())
+			{
+			followInterruptContinuation(null());
+			return;
+			}
+
+		@match TypedCfgStats::NodeBody(mCurrentFrame->getNodePtr()->body())
+			-| Apply(args, Graph(targetNodePtr), normalConts, exceptConts) ->> {
+				auto newFrame = TypedCfgInterpreterStackFrame::allocate(
+					mStackAllocator, 
+					mCurrentFrame,
+					targetNodePtr,
+					mCurrentFrame->getCallbacks()
+					);
+
+				for (long k = 0; k < args.size();k++)
+					newFrame->frameValue(k) = constructApplyArgumentWithoutNameInfo(args[k]);
+
+				mCurrentFrame = newFrame;
+				}
+			-| Apply(args, NativeAxiom(axiom, funcPtr), normalConts, exceptConts) ->> {
+				stepNativeAxiom();
+				}
+			-| Cached(args, normalCont, excepCont) ->> {
+				lassert_dump(false, "not implemented");
+				}
+			-| Branch(argIndex, ifTrue, ifFalse) ->> {
+				if (mCurrentFrame->frameValue(argIndex).convertToBoolean())
+					followContinuation(ifTrue);
+				else
+					followContinuation(ifFalse);
+				}
+			-| TupleExpand(arg, (arity, arityIsExact, ifMatch), ifNoMatch) ->> {
+				bool matches = tupleMatchesArity(mCurrentFrame->frameValue(arg), arity, arityIsExact);
+
+				if (matches)
+					followContinuation(ifMatch);
+				else
+					followContinuation(ifNoMatch);
+				}
+			-| Switch(argIndex, branches, otherwise) ->> {
+				ImplVal val = mCurrentFrame->frameValue(argIndex);
+
+				for (auto valueAndCont: branches)
+					{
+					CSTValue testVal = valueAndCont.first;
+
+					if (testVal.type() == val.type() && val.type().cmp(val.data(), testVal.getData()))
+						{
+						followContinuation(valueAndCont.second);
+						return;
+						}
+					}
+				}
+			-| Jump(continuation) ->> {
+				followContinuation(continuation);
+				}
+			-| TransferToInterpreter() ->> {
+				lassert_dump(false, "not implemented");
+				}
+		}
+	else
+		{
+		bool isExceptionResumption = mCurrentContinuation == continuation_resume_with_exception_result;
+
+		@match TypedCfgStats::NodeBody(mCurrentFrame->getNodePtr()->body())
+			-| Apply(args, Graph(targetNodePtr), normalConts, exceptConts) ->> {
+				const auto& whichSet = isExceptionResumption ? exceptConts : normalConts;
+
+				if (!mIndexOfReturnInParent)
+					{
+					JudgmentOnResult whichReturns = 
+						targetNodePtr->graphPtr()->exits().jorByIsException(isExceptionResumption);
+
+					Nullable<uword_t> whichIndex = whichReturns.smallestCovering(mCurrentFrame->getResultValue());
+					lassert_dump(whichIndex, "somehow, our typing rules got violated");
+
+					mIndexOfReturnInParent = *whichIndex;
+					}
+
+				followContinuation(whichSet[*mIndexOfReturnInParent]);
+				mIndexOfReturnInParent = null();
+				return;
+				}
+			-| Cached(args, normalCont, excepCont) ->> {
+				followContinuation(isExceptionResumption ? excepCont : normalCont);
+				return;
+				}
+			-| _ ->> {}
+		
+		lassert_dump(false, "this should never happen");
+		}	
+	}
+
+void TypedCfgInterpreter::stepNativeAxiom()
+	{
+	@match TypedCfgStats::NodeBody(mCurrentFrame->getNodePtr()->body())
+		-| Apply(args, NativeAxiom(axiom, weakenedAxiom, jumpPtr), normalConts, exceptConts) ->> {
+			uint64_t bytecount = sizeof(NativeRuntimeContinuationValue<2>) + sizeof(NativeRuntimeCallbacks*);
+
+			JOVT axiomArgJovt = weakenedAxiom.callSignature();
+
+			for (long k = 0; k < axiomArgJovt.jovs().size(); k++)
+				if (axiomArgJovt.jovs()[k].constant())
+					{
+					}
+					else
+				if (axiomArgJovt.jovs()[k].type())
+					bytecount += axiomArgJovt.jovs()[k].type()->size();
+				else
+					bytecount += sizeof(ImplVal);
+
+			if (axiomArgJovt.hasExtras())
+				bytecount += sizeof(ImplVal);
+
+			uint8_t* axiomCallStack = (uint8_t*)mStackAllocator.allocate(bytecount);
+
+			uint8_t* curWriteArg = axiomCallStack + 
+				sizeof(NativeRuntimeContinuationValue<2>) + sizeof(NativeRuntimeCallbacks*);
+
+			long slotsWrittenTo = 0;
+			long maxSlots = axiomArgJovt.jovs().size();
+
+			ImmutableTreeVector<std::pair<ImplValContainer, Nullable<Symbol>>> tupleElts;
+
+			auto packImplval = [&](ImplVal value, Nullable<Symbol> name) {
+				if (slotsWrittenTo < maxSlots)
+					{
+					JOV jov = axiomArgJovt.jovs()[slotsWrittenTo];
+					slotsWrittenTo++;
+
+					//we're writing this directly into a single typed slot
+					if (jov.constant())
+						{
+						}
+						else
+					if (jov.type())
+						{
+						memcpy(curWriteArg, value.data(), jov.type()->size());
+						curWriteArg += jov.type()->size();
+						}
+					else
+						{
+						*(ImplVal*)curWriteArg = value;
+						curWriteArg += sizeof(ImplVal);
+						}
+					}
+				else
+					{
+					tupleElts = tupleElts + make_pair(value, Nullable<Symbol>());
+					}
+				};
+
+			for (long k = 0; k < args.size(); k++)
+				{
+				@match ControlFlowApplyArg(args[k])
+					-| Normal(name, arg) ->> {
+						packImplval(constructArgument(arg), name);
+						}
+					-| TupleCall(arg) ->> {
+						ImplVal value = constructArgument(arg);
+
+						if (!value.type().isTuple())
+							packImplval(value, null());
+						else
+							TupleCategory::tupleIterateContentsWithNames(value, packImplval);
+						}
+				}
+
+			if (tupleElts.size())
+				{
+				ImplValContainer tuple = ImplValContainer(tupleElts);
+				ImplVal finalVal = mRefcountPool->add(tuple.getReference());
+				*(ImplVal*)curWriteArg = finalVal;
+				curWriteArg += sizeof(ImplVal);
+				}
+
+			lassert(curWriteArg == axiomCallStack + bytecount);
+
+			//Inside the axiom, these should never get called.
+			uword_t which = 0xFFFFFFFF;
+
+			NativeRuntimeContinuationValue<2>& continuations(*(NativeRuntimeContinuationValue<2>*)axiomCallStack);
+			NativeRuntimeCallbacks** newCallbacksPtrPtr = (NativeRuntimeCallbacks**)(axiomCallStack + sizeof(NativeRuntimeContinuationValue<2>));
+
+			continuations.setTo(
+				mTypedForaCompiler->
+					generateDummyContinuation(&mCurrentFrame->getResultValue(), &which, 0, 2)
+				);
+
+			pair<NativeRuntimeContinuationValue<1>, TypedFora::Abi::VectorLoadRequest> interruptData;
+
+			//generate new interrupts
+			NativeRuntimeCallbacks newCallbacks;
+			newCallbacks.resetNativeRuntimeState();
+			newCallbacks.bigVectorSlotIndex = mCurrentFrame->getCallbacks()->bigVectorSlotIndex;
+
+			newCallbacks.interruptContinuation = 
+				mTypedForaCompiler->generateDummyContinuation(&interruptData, &which, 2);
+
+			newCallbacks.cacheCallContinuation =
+				mTypedForaCompiler->generateDummyContinuation(&interruptData, &which, 3);
+
+			*newCallbacksPtrPtr = &newCallbacks;
+
+			mTypedForaCompiler->callFunction(
+				NativeRuntimeCallTarget(jumpPtr.ptr(), jumpPtr.entrypoint(), axiomCallStack),
+				mStackAllocator.getMemBlockPtr()
+				);
+
+			if (which == 0)
+				{
+				if (normalConts.size() == 1)
+					followContinuation(normalConts[0]);
+				else
+					{
+					const auto& possibilities = axiom.resultSignature().resultPart();
+					Nullable<uword_t> which = possibilities.smallestCovering(mCurrentFrame->getResultValue());
+					lassert(possibilities.size() == normalConts.size());
+					followContinuation(normalConts[*which]);
+					}
+				}
+				else
+			if (which == 1)
+				{
+				if (exceptConts.size() == 1)
+					followContinuation(exceptConts[0]);
+				else
+					{
+					const auto& possibilities = axiom.resultSignature().throwPart();
+					lassert(possibilities.size() == exceptConts.size());
+					Nullable<uword_t> which = possibilities.smallestCovering(mCurrentFrame->getResultValue());
+					followContinuation(exceptConts[*which]);
+					}
+				}
+				else
+			if (which == 2)
+				{
+				mStackAllocator.free(axiomCallStack);
+				followInterruptContinuation(null() << interruptData.second);
+				}
+			else
+				lassert(false);
+			}
+	}
+
+void TypedCfgInterpreter::followInterruptContinuation(const Nullable<TypedFora::Abi::VectorLoadRequest>& loadRequest)
+	{
+	NativeRuntimeContinuationValue<1> cont =
+		mTypedForaCompiler->wrapCPPCallback(
+			&TypedCfgInterpreter::interpreter,
+			this,
+			mStackAllocator.getMemBlockPtr()
+			) +
+		NativeRuntimeContinuationSlot(
+			continuation_continue,
+			&mCurrentFrame->getResultValue()
+			);
+
+	auto continuationToFollow = mCurrentFrame->getCallbacks()->interruptContinuation;
+
+	auto& interruptTarget = *(pair<NativeRuntimeContinuationValue<1>, TypedFora::Abi::VectorLoadRequest>*)
+		continuationToFollow.slots()[0].target();
+
+	interruptTarget.first = cont;
+
+	if (loadRequest)
+		interruptTarget.second = *loadRequest;
+
+	mContinuationToExitAndFollow = continuationToFollow;
+	}

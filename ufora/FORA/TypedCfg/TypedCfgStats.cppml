@@ -19,10 +19,16 @@
 #include "../TypedFora/TypedForaUtil.hppml"
 #include "../TypedFora/JitCompiler/Compiler.hppml"
 #include "../TypedFora/JitCompiler/TypedJumpTarget.hppml"
+#include "../Axioms/Axioms.hppml"
 
 using namespace TypedCfgStatsClasses;
 
-TypedCfgStats::TypedCfgStats(PolymorphicSharedPtr<TypedFora::Compiler> inCompiler) : mCompiler(inCompiler)
+TypedCfgStats::TypedCfgStats(
+			PolymorphicSharedPtr<TypedFora::Compiler> inCompiler,
+			PolymorphicSharedPtr<Axioms> inAxioms
+			) : 
+		mCompiler(inCompiler),
+		mAxioms(inAxioms)
 	{
 	}
 
@@ -31,7 +37,7 @@ void TypedCfgStats::addGraphSet(ImmutableTreeMap<TypedCfgGraphIdentity, TypedCfg
 	boost::mutex::scoped_lock lock(mMutex);
 
 	for (auto idAndGraph: inGraphSet)
-		if (mGraphSets.find(idAndGraph.first) == mGraphSets.end())
+		if (mGraphs.find(idAndGraph.first) == mGraphs.end())
 			addGraph(idAndGraph.first, idAndGraph.second, mNodes[idAndGraph.first]);
 	}
 
@@ -41,16 +47,20 @@ void TypedCfgStats::addGraph(
 			map<hash_type, TypedCfgStats::Node>& graphNodeMap
 			)
 	{
+	mGraphs[curId] = graph;
+
 	for (auto hashAndNode: graph.nodes())
-		graphNodeMap[hashAndNode.first] = convertNode(hashAndNode.second, graphNodeMap);
+		graphNodeMap[hashAndNode.first] = convertNode(curId, hashAndNode.second, graphNodeMap);
 	}
 
 Node TypedCfgStats::convertNode(
+					const TypedCfgGraphIdentity curId,
 					const TypedCfgNode& node, 
 					map<hash_type, Node>& graphNodeMap
 					)
 	{
 	return Node(
+		&mGraphs[curId],
 		node.label(),
 		node.judgments(),
 		convertNodeBody(node.body(), graphNodeMap)
@@ -131,7 +141,6 @@ Continuation TypedCfgStats::convertContinuation(const TypedCfgContinuation& cont
 		-| Node(label, args) ->> {
 			return Continuation::Jump(
 				boost::shared_ptr<ContinuationStats>(new ContinuationStats()),
-				label, 
 				args, 
 				&graphNodeMap[label]
 				);
@@ -148,8 +157,14 @@ TypedCfgStats::ApplyTarget TypedCfgStats::convertApplyTarget(
 			}
 		-| NativeAxiom(axiom) ->> {
 			JudgmentOnValueTuple callSignature = axiom.callSignature();
-			JudgmentOnAction resultSignature = axiom.resultSignature();
-			TypedFora::Callable callTarget = *axiom.callTarget();
+
+			Nullable<Axiom> axiom2 = mAxioms->weakestAxiom(*mCompiler, callSignature);
+			lassert(axiom2 && axiom2->isNative());
+
+			Axiom_NativeType nativeAxiom2 = axiom2->getNative();
+
+			JudgmentOnAction resultSignature = nativeAxiom2.resultSignature();
+			TypedFora::Callable callTarget = *nativeAxiom2.callTarget();
 
 			callTarget = 
 				TypedFora::adaptSignatureOfCallable(
@@ -169,7 +184,7 @@ TypedCfgStats::ApplyTarget TypedCfgStats::convertApplyTarget(
 
 			NativeFunctionPointerAndEntrypointId ptr = jumpTarget.functionPointer().get();
 
-			return ApplyTarget::NativeAxiom(axiom, ptr);
+			return ApplyTarget::NativeAxiom(axiom, nativeAxiom2, ptr);
 			}
 	}
 
