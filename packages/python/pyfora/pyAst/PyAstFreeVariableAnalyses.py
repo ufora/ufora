@@ -49,7 +49,6 @@ replaceUsesWithCalls(astNode, names, isClassContext)
 
 """
 import ast
-import logging
 import collections
 import pyfora.pyAst.NodeVisitorBases as NodeVisitorBases
 import pyfora.Exceptions as Exceptions

@@ -132,10 +132,11 @@ private:
       returns a new reference to a dict: FVMAC -> (resolution, location)
      FVMAC here is a tuple of strings
      */
-    ResolutionResult _computeAndResolveFreeVariableMemberAccessChainsInAst(
-        const PyObject* pyObject,
-        const PyObject* pyAst
-        ) const;
+    variant<ResolutionResult, std::shared_ptr<PyforaError>>
+        _computeAndResolveFreeVariableMemberAccessChainsInAst(
+            const PyObject* pyObject,
+            const PyObject* pyAst
+            ) const;
     
     PyObject* _freeMemberAccessChainsWithPositions(
         const PyObject* pyAst

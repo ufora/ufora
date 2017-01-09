@@ -1355,8 +1355,17 @@ PyObjectWalker::_classOrFunctionInfo(PyObject* obj, bool isFunction)
             );
         }
 
-    ResolutionResult resolutions =
+    variant<ResolutionResult, std::shared_ptr<PyforaError>> resolutionsOrErr =
         _computeAndResolveFreeVariableMemberAccessChainsInAst(obj, pyAst.get());
+
+    if (resolutionsOrErr.is<std::shared_ptr<PyforaError>>()) {
+        tr.set<std::shared_ptr<PyforaError>>(
+            resolutionsOrErr.get<std::shared_ptr<PyforaError>>()
+            );
+        return tr;
+        }
+
+    ResolutionResult resolutions = resolutionsOrErr.get<ResolutionResult>();
 
     variant<
         std::map<FreeVariableMemberAccessChain, int64_t>,
@@ -1535,20 +1544,27 @@ PyObject* PyObjectWalker::_getPyConvertedObjectCache() const
     }
 
 
-ResolutionResult
+variant<ResolutionResult, std::shared_ptr<PyforaError>>
 PyObjectWalker::_computeAndResolveFreeVariableMemberAccessChainsInAst(
         const PyObject* pyObject,
         const PyObject* pyAst
         ) const
     {
+    variant<ResolutionResult, std::shared_ptr<PyforaError>> tr;
+
     PyObjectPtr chainsWithPositions = PyObjectPtr::unincremented(
         _freeMemberAccessChainsWithPositions(pyAst));
     if (chainsWithPositions == nullptr) {
-        throw std::runtime_error(
-            "py error getting free member access chains in PyObjectWalker::"
-            "_computeAndResolveFreeVariableMemberAccessChainsInAst: " +
-            PyObjectUtils::format_exc()
+        tr.set<std::shared_ptr<PyforaError>>(
+            std::shared_ptr<PyforaError>(
+                new PyforaError(
+                    "py error getting free member access chains in PyObjectWalker::"
+                    "_computeAndResolveFreeVariableMemberAccessChainsInAst: " +
+                    PyObjectUtils::format_exc()
+                    )
+                )
             );
+        return tr;
         }
 
     PyObjectPtr pyConvertedObjectCache = PyObjectPtr::unincremented(
@@ -1561,11 +1577,16 @@ PyObjectWalker::_computeAndResolveFreeVariableMemberAccessChainsInAst(
             );
         }
 
-    return mFreeVariableResolver.resolveFreeVariableMemberAccessChainsInAst(
-        pyObject,
-        pyAst,
-        chainsWithPositions.get(),
-        pyConvertedObjectCache.get());
+    tr.set<ResolutionResult>(
+        mFreeVariableResolver.resolveFreeVariableMemberAccessChainsInAst(
+            pyObject,
+            pyAst,
+            chainsWithPositions.get(),
+            pyConvertedObjectCache.get()
+            )
+        );
+
+    return tr;
     }
 
 
