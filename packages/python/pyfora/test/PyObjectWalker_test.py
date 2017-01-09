@@ -82,7 +82,7 @@ class PyObjectWalkerTest(unittest.TestCase):
         gc.collect()
         walker.walkPyObject(1)
         
-    def test_PyObjectWalker_boto_connection(self):
+    def test_PyObjectWalker_boto_connection_1(self):
         import boto
 
         conn = boto.connect_s3()
@@ -92,8 +92,31 @@ class PyObjectWalkerTest(unittest.TestCase):
             BinaryObjectRegistry()
             )
 
-        # just check that this doesn't fail
+        # just check that these don't fail
+        walker.walkPyObject(boto)
         walker.walkPyObject(conn)
+        
+    def test_PyObjectWalker_boto_connection_2(self):
+        import boto
+        bucketName = 'ufora-test-data'
+
+        conn = boto.connect_s3()
+        bucket = conn.get_bucket(bucketName)
+        key = bucket.get_key("trip_data_1.csv")
+
+        res = key.md5
+
+        walker = PyObjectWalker(
+            self.mappings,
+            BinaryObjectRegistry()
+            )
+
+        walker.walkPyObject(boto)
+        walker.walkPyObject(conn)
+        walker.walkPyObject(bucket)
+        walker.walkPyObject(key)
+        walker.walkPyObject(res)
+
 
 if __name__ == "__main__":
     unittest.main()

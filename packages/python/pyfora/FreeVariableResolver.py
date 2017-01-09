@@ -221,6 +221,9 @@ class FreeVariableResolver(object):
         """
         freeVariable = chainWithPosition.var[0]
 
+        if not hasattr(pyFunction, "func_code"):
+            return ResolutionResult.unbound(chainWithPosition)
+
         if freeVariable in pyFunction.func_code.co_freevars:
             index = pyFunction.func_code.co_freevars.index(freeVariable)
             try:
