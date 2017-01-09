@@ -1631,9 +1631,12 @@ PyObjectWalker::_registerClass(int64_t objectId, PyObject* pyObject)
             auto it = mPyObjectToObjectId.find(item);
         
             if (it == mPyObjectToObjectId.end()) {
-                throw std::runtime_error(
-                    "expected each base class to have a registered id"
-                    ". class = " + PyObjectUtils::str_string(pyObject));
+                return std::shared_ptr<PyforaError>(
+                    new PyforaError(
+                        "expected each base class to have a registered id"
+                        ". class = " + PyObjectUtils::str_string(pyObject)
+                        )
+                    );
                 }
         
             baseClassIds.push_back(it->second);

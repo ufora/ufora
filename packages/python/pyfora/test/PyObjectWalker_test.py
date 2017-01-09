@@ -82,6 +82,18 @@ class PyObjectWalkerTest(unittest.TestCase):
         gc.collect()
         walker.walkPyObject(1)
         
+    def test_PyObjectWalker_boto_connection(self):
+        import boto
+
+        conn = boto.connect_s3()
+
+        walker = PyObjectWalker(
+            self.mappings,
+            BinaryObjectRegistry()
+            )
+
+        # just check that this doesn't fail
+        walker.walkPyObject(conn)
 
 if __name__ == "__main__":
     unittest.main()
