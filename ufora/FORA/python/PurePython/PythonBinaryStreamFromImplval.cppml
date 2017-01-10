@@ -550,13 +550,7 @@ void PythonBinaryStreamFromImplval::_writePrimitive(
         -| String() ->> {
             stream << PythonBinaryStreamCommon::CODE_STR;
 
-            const String& foraString = primitive.cast<String>();
-
-            stream << (int32_t) foraString.size();
-            stream.write(
-                foraString.size(),
-                static_cast<const void*>(foraString.c_str())
-                );
+            writeString(stream, primitive.cast<String>());
             }
         -| Integer(sz, isSigned) ->> {
             if (sz == 64 && isSigned)
@@ -654,13 +648,7 @@ void PythonBinaryStreamFromImplval::writeUnconvertible(
 
             lassert(pathElt.type().isString());
 
-            const String& foraString = pathElt.cast<String>();
-
-            stream << (int32_t) foraString.size();
-            stream.write(
-                foraString.size(),
-                static_cast<const void*>(foraString.c_str())
-                );
+            writeString(stream, pathElt.cast<String>());
             }
         }
     else
@@ -668,6 +656,32 @@ void PythonBinaryStreamFromImplval::writeUnconvertible(
         lassert(modulePath.type().isNothing());
         stream << (bool)false;
         }
+    }
+
+void PythonBinaryStreamFromImplval::writeNameError(
+        OBinaryStream& stream,
+        const ImplValContainer& value,
+        int64_t objectId
+        )
+    {
+    stream << objectId;
+    stream << PythonBinaryStreamCommon::CODE_UNRESOLVED_SYMBOL;
+    ImplVal payload = TupleCategory::getItem(value.getReference(), 0);
+
+    lassert(payload.type().isTuple());
+    lassert(payload.type().getTuple().types().size() == 3);
+    
+    ImplVal varname = TupleCategory::getItem(payload, 0);
+    lassert(varname.type().isString());
+    writeString(stream, varname.cast<String>());
+
+    ImplVal lineno = TupleCategory::getItem(payload, 1);
+    lassert(lineno.type().isInteger());
+    stream << lineno.cast<int64_t>();
+
+    ImplVal col_offset = TupleCategory::getItem(payload, 2);
+    lassert(col_offset.type().isInteger());
+    stream << col_offset.cast<int64_t>();
     }
 
 int64_t PythonBinaryStreamFromImplval::write(OBinaryStream& stream,
@@ -685,6 +699,12 @@ int64_t PythonBinaryStreamFromImplval::write(OBinaryStream& stream,
     if (PythonBinaryStreamCommon::isUnconvertibleValueTuple(value))
         {
         writeUnconvertible(stream, value, objId);
+        return objId;
+        }
+
+    if (PythonBinaryStreamCommon::isNameErrorTuple(value))
+        {
+        writeNameError(stream, value, objId);
         return objId;
         }
 

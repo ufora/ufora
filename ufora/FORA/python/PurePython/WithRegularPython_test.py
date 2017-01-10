@@ -321,3 +321,11 @@ class WithRegularPython_test(unittest.TestCase):
 
         with self.assertRaises(UnboundLocalError):
             self.assertEqual(y, 2)
+
+    def test_free_variable_in_oopp(self):
+        with self.create_executor() as e:
+            with self.assertRaises(NameError):
+                with e.remotely:
+                    with helpers.python:
+                        res = unresolved_free_variable + 1
+

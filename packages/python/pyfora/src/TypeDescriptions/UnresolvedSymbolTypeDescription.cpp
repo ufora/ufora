@@ -36,9 +36,19 @@ PyObject* UnresolvedSymbolTypeDescription::transform(
         bool retainHomogenousListsAsNumpy
         )
     {
-    PyObjectPtr nameErrorType = PyObjectPtr::unincremented(
-        converter.singletonNameToObject("NameError"));
-    if (nameErrorType == nullptr) {
+    PyObjectPtr exceptionsModule = PyObjectPtr::unincremented(
+        PyImport_ImportModule("pyfora.Exceptions")
+        );
+    if (exceptionsModule == nullptr) {
+        return nullptr;
+        }
+    PyObjectPtr pyforaNameErrorClass = PyObjectPtr::unincremented(
+        PyObject_GetAttrString(
+            exceptionsModule.get(),
+            "PyforaNameError"
+            )
+        );
+    if (pyforaNameErrorClass == nullptr) {
         return nullptr;
         }
     
@@ -56,7 +66,7 @@ PyObject* UnresolvedSymbolTypeDescription::transform(
         }
 
     return PyObject_Call(
-        nameErrorType.get(),
+        pyforaNameErrorClass.get(),
         pyErrString.get(),
         nullptr);
     }

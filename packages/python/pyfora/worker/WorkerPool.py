@@ -42,7 +42,8 @@ class WorkerPool:
 
         if self.outOfProcess:
             self.childSubprocess = SubprocessRunner.SubprocessRunner(
-                [sys.executable, spawner.__file__, pathToSocketDir, "selector"] + (["--max_processes", str(max_processes)] if max_processes is not None else []),
+                [sys.executable, spawner.__file__, pathToSocketDir, "selector"] + \
+                    (["--max_processes", str(max_processes)] if max_processes is not None else []),
                 lambda x: logging.info("spawner OUT> %s", x),
                 lambda x: logging.info("spawner ERR> %s", x),
                 )

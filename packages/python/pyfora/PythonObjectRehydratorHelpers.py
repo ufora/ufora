@@ -273,6 +273,10 @@ class PythonObjectRehydratorHelpers(object):
 
     def instantiateFunction(self, filename, lineNumber, memberDictionary, file_text):
         """Instantiate a function instance."""
+
+        memberDictionary = { k: v for k, v in memberDictionary.iteritems() 
+                             if not isinstance(v, Exceptions.PyforaNameError) }
+
         objectOrNone = self.moduleLevelObject(filename, lineNumber)
         if objectOrNone is not None:
             return objectOrNone
