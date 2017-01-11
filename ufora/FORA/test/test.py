@@ -224,8 +224,7 @@ def reasonAboutForaCode(module, moduleName, testName):
         runtime = Runtime.getMainRuntime()
         axioms = runtime.getAxioms()
         compiler[0] = runtime.getTypedForaCompiler()
-        instructionGraph = runtime.getInstructionGraph()
-        reasoner[0] = ForaNative.SimpleForwardReasoner(compiler[0], instructionGraph, axioms)
+        reasoner[0] = ForaNative.SimpleForwardReasoner(compiler[0], axioms)
 
     moduleJOV = ForaNative.JudgmentOnValue.Constant(module.implVal_)
 

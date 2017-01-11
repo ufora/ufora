@@ -78,16 +78,6 @@ public:
             }
 
         static boost::python::object
-        AxiomsResolveAxiomDirectly(
-                    PolymorphicSharedPtr<Axioms>& axioms,
-                    PolymorphicSharedPtr<TypedFora::Compiler>& compiler,
-                    const JOVT& jovt
-                    )
-            {
-            return boost::python::object(axioms->resolveAxiomDirectly(*compiler, jovt));
-            }
-
-        static boost::python::object
         AxiomsGetCppWrapperCode(
                     PolymorphicSharedPtr<Axioms>& axioms
                     )
@@ -106,7 +96,6 @@ public:
                 .def("__len__", &AxiomsGetAxiomListSize)
                 .def("getAxiomByJOVT", &AxiomsGetAxiomByJOVT)
                 .def("getAxiomGroupByIndex", &AxiomsGetAxiomGroupByIndex)
-                .def("resolveAxiomDirectly", &AxiomsResolveAxiomDirectly)
                 .def("__getitem__", &AxiomsGetAxiomGroupByIndex)
                 .def("axiomSearchLinear", &axiomSearchLinear)
                 .def("axiomSearchTree", &axiomSearchTree)

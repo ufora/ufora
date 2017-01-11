@@ -23,23 +23,10 @@ pair<NativeCFG, ImmutableTreeVector<Type> > computeGpuKernelFunction(JOV funJOV,
 		new Fora::SimpleForwardReasoner(
 			Runtime::getRuntime().getTypedForaCompiler(),
 			Runtime::getRuntime().getTypedCfgStats(),
-			Runtime::getRuntime().getInstructionGraph(),
-            Runtime::getRuntime().getAxioms()
+			Runtime::getRuntime().getAxioms()
             )
 		);
 
-	auto frame = reasoner->reasonAboutApply(JOVT::Unnamed(signatureJOVs));
-
-	if (frame->exits().resultPart().size() < 1 )
-		{
-		ostringstream msg;
-		msg << "Code returns zero types ("
-				<< frame->exits().resultPart().size() << "):"
-				<< prettyPrintString(frame->exits().resultPart());
-		throw UnableToConvertToPTX(msg.str());
-		}
-
-	// Nullable<pair<TypedFora::BlockID, std::string> >
 	auto blockIdAndCode = reasoner->compileEntrypointForApply(JOVT::Unnamed(signatureJOVs));
 
 	lassert(blockIdAndCode->first == TypedFora::BlockID::entry());
@@ -56,6 +43,9 @@ pair<NativeCFG, ImmutableTreeVector<Type> > computeGpuKernelFunction(JOV funJOV,
 	TypedFora::Callable callable =
 			Runtime::getRuntime().getTypedForaCompiler()->getDefinition(blockIdAndCode->second);
 
+	if (callable.resultSignature().normalTypes().size() < 1 )
+		throw UnableToConvertToPTX("code returned zero types");
+
 	LOG_DEBUG << "Relaxed result signatures : " << prettyPrintString(callable.resultSignature().relaxed());
 
 	TypedFora::Converter converter;
@@ -71,7 +61,7 @@ pair<NativeCFG, ImmutableTreeVector<Type> > computeGpuKernelFunction(JOV funJOV,
 
 	NativeCFG cfg = converter.convertCallable(callable);
 
-	cfg = NativeCFGTransforms::convertForGpuExecution(cfg, frame->exits().resultPart().size());
+	cfg = NativeCFGTransforms::convertForGpuExecution(cfg, callable.resultSignature().normalTypes().size());
 
 	while (cfg.externalBranches().size())
 		{
@@ -100,9 +90,9 @@ pair<NativeCFG, ImmutableTreeVector<Type> > computeGpuKernelFunction(JOV funJOV,
 
 	ImmutableTreeVector<Type> outputTypes;
 
-	for (auto& jov : frame->exits().resultPart().vals())
+	for (auto& jov : callable.resultSignature().normalTypes())
 		{
-		Nullable<Type> t = jov.type();
+		Nullable<Type> t = jov.jov().type();
 
 		lassert(t);
 

@@ -405,9 +405,8 @@ class ComputedValue(ComputedGraph.Location):
         runtime = Runtime.getMainRuntime()
         axioms = runtime.getAxioms()
         compiler = runtime.getTypedForaCompiler()
-        instructionGraph = runtime.getInstructionGraph()
         
-        reasoner = ForaNative.SimpleForwardReasoner(compiler, instructionGraph, axioms)
+        reasoner = ForaNative.SimpleForwardReasoner(compiler, axioms)
         
         frame = reasoner.reasonAboutComputationDefinition(self.cumulusComputationDefinition)
 

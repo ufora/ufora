@@ -15,11 +15,13 @@
 ****************************************************************************/
 
 #include "TypedCfgInterpreter.hppml"
+#include "../Reasoner/SimpleForwardReasoner.hppml"
 #include "../Core/ExecutionContextScope.hppml"
 #include "../Core/ExecutionContext.hppml"
 #include "../Core/StackFrame.hpp"
 #include "../Core/StackFrameAllocator.hpp"
 #include "../Core/RefcountPool.hppml"
+#include "../Core/TupleCategory.hppml"
 #include "../Runtime.hppml"
 #include "../TypedFora/ABI/VectorLoadRequest.hppml"
 
@@ -102,6 +104,12 @@ void TypedCfgInterpreter::followContinuation(const TypedCfgStats::Continuation& 
 				}
 			}
 		-| Jump(args, nodePtr) ->> {
+
+			lassert_dump(
+				!nodePtr->body().isInvalidNode(),
+				"Tried to flow to an invalid node"
+				);
+
 			uint8_t newValStorage[args.size() * sizeof(ImplVal)];
 			ImplVal* newVals = (ImplVal*)newValStorage;
 
@@ -113,7 +121,7 @@ void TypedCfgInterpreter::followContinuation(const TypedCfgStats::Continuation& 
 
 			mCurrentFrame->advanceNodePtrTo(nodePtr);
 
-			mCurrentContinuation = continuation_continue;
+			mCurrentContinuation = continuation_execute_from_node;
 			}
 	}
 
@@ -155,33 +163,62 @@ ImplVal TypedCfgInterpreter::constructArgument(const ControlFlowArg& arg)
 ImplVal TypedCfgInterpreter::constructArgument(const ControlFlowContinuationArg& arg)
 	{
 	@match ControlFlowContinuationArg(arg)
+		-| Arg(a) ->> {
+			return constructArgument(a);
+			}
 		-| Result() ->> {
 			return mCurrentFrame->getResultValue();
 			}
 		-| TupleElement(k) ->> {
-			int64_t argIndex = mCurrentFrame->getNodePtr()->body().getTupleExpand().argIndex();
+			lassert_dump(
+				mCurrentFrame->getNodePtr()->body().isTupleExpand() ||
+					mCurrentFrame->getNodePtr()->body().isTupleExpandJump(), 
+				prettyPrintString(mCurrentFrame->getNodePtr()->body().tagName())
+				);
+
+			int64_t argIndex;
+			@match TypedCfgStats::NodeBody(mCurrentFrame->getNodePtr()->body())
+				-| TupleExpand(ix) ->> { argIndex = ix; }
+				-| TupleExpandJump(ix) ->> {argIndex = ix; }
 
 			ImplVal resVal = mCurrentFrame->frameValue(argIndex);
 
 			lassert(resVal.type().isTuple());
 
 			//because these are pooled values, this is OK
-			return ImplVal(
-				resVal.type().getTuple().types()[k], 
-				(uint8_t*)resVal.data() + resVal.type().byteOffsets()[k]
+			return mRefcountPool->add(
+				ImplVal(
+					resVal.type().getTuple().types()[k], 
+					(uint8_t*)resVal.data() + resVal.type().byteOffsets()[k]
+					)
 				);
 			}
 		-| TupleRemainingElements() ->> {
-			ImplVal resVal = mCurrentFrame->getResultValue();
+			lassert_dump(
+				mCurrentFrame->getNodePtr()->body().isTupleExpand() ||
+					mCurrentFrame->getNodePtr()->body().isTupleExpandJump(), 
+				prettyPrintString(mCurrentFrame->getNodePtr()->body().tagName())
+				);
 
-			int64_t targetArity = mCurrentFrame->getNodePtr()->body().getTupleExpand().ifMatch().arity();
+			int64_t argIndex;
+			int64_t targetArity;
+			
+			@match TypedCfgStats::NodeBody(mCurrentFrame->getNodePtr()->body())
+				-| TupleExpand(ix, (arity, _, _)) ->> { argIndex = ix; targetArity = arity; }
+				-| TupleExpandJump(ix, arity) ->> {argIndex = ix; targetArity = arity; }
+			
+			ImplVal resVal = mCurrentFrame->frameValue(argIndex);
 
-			return ImplVal(
-				Type::Tuple(
-					resVal.type().getTuple().types().slice(targetArity),
-					resVal.type().getTuple().names().slice(targetArity)
-					),
-				(uint8_t*)resVal.data() + resVal.type().byteOffsets()[targetArity]
+			lassert(resVal.type().isTuple());
+
+			return mRefcountPool->add(
+				ImplVal(
+					Type::Tuple(
+						resVal.type().getTuple().types().slice(targetArity),
+						resVal.type().getTuple().names().slice(targetArity)
+						),
+					(uint8_t*)resVal.data() + resVal.type().byteOffsets()[targetArity]
+					)
 				);
 			}
 		-| MakeTuple(args) ->> {
@@ -212,7 +249,29 @@ ImplVal TypedCfgInterpreter::constructArgument(const ControlFlowContinuationArg&
 
 void TypedCfgInterpreter::step()
 	{
-	if (mCurrentContinuation == continuation_continue)
+	if (mCurrentFrame->getNodePtr() == nullptr)
+		{
+		ImmutableTreeVector<JOV> jovs;
+		auto graph = mCurrentFrame->getGraphAndLabel()->first;
+		auto label = mCurrentFrame->getGraphAndLabel()->second;
+
+		long valueCount = graph[label].argCount();
+
+		for (long k = 0; k < valueCount; k++)
+			jovs = jovs + relaxedJOV(JOV::FromLiveValue(mCurrentFrame->frameValue(k)));
+
+		mCurrentFrame->advanceNodePtrTo(
+			Runtime::getRuntime().getReasoner()->reasonAndProduceNodePtr(
+				Fora::ReasonerEntrypoint(
+					graph,
+					label,
+					jovs
+					)
+				)
+			);
+		}
+
+	if (mCurrentContinuation == continuation_execute_from_node)
 		{
 		if (mCurrentFrame->getCallbacks()->checkInterruptFlag())
 			{
@@ -222,6 +281,14 @@ void TypedCfgInterpreter::step()
 
 		@match TypedCfgStats::NodeBody(mCurrentFrame->getNodePtr()->body())
 			-| Apply(args, Graph(targetNodePtr), normalConts, exceptConts) ->> {
+				lassert_dump(
+					!targetNodePtr->body().isInvalidNode(),
+					"Tried to call an invalid node applying " << 
+						prettyPrintString(mCurrentFrame->getNodePtr()->judgments()) << " and "
+						<< prettyPrintString(args)
+						<< " with conts " << prettyPrintString(normalConts) << " and " << prettyPrintString(exceptConts)
+						);
+
 				auto newFrame = TypedCfgInterpreterStackFrame::allocate(
 					mStackAllocator, 
 					mCurrentFrame,
@@ -267,8 +334,13 @@ void TypedCfgInterpreter::step()
 						return;
 						}
 					}
+
+				followContinuation(otherwise);
 				}
 			-| Jump(continuation) ->> {
+				followContinuation(continuation);
+				}
+			-| TupleExpandJump(_, _, continuation) ->> {
 				followContinuation(continuation);
 				}
 			-| TransferToInterpreter() ->> {
@@ -432,7 +504,10 @@ void TypedCfgInterpreter::stepNativeAxiom()
 					{
 					const auto& possibilities = axiom.resultSignature().resultPart();
 					Nullable<uword_t> which = possibilities.smallestCovering(mCurrentFrame->getResultValue());
-					lassert(possibilities.size() == normalConts.size());
+					lassert_dump(
+						possibilities.size() == normalConts.size(),
+						prettyPrintString(possibilities) << " vs. " << prettyPrintString(normalConts)
+						);
 					followContinuation(normalConts[*which]);
 					}
 				}
@@ -465,11 +540,11 @@ void TypedCfgInterpreter::followInterruptContinuation(const Nullable<TypedFora::
 	NativeRuntimeContinuationValue<1> cont =
 		mTypedForaCompiler->wrapCPPCallback(
 			&TypedCfgInterpreter::interpreter,
-			this,
+			mCurrentFrame,
 			mStackAllocator.getMemBlockPtr()
 			) +
 		NativeRuntimeContinuationSlot(
-			continuation_continue,
+			continuation_execute_from_node,
 			&mCurrentFrame->getResultValue()
 			);
 

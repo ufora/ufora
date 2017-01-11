@@ -24,8 +24,7 @@
 #include "../Axioms/AxiomGroup.hppml"
 #include "../TypedFora/JitCompiler/TypedJumpTarget.hppml"
 #include "../TypedFora/Transforms/CleanupAndSimplify.hppml"
-#include "../Interpreter/Instruction.hppml"
-#include "../Interpreter/RuntimeConfig.hppml"
+#include "../RuntimeConfig.hppml"
 #include "../../core/Memory.hpp"
 #include "ReasonerCodegen.hppml"
 #include "ReasonerTypedCfgBuilder.hppml"
@@ -37,12 +36,10 @@ namespace Fora {
 SimpleForwardReasoner::SimpleForwardReasoner(
 			PolymorphicSharedPtr<TypedFora::Compiler> inCompiler,
 			PolymorphicSharedPtr<TypedCfgStats> inTypedCfgStats,
-			PolymorphicSharedPtr<Fora::Interpreter::InstructionGraph> inInstructionGraph,
 			PolymorphicSharedPtr<Axioms> inAxioms
 			) :
 		mAxioms(inAxioms),
 		mCompiler(inCompiler),
-		mInterpreterInstructionGraph(inInstructionGraph),
 		mTypedCfgStats(inTypedCfgStats)
 	{
 	}
@@ -52,12 +49,24 @@ PolymorphicSharedPtr<Axioms> SimpleForwardReasoner::getAxioms() const
 	return mAxioms;
 	}
 
-TypedFora::Compiler& SimpleForwardReasoner::getCompiler()
+PolymorphicSharedPtr<TypedCfgStats> SimpleForwardReasoner::getStats() const
+	{
+	return mTypedCfgStats;
+	}
+
+TypedFora::Compiler& SimpleForwardReasoner::getCompiler() const
 	{
 	return *mCompiler;
 	}
 
 PolymorphicSharedPtr<ReasonerFrame> SimpleForwardReasoner::getFrameFor(const ReasonerFrameId& frameId)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	return getFrameFor_(frameId);
+	}
+
+PolymorphicSharedPtr<ReasonerFrame> SimpleForwardReasoner::getFrameFor_(const ReasonerFrameId& frameId)
 	{
 	auto& result = mFrames[frameId];
 
@@ -78,27 +87,27 @@ PolymorphicSharedPtr<ReasonerFrame> SimpleForwardReasoner::getFrameFor(const Rea
 	return result;
 	}
 
-void SimpleForwardReasoner::computeReachableUnaddedFrames(ReasonerFrameId frameId, std::set<ReasonerFrameId>& outFrames)
+void SimpleForwardReasoner::computeReachableUnaddedFrames_(ReasonerFrameId frameId, std::set<ReasonerFrameId>& outFrames, const std::set<ReasonerFrameId>& toLookIn)
 	{
-	if (mFramesAddedToGraph.find(frameId) != mFramesAddedToGraph.end() ||
+	if (toLookIn.find(frameId) != toLookIn.end() ||
 			outFrames.find(frameId) != outFrames.end())
 		return;
 
-	auto frame = getFrameFor(frameId);
+	auto frame = getFrameFor_(frameId);
 
 	outFrames.insert(frameId);
 
 	for (auto& frameIdAndNodes: frame->getCalledFrames().getValueToKeys())
-		if (!getFrameFor(frameIdAndNodes.first)->exitsAreConstants())
-			computeReachableUnaddedFrames(frameIdAndNodes.first, outFrames);
+		if (!getFrameFor_(frameIdAndNodes.first)->exitsAreConstants())
+			computeReachableUnaddedFrames_(frameIdAndNodes.first, outFrames, toLookIn);
 	}
 
-void SimpleForwardReasoner::relaxUnnecessaryFrames(const std::set<ReasonerFrameId>& frames)
+void SimpleForwardReasoner::relaxUnnecessaryFrames_(const std::set<ReasonerFrameId>& frames)
 	{
 	long relaxed = 0;
 	for (auto frameId: frames)
 		{
-		auto frame = getFrameFor(frameId);
+		auto frame = getFrameFor_(frameId);
 
 		if (!frame->relaxesTo() && !frame->recalculationDisabled())
 			for (auto otherFrame: mFramesByGraph.getKeys(frame->graph()))
@@ -121,7 +130,14 @@ void SimpleForwardReasoner::relaxUnnecessaryFrames(const std::set<ReasonerFrameI
 		LOG_DEBUG_SCOPED("ReasonerPerf") << "Relaxed " << relaxed << " of " << frames.size();
 	}
 
-void SimpleForwardReasoner::compile(PolymorphicSharedPtr<ReasonerFrame> frame)
+void SimpleForwardReasoner::addToGraph(PolymorphicSharedPtr<ReasonerFrame> frame)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	addToGraph_(frame);
+	}
+
+void SimpleForwardReasoner::addToGraph_(PolymorphicSharedPtr<ReasonerFrame> frame)
 	{
 	lassert(!mGraph.popDirtyReachableFrame());
 
@@ -135,7 +151,7 @@ void SimpleForwardReasoner::compile(PolymorphicSharedPtr<ReasonerFrame> frame)
 
 	lassert(mGraph.isRoot(frame->frameId()));
 
-	computeReachableUnaddedFrames(frame->frameId(), reachableUnaddedFrames);
+	computeReachableUnaddedFrames_(frame->frameId(), reachableUnaddedFrames, mFramesAddedToGraph);
 
 	for (auto f: reachableUnaddedFrames)
 		{
@@ -149,7 +165,7 @@ void SimpleForwardReasoner::compile(PolymorphicSharedPtr<ReasonerFrame> frame)
 		lassert(!mGraph.isDirty(f))
 
 	//relax any frame that's unnecessary
-	relaxUnnecessaryFrames(reachableUnaddedFrames);
+	relaxUnnecessaryFrames_(reachableUnaddedFrames);
 
 	//create the call graph on these frames
 	TwoWaySetMap<ReasonerFrameId, ReasonerFrameId> frameGraph;
@@ -157,8 +173,8 @@ void SimpleForwardReasoner::compile(PolymorphicSharedPtr<ReasonerFrame> frame)
 		for (auto called: mGraph.getCalledFrames(frame))
 			{
 			ReasonerFrameId actuallyCalled = called;
-			while (getFrameFor(actuallyCalled)->relaxesTo())
-				actuallyCalled = *getFrameFor(actuallyCalled)->relaxesTo();
+			while (getFrameFor_(actuallyCalled)->relaxesTo())
+				actuallyCalled = *getFrameFor_(actuallyCalled)->relaxesTo();
 			frameGraph.insert(frame, actuallyCalled);
 			}
 
@@ -167,100 +183,110 @@ void SimpleForwardReasoner::compile(PolymorphicSharedPtr<ReasonerFrame> frame)
 	minimumGraphCovering(frameGraph, coveringFrames, discard, true);
 
 	for (auto frame: coveringFrames)
-		getFrameFor(frame)->markIsRecursive();
+		getFrameFor_(frame)->markIsRecursive();
 
 	ImmutableTreeMap<TypedCfgGraphIdentity, TypedCfgGraph> graphs;
-	for (auto frame: reachableUnaddedFrames)
-		graphs = graphs + 
-				ReasonerTypedCfgBuilderForFrame::entrypointNameFor(frame) + 
-				ReasonerTypedCfgBuilderForFrame(
-					mAxioms,
-					mCompiler,
-					getFrameFor(frame),
-					this->polymorphicSharedPtrFromThis()
-					).getGraph()
-			;
+
+	addAllDependentNodesToGraph_(frame->frameId(), graphs);
 
 	mTypedCfgStats->addGraphSet(graphs);
+	}
 
-	addAllDependentNodesToGraph(frame->frameId());
+void SimpleForwardReasoner::addAllDependentNodesToGraph_(
+			ReasonerFrameId frameId, 
+			ImmutableTreeMap<TypedCfgGraphIdentity, TypedCfgGraph>& graphs
+			)
+	{
+	if (mFramesAddedToGraph.find(frameId) != mFramesAddedToGraph.end())
+		return;
+
+	lassert(!mGraph.isDirty(frameId));
+
+	mFramesAddedToGraph.insert(frameId);
+
+	auto frame = getFrameFor_(frameId);	
+
+	if (!frame->relaxesTo() && frame->getNodeRoots().valueCount() > 0)
+		{
+		graphs = graphs + 
+			ReasonerTypedCfgBuilderForFrame::entrypointNameFor(frameId) + 
+			ReasonerTypedCfgBuilderForFrame(
+				mAxioms,
+				mCompiler,
+				frame,
+				this->polymorphicSharedPtrFromThis()
+				).getGraph()
+			;
+		}
+
+	for (auto& frameIdAndNodes: frame->getCalledFrames().getValueToKeys())
+		if (!getFrameFor_(frameIdAndNodes.first)->exitsAreConstants())
+			addAllDependentNodesToGraph_(frameIdAndNodes.first, graphs);
+	}
+
+void SimpleForwardReasoner::compile(PolymorphicSharedPtr<ReasonerFrame> frame)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	compile_(frame);
+	}
+
+void SimpleForwardReasoner::compile_(PolymorphicSharedPtr<ReasonerFrame> frame)
+	{
+	lassert(!mGraph.popDirtyReachableFrame());
+
+	if (mFramesAddedToGraph.find(frame->frameId()) != mFramesAddedToGraph.end())
+		return;
+
+	double t0 = curClock();
+
+	//first, compute the reachable frames
+	std::set<ReasonerFrameId> reachableUnaddedFrames;
+
+	lassert(mGraph.isRoot(frame->frameId()));
+
+	computeReachableUnaddedFrames_(frame->frameId(), reachableUnaddedFrames, mFramesAddedToCompiler);
+
+	for (auto f: reachableUnaddedFrames)
+		{
+		lassert_dump(
+			mGraph.isReachable(f),
+			std::string(mGraph.computeIsReachable(f) ? "computed true" : "computed false")
+			);
+		}
+
+	for (auto f: reachableUnaddedFrames)
+		lassert(!mGraph.isDirty(f))
+
+	//relax any frame that's unnecessary
+	relaxUnnecessaryFrames_(reachableUnaddedFrames);
+
+	//create the call graph on these frames
+	TwoWaySetMap<ReasonerFrameId, ReasonerFrameId> frameGraph;
+	for (auto frame: reachableUnaddedFrames)
+		for (auto called: mGraph.getCalledFrames(frame))
+			{
+			ReasonerFrameId actuallyCalled = called;
+			while (getFrameFor_(actuallyCalled)->relaxesTo())
+				actuallyCalled = *getFrameFor_(actuallyCalled)->relaxesTo();
+			frameGraph.insert(frame, actuallyCalled);
+			}
+
+	std::set<ReasonerFrameId> discard;
+	std::set<ReasonerFrameId> coveringFrames;
+	minimumGraphCovering(frameGraph, coveringFrames, discard, true);
+
+	for (auto frame: coveringFrames)
+		getFrameFor_(frame)->markIsRecursive();
+
+	addAllDependentNodesToCompiler_(frame->frameId());
 
 	long relaxed = 0;
 	for (auto frameId: reachableUnaddedFrames)
-		if (getFrameFor(frameId)->relaxesTo())
+		if (getFrameFor_(frameId)->relaxesTo())
 			relaxed++;
 
 	double t1 = curClock();
-
-	LOG_DEBUG_SCOPED("ReasonerPerf") << "Took " << t1 - t0 << " to add " << reachableUnaddedFrames.size()
-		<< " frames to the graph. " << relaxed << " are relaxed."
-		<< " Total of " << mUnlinkedEntrypoints.size() << " to link.";
-
-	//go over all the linker names and ensure their typed jump targets are wired into the
-	//compiler
-	std::vector<TypedFora::TypedJumpTarget> jumpTargets;
-
-	while (mUnlinkedEntrypoints.size())
-		{
-		auto toLink = *mUnlinkedEntrypoints.begin();
-		mUnlinkedEntrypoints.erase(toLink);
-
-		auto frame = getFrameFor(toLink);
-
-		for (auto& labelAndEntryRoots: frame->getNodeRoots().getKeysToValues())
-			{
-			ControlFlowGraphLabel label = labelAndEntryRoots.first;
-
-			for (auto root: labelAndEntryRoots.second)
-				{
-				ReasonerCodegenForFrame codegen(
-					mAxioms,
-					mCompiler,
-					frame,
-					this->polymorphicSharedPtrFromThis()
-					);
-
-				auto blockID = codegen.blockForNodeRoot(root);
-				auto typedJumpTarget = mCompiler->getJumpTarget(ReasonerCodegenForFrame::entrypointNameFor(toLink), blockID);
-
-				auto instructionPtr = mInterpreterInstructionGraph->getInstruction(
-					frame->graph(),
-					label
-					);
-
-				auto jovs = mapITV(typedJumpTarget.callSignature(), [&](TypedFora::Type t) { return t.jov(); });
-
-				instructionPtr->getCompilerEntrypointMap().setJumpTarget(
-						JOVT::Unnamed(jovs),
-						typedJumpTarget
-						);
-
-				std::string linkername = ReasonerCodegenForFrame::entrypointNameFor(toLink);
-				LOG_DEBUG_SCOPED("ReasonerPerf") << "Adding " << linkername << " for " << toLink;
-
-				jumpTargets.push_back(typedJumpTarget);
-				}
-			}
-		}
-
-	LOG_DEBUG_SCOPED("ReasonerPerf") << "Adding dependent nodes to graph took " << curClock() - t0 << "(" << t1 - t0 << " to define)";
-
-	t0 = curClock();
-	t1 = curClock();
-	for (auto tjt: jumpTargets)
-		{
-		t0 = curClock();
-
-		while (tjt.isEmpty())
-			{
-			sleepSeconds(0.001);
-			if (curClock() - t0 > 10.0)
-				{
-				t0 = curClock();
-				LOG_WARN << "Waiting on " << tjt.functionName();
-				}
-			}
-		}
 	}
 
 @type CallVisitor = int outgoingCalls {
@@ -281,16 +307,16 @@ public:
 		}
 };
 
-void SimpleForwardReasoner::addAllDependentNodesToGraph(ReasonerFrameId frameId)
+void SimpleForwardReasoner::addAllDependentNodesToCompiler_(ReasonerFrameId frameId)
 	{
-	if (mFramesAddedToGraph.find(frameId) != mFramesAddedToGraph.end())
+	if (mFramesAddedToCompiler.find(frameId) != mFramesAddedToCompiler.end())
 		return;
 
 	lassert(!mGraph.isDirty(frameId));
 
-	mFramesAddedToGraph.insert(frameId);
+	mFramesAddedToCompiler.insert(frameId);
 
-	auto frame = getFrameFor(frameId);
+	auto frame = getFrameFor_(frameId);
 
 	if (!frame->relaxesTo() && frame->getNodeRoots().valueCount() > 0)
 		{
@@ -323,70 +349,17 @@ void SimpleForwardReasoner::addAllDependentNodesToGraph(ReasonerFrameId frameId)
 			;
 
 		mCompiler->define(linkername, callable);
-
-		mUnlinkedEntrypoints.insert(frameId);
 		}
 
 	for (auto& frameIdAndNodes: frame->getCalledFrames().getValueToKeys())
-		if (!getFrameFor(frameIdAndNodes.first)->exitsAreConstants())
-			addAllDependentNodesToGraph(frameIdAndNodes.first);
-	}
-
-PolymorphicSharedPtr<ReasonerFrame> SimpleForwardReasoner::hasEntrypointAlreadyBeenCovered(ReasonerEntrypoint entrypoint)
-	{
-	ReasonerFrameId frameId(entrypoint, ReasonerRecursionFrame::None());
-
-	if (mFramesAddedToGraph.find(frameId) != mFramesAddedToGraph.end())
-		return getFrameFor(frameId);
-
-	return PolymorphicSharedPtr<ReasonerFrame>();
-	}
-
-PolymorphicSharedPtr<ReasonerFrame> SimpleForwardReasoner::reason(ReasonerEntrypoint entrypoint)
-	{
-	double t0 = curClock();
-
-	ReasonerFrameId frameId(entrypoint, ReasonerRecursionFrame::None());
-
-	mGraph.addRoot(frameId);
-
-	auto frame = getFrameFor(frameId);
-
-	updateAll();
-
-	if (curClock() - t0 > .1)
-		LOG_DEBUG_SCOPED("ReasonerPerf") << "Completed reasoning after " << curClock() - t0;
-
-	return frame;
-	}
-
-PolymorphicSharedPtr<ReasonerFrame> SimpleForwardReasoner::reasonForTimePeriod(ReasonerEntrypoint entrypoint, double elapsed)
-	{
-	double t0 = curClock();
-
-	ReasonerFrameId frameId(entrypoint, ReasonerRecursionFrame::None());
-
-	mGraph.addRoot(frameId);
-
-	auto frame = getFrameFor(frameId);
-
-	if (!updateAllForPeriod(elapsed - (curClock() - t0)))
-		{
-		mGraph.removeRoot(frameId);
-
-		LOG_DEBUG_SCOPED("ReasonerPerf") << "Terminated reasoning after " << curClock() - t0;
-
-		return PolymorphicSharedPtr<ReasonerFrame>();
-		}
-
-	if (curClock() - t0 > .1)
-		LOG_DEBUG_SCOPED("ReasonerPerf") << "Completed reasoning after " << curClock() - t0;
-
-	return frame;
+		if (!getFrameFor_(frameIdAndNodes.first)->exitsAreConstants())
+			addAllDependentNodesToCompiler_(frameIdAndNodes.first);
 	}
 
 PolymorphicSharedPtr<ReasonerFrame> SimpleForwardReasoner::reasonAboutApply(JudgmentOnValueTuple applyJovt)
 	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
 	auto axiom = mAxioms->axiom(*mCompiler, applyJovt);
 
 	lassert(axiom);
@@ -403,17 +376,37 @@ PolymorphicSharedPtr<ReasonerFrame> SimpleForwardReasoner::reasonAboutApply(Judg
 
 			mGraph.addRoot(frameId);
 
-			auto frame = getFrameFor(frameId);
+			auto frame = getFrameFor_(frameId);
 
 			double t0 = curClock();
 
-			updateAll();
+			updateAll_();
 
 			if (curClock() - t0 > .1)
 				LOG_DEBUG_SCOPED("ReasonerPerf") << "Completed reasoning after " << curClock() - t0;
 
 			return frame;
 			}
+	}
+
+PolymorphicSharedPtr<ReasonerFrame> SimpleForwardReasoner::reason(ReasonerEntrypoint entrypoint)
+	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	double t0 = curClock();
+
+	ReasonerFrameId frameId(entrypoint, ReasonerRecursionFrame::None());
+
+	mGraph.addRoot(frameId);
+
+	auto frame = getFrameFor_(frameId);
+
+	updateAll_();
+
+	if (curClock() - t0 > .1)
+		LOG_DEBUG_SCOPED("ReasonerPerf") << "Completed reasoning after " << curClock() - t0;
+
+	return frame;
 	}
 
 Nullable<pair<TypedFora::BlockID, std::string> > SimpleForwardReasoner::compileEntrypointForApply(JudgmentOnValueTuple applyTuple)
@@ -442,47 +435,60 @@ Nullable<pair<TypedFora::BlockID, std::string> > SimpleForwardReasoner::compileE
 	return null() << make_pair(blockID, ReasonerCodegenForFrame::entrypointNameFor(frame->frameId()));
 	}
 
-void SimpleForwardReasoner::updateAll()
-	{
-	while (auto nEntrypoint = mGraph.popDirtyReachableFrame())
-		updateFrame(*nEntrypoint);
-	}
 
-bool SimpleForwardReasoner::updateAllForPeriod(double elapsed)
+TypedCfgStats::NodePtr SimpleForwardReasoner::reasonAndProduceNodePtr(ReasonerEntrypoint entrypoint)
 	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
+	lassert(!entrypoint.applyJOA());
+
+	for (auto frame: mFramesByGraph.getKeys(entrypoint.graph()))
+		if (mFramesAddedToGraph.find(frame->frameId()) != mFramesAddedToGraph.end())
+			if (auto node = frame->getAnyNodeCovering(entrypoint.label(), entrypoint.jovs()))
+				return mTypedCfgStats->getNode(
+					ReasonerTypedCfgBuilderForFrame::entrypointNameFor(frame->frameId()),
+					ReasonerTypedCfgBuilderForFrame::nodeIdFor(*node)
+					);
+
 	double t0 = curClock();
 
-	if (curClock() - t0 > elapsed)
-		return false;
+	ReasonerFrameId frameId(entrypoint, ReasonerRecursionFrame::None());
 
-	bool printed = false;
+	mGraph.addRoot(frameId);
 
-	while (auto nEntrypoint = mGraph.popDirtyReachableFrame())
-		{
-		if (curClock() - t0 > .1 && !printed)
-			{
-			LOG_DEBUG_SCOPED("ReasonerPerf") << "Spending a long time reasoning...";
-			printed = true;
-			}
+	auto frame = getFrameFor_(frameId);
 
-		long count = 0;
-		while (updateFrame(*nEntrypoint))
-			count++;
+	updateAll_();
 
-		if (curClock() - t0 > elapsed)
-			return false;
-		}
+	addToGraph_(frame);
 
-	return true;
+	if (curClock() - t0 > .1)
+		LOG_DEBUG_SCOPED("ReasonerPerf") << "Completed reasoning after " << curClock() - t0;
+
+	for (auto frame: mFramesByGraph.getKeys(entrypoint.graph()))
+		if (mFramesAddedToGraph.find(frame->frameId()) != mFramesAddedToGraph.end())
+			if (auto node = frame->getAnyNodeCovering(entrypoint.label(), entrypoint.jovs()))
+				return mTypedCfgStats->getNode(
+					ReasonerTypedCfgBuilderForFrame::entrypointNameFor(frame->frameId()),
+					ReasonerTypedCfgBuilderForFrame::nodeIdFor(*node)
+					);
+	
+	lassert_dump(false, "after adding this to the compiler, we expected to actually find an entrypoint.");
 	}
 
-bool SimpleForwardReasoner::updateFrame(const ReasonerFrameId& frameId)
+void SimpleForwardReasoner::updateAll_()
+	{
+	while (auto nEntrypoint = mGraph.popDirtyReachableFrame())
+		updateFrame_(*nEntrypoint);
+	}
+
+bool SimpleForwardReasoner::updateFrame_(const ReasonerFrameId& frameId)
 	{
 	LOG_DEBUG << "Update " << frameId;
 
 	bool changed = false;
 
-	auto frame = getFrameFor(frameId);
+	auto frame = getFrameFor_(frameId);
 
 	JudgmentOnAction priorJOA = frame->exits();
 
@@ -511,7 +517,7 @@ bool SimpleForwardReasoner::updateFrame(const ReasonerFrameId& frameId)
 			{
 			LOG_DEBUG << "\t\tMarking dirty: " << callingFrame;
 
-			getFrameFor(callingFrame)->entrypointExitsChanged(frameId);
+			getFrameFor_(callingFrame)->entrypointExitsChanged(frameId);
 			mGraph.markDirty(callingFrame);
 			}
 		}
@@ -521,20 +527,20 @@ bool SimpleForwardReasoner::updateFrame(const ReasonerFrameId& frameId)
 					calledFrames.getValue(nodeAndFrame.first) != nodeAndFrame.second)
 			{
 			ImmutableTreeVector<CfgTransition> recursion =
-				checkIfTransitionIsRecursive(
+				checkIfTransitionIsRecursive_(
 					frameId,
 					nodeAndFrame.first.label(),
 					nodeAndFrame.second
 					);
 
 			if (recursion.size())
-				createRecursion(recursion);
+				createRecursion_(recursion);
 			}
 
 	return changed;
 	}
 
-void SimpleForwardReasoner::createRecursion(const ImmutableTreeVector<CfgTransition>& transitions)
+void SimpleForwardReasoner::createRecursion_(const ImmutableTreeVector<CfgTransition>& transitions)
 	{
 	ReasonerFrameId rootFrame = transitions[0].sourceGraph();
 
@@ -575,11 +581,11 @@ void SimpleForwardReasoner::createRecursion(const ImmutableTreeVector<CfgTransit
 	LOG_DEBUG << "Recursing\n\t" << rootFrame << "\nto\n\t" << recursedFrame
 		<< "\nbecause of \n" << transitions;
 
-	getFrameFor(rootFrame)->markRelaxesTo(recursedFrame);
-	markFrameDirty(rootFrame);
+	getFrameFor_(rootFrame)->markRelaxesTo(recursedFrame);
+	markFrameDirty_(rootFrame);
 	}
 
-ImmutableTreeVector<CfgTransition> SimpleForwardReasoner::checkIfTransitionIsRecursive(
+ImmutableTreeVector<CfgTransition> SimpleForwardReasoner::checkIfTransitionIsRecursive_(
 									const ReasonerFrameId& caller,
 									ControlFlowGraphLabel callLocation,
 									const ReasonerFrameId& callee
@@ -639,7 +645,7 @@ ImmutableTreeVector<CfgTransition> SimpleForwardReasoner::checkIfTransitionIsRec
 
 	boost::function3<ImmutableTreeVector<CfgTransition>, ReasonerFrameId, ReasonerFrameId, ImmutableTreeVector<CfgTransition> > checkUpstreamNode =
 		[&](ReasonerFrameId caller, ReasonerFrameId callee, ImmutableTreeVector<CfgTransition> pathToGetHere) -> ImmutableTreeVector<CfgTransition> {
-			if (getFrameFor(caller)->relaxesTo())
+			if (getFrameFor_(caller)->relaxesTo())
 				return emptyTreeVec();
 			//roots that are not function entrypoints are not candidates for recursion
 			if (caller.entrypoint().label() != ControlFlowGraphLabel())
@@ -673,7 +679,7 @@ ImmutableTreeVector<CfgTransition> SimpleForwardReasoner::checkIfTransitionIsRec
 				}
 
 			for (auto upstreamFrame: mGraph.getCallers(caller))
-				for (const auto& node: getFrameFor(upstreamFrame)->getCalledFrames().getKeys(caller))
+				for (const auto& node: getFrameFor_(upstreamFrame)->getCalledFrames().getKeys(caller))
 					{
 					auto recursesTo = checkUpstreamNode(
 							upstreamFrame,
@@ -703,10 +709,12 @@ ImmutableTreeVector<CfgTransition> SimpleForwardReasoner::checkIfTransitionIsRec
 
 int64_t SimpleForwardReasoner::totalFrameCount() const
 	{
+	boost::recursive_mutex::scoped_lock lock(mMutex);
+
 	return mFrames.size();
 	}
 
-void SimpleForwardReasoner::markFrameDirty(const ReasonerFrameId& caller)
+void SimpleForwardReasoner::markFrameDirty_(const ReasonerFrameId& caller)
 	{
 	mGraph.markDirty(caller);
 	}

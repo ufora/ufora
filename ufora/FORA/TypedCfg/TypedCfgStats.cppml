@@ -18,8 +18,16 @@
 #include "../TypedFora/TypedFora.hppml"
 #include "../TypedFora/TypedForaUtil.hppml"
 #include "../TypedFora/JitCompiler/Compiler.hppml"
+#include "../TypedFora/JitCompiler/TypedContinuation.hppml"
 #include "../TypedFora/JitCompiler/TypedJumpTarget.hppml"
+#include "../TypedFora/ABI/VectorLoadRequest.hppml"
 #include "../Axioms/Axioms.hppml"
+#include "../../core/threading/SimpleCallbackSchedulerFactory.hppml"
+#include "../Core/ExecutionContext.hppml"
+#include "../Core/ExecutionContextImpl.hppml"
+#include "../Core/ExecutionContextConfiguration.hppml"
+#include "../Native/NativeRuntimeUntypedContinuation.hppml"
+#include "../VectorDataManager/VectorDataManager.hppml"
 
 using namespace TypedCfgStatsClasses;
 
@@ -122,6 +130,9 @@ NodeBody TypedCfgStats::convertNodeBody(
 		-| Jump(cont) ->> {
 			return NodeBody::Jump(convertContinuationFun(cont));
 			}
+		-| TupleExpandJump(argIndex, arity, cont) ->> {
+			return NodeBody::TupleExpandJump(argIndex, arity, convertContinuationFun(cont));
+			}
 		-| TransferToInterpreter() ->> {
 			return NodeBody::TransferToInterpreter();
 			}
@@ -159,33 +170,38 @@ TypedCfgStats::ApplyTarget TypedCfgStats::convertApplyTarget(
 			JudgmentOnValueTuple callSignature = axiom.callSignature();
 
 			Nullable<Axiom> axiom2 = mAxioms->weakestAxiom(*mCompiler, callSignature);
-			lassert(axiom2 && axiom2->isNative());
+			lassert_dump(axiom2, prettyPrintString(callSignature));
+			lassert(axiom2->isNative());
 
 			Axiom_NativeType nativeAxiom2 = axiom2->getNative();
 
-			JudgmentOnAction resultSignature = nativeAxiom2.resultSignature();
-			TypedFora::Callable callTarget = *nativeAxiom2.callTarget();
-
-			callTarget = 
-				TypedFora::adaptSignatureOfCallable(
-					callTarget,
-					callSignature,
-					callSignature,
-					TypedFora::interpreterResultSignature(),
-					false
-					);
-
-			string axiomName = "TypedCfgStatsAxiom_" + hashToString(callSignature.hash());
-
-			mCompiler->define(axiomName, callTarget);
-
-			TypedFora::TypedJumpTarget jumpTarget =
-				mCompiler->getJumpTarget(axiomName, TypedFora::BlockID::entry(), true);
+			TypedFora::TypedJumpTarget jumpTarget = compileAxiom(nativeAxiom2);
 
 			NativeFunctionPointerAndEntrypointId ptr = jumpTarget.functionPointer().get();
 
 			return ApplyTarget::NativeAxiom(axiom, nativeAxiom2, ptr);
 			}
+	}
+
+TypedFora::TypedJumpTarget TypedCfgStats::compileAxiom(Axiom_NativeType nativeAxiom)
+	{
+	JudgmentOnAction resultSignature = nativeAxiom.resultSignature();
+	TypedFora::Callable callTarget = *nativeAxiom.callTarget();
+
+	callTarget = 
+		TypedFora::adaptSignatureOfCallable(
+			callTarget,
+			nativeAxiom.callSignature(),
+			nativeAxiom.callSignature(),
+			TypedFora::interpreterResultSignature(),
+			false
+			);
+
+	string axiomName = "Axiom_" + hashToString(nativeAxiom.callSignature().hash());
+
+	mCompiler->define(axiomName, callTarget);
+
+	return mCompiler->getJumpTarget(axiomName, TypedFora::BlockID::entry(), true);
 	}
 
 Node* TypedCfgStats::getNode(TypedCfgGraphIdentity graph, hash_type nodeHash)
@@ -201,4 +217,143 @@ Node* TypedCfgStats::getNode(TypedCfgGraphIdentity graph, hash_type nodeHash)
 		return nullptr;
 
 	return &it2->second;
+	}
+
+JudgmentOnAction TypedCfgStats::resolveAxiomDirectly(const JudgmentOnValueTuple& jovs)
+	{
+	hash_type jovHash = jovs.hash();
+
+		{
+		boost::mutex::scoped_lock lock(mMutex);
+
+		auto it = mResolvedAxiomsCache.find(jovHash);
+		if (it != mResolvedAxiomsCache.end())
+			return it->second;
+		}
+
+	JudgmentOnAction result = resolveAxiomDirectlyUncached(jovs);
+
+		{
+		boost::mutex::scoped_lock lock(mMutex);
+
+		mResolvedAxiomsCache[jovHash] = result;
+		return result;
+		}
+	}
+
+ImplValContainer buildArgumentsForAxiom(JOVT callSignature, JOVT toCallWith)
+	{
+	long oneToOneArgs = callSignature.jovs().size();
+
+	lassert(oneToOneArgs <= toCallWith.jovs().size());
+
+	ImmutableTreeVector<ImplValContainer> args = 
+		mapITV(
+			toCallWith.jovs().slice(0, oneToOneArgs),
+			[&](JOV jov) { return ImplValContainer(*jov.constant()); }
+			);
+
+	ImmutableTreeVector<ImplValContainer> remainingArgs = 
+		mapITV(
+			toCallWith.jovs().slice(oneToOneArgs),
+			[&](JOV jov) { return ImplValContainer(*jov.constant()); }
+			);
+
+	if (callSignature.hasExtras())
+		args = args + ImplValContainer(remainingArgs);
+
+	//makes an unnamed tuple
+	return ImplValContainer(args);
+	}
+
+JudgmentOnAction TypedCfgStats::resolveAxiomDirectlyUncached(const JudgmentOnValueTuple& jovs)
+	{
+	//get the weakest axiom possible for this so we can execute it
+	Nullable<Axiom> axiom = mAxioms->weakestAxiom(*mCompiler, jovs);
+
+	if (!axiom && !axiom->isNative() && jovs.hasExtras())
+		return JudgmentOnAction::Unknown();
+
+	Axiom_NativeType nativeAxiom = axiom->getNative();
+
+	ImplValContainer argumentTuple = buildArgumentsForAxiom(nativeAxiom.callSignature(), jovs);
+
+	TypedFora::TypedJumpTarget jumpTarget = compileAxiom(nativeAxiom);
+
+	static PolymorphicSharedPtr<CallbackSchedulerFactory> factory(
+			new SimpleCallbackSchedulerFactory()
+			);
+
+	static PolymorphicSharedPtr<CallbackScheduler> scheduler(
+		factory->createScheduler("Axioms::resolveAxiomDirectly", 1)
+		);
+
+	static PolymorphicSharedPtr<VectorDataManager> vdm(
+			new VectorDataManager(scheduler, 32 * 1024)
+			);
+	vdm->dontIncludeInCounts();
+
+	Fora::Interpreter::ExecutionContext interp(
+		vdm,
+		0x20000
+		);
+
+	Nullable<JudgmentOnAction> finalResult;
+
+	interp.getImpl()->lockAndExecute([&]() {
+		ImplVal resultingImplVal;
+		uword_t which = 0xFFFFFF;
+
+		//generate new interrupts
+		NativeRuntimeCallbacks newCallbacks;
+		newCallbacks.resetNativeRuntimeState();
+		newCallbacks.bigVectorSlotIndex = *interp.getCurrentBigvecSlotIndex();
+
+		pair<NativeRuntimeContinuationValue<1>, TypedFora::Abi::VectorLoadRequest> interruptData;
+
+		newCallbacks.interruptContinuation = 
+			mCompiler->generateDummyContinuation(&interruptData, &which, 2);
+
+		newCallbacks.cacheCallContinuation =
+			mCompiler->generateDummyContinuation(&interruptData, &which, 3);
+
+		NativeRuntimeContinuationValue<2> continuations;
+
+		continuations.setTo(
+			mCompiler->
+				generateDummyContinuation(&resultingImplVal, &which, 0, 2)
+			);
+
+		StackFrameAllocator alloc(32 * 1024, interp.getMemoryPool());
+
+		NativeRuntimeCallTarget callTarget = 
+			mCompiler->
+				generateStackframeAndCallTargetFromArgTuple(
+					jumpTarget,
+					TypedFora::TypedContinuation(
+						NativeRuntimeUntypedContinuation(
+							continuations,
+							&newCallbacks
+							)
+						),
+					alloc.getMemBlockPtr(),
+					argumentTuple.getReference(),
+					interp.getRefcountPool()
+					);
+
+		mCompiler->callFunction(
+			callTarget,
+			alloc.getMemBlockPtr()
+			);
+
+		if (which == 0)
+			finalResult = JudgmentOnAction::Value(JOV::FromLiveValue(resultingImplVal));
+			else
+		if (which == 1)
+			finalResult = JudgmentOnAction::Throws(JOV::FromLiveValue(resultingImplVal));
+		else
+			finalResult = JudgmentOnAction::Unknown();
+		});
+	
+	return *finalResult;
 	}

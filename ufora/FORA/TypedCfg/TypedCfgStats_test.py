@@ -17,19 +17,17 @@ import ufora.FORA.python.Runtime as Runtime
 import ufora.FORA.python.FORA as FORA
 import ufora.native.FORA as ForaNative
 
-class TestCompiler(unittest.TestCase):
+class TestTypedCfgStats(unittest.TestCase):
     def setUp(self):
         self.runtime = Runtime.getMainRuntime()
-        self.axioms = self.runtime.getAxioms()
-        self.compiler = self.runtime.getTypedForaCompiler()
-
+        self.stats = self.runtime.getTypedCfgStats()
 
     def test_resolveAxiomDirectly_smallStrings(self):
         instance = ForaNative.ImplValContainer(
             ("s1", ForaNative.makeSymbol("Operator"), ForaNative.makeSymbol("+"), "s2")
             )
         jov = ForaNative.implValToJOV(instance)
-        joa = self.axioms.resolveAxiomDirectly(self.compiler, jov.getTuple())
+        joa = self.stats.resolveAxiomDirectly(jov.getTuple())
 
         self.assertEqual(len(joa.throwPart()),0)
         self.assertEqual(len(joa.resultPart()),1)
@@ -43,7 +41,7 @@ class TestCompiler(unittest.TestCase):
 
         jov = ForaNative.parseStringToJOV(("({Vector([])}, `append, 2)"))
 
-        joa = self.axioms.resolveAxiomDirectly(self.compiler, jov.getTuple())
+        joa = self.stats.resolveAxiomDirectly(jov.getTuple())
 
         self.assertEqual(len(joa.throwPart()),0)
         self.assertEqual(len(joa.resultPart()),1)
@@ -57,7 +55,7 @@ class TestCompiler(unittest.TestCase):
 
         jov = ForaNative.parseStringToJOV(("({Vector([])}, `append, 2)"))
 
-        joa = self.axioms.resolveAxiomDirectly(self.compiler, jov.getTuple())
+        joa = self.stats.resolveAxiomDirectly(jov.getTuple())
 
         self.assertEqual(len(joa.throwPart()),0)
         self.assertEqual(len(joa.resultPart()),1)

@@ -42,8 +42,7 @@ class TestTypedCfgInterpreter(unittest.TestCase):
         pyforaPath = os.path.join(os.path.split(pyfora.__file__)[0], "fora/purePython")
         self.purePythonAsJOV = FORANative.JudgmentOnValue.Constant(FORA.importModule(pyforaPath).implVal_)
 
-        self.instructionGraph = self.runtime.getInstructionGraph()
-        self.reasoner = FORANative.SimpleForwardReasoner(self.compiler, self.instructionGraph, self.axioms)
+        self.reasoner = FORANative.SimpleForwardReasoner(self.compiler, self.axioms)
 
     def reasonAboutExpression(self, expression, **variableJudgments):
         keys = sorted(list(variableJudgments.keys()))
@@ -76,7 +75,7 @@ class TestTypedCfgInterpreter(unittest.TestCase):
 
         self.assertFrameHasResultJOV(frame, "{Int64}")
 
-        self.reasoner.compile(frame)
+        self.reasoner.addToGraph(frame)
 
     def assertFrameHasResultJOV(self, frame, resultJOV):
         if isinstance(resultJOV, str):

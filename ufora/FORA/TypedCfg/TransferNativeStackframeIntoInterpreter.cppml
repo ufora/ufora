@@ -14,6 +14,7 @@
    limitations under the License.
 ****************************************************************************/
 #include "TransferNativeStackframeIntoInterpreter.hppml"
+#include "TypedCfgInterpreter.hppml"
 #include "../Runtime.hppml"
 #include "../TypedFora/JitCompiler/Compiler.hppml"
 #include "../TypedFora/ABI/NativeStackFrameWrapper.hppml"
@@ -22,17 +23,10 @@
 #include "../Native/NativeRuntimeCallbacks.hppml"
 #include "../Core/ExecutionContext.hppml"
 #include "../Core/RefcountPool.hppml"
-#include "InterpreterFrame.hppml"
-#include "InstructionGraph.hppml"
 #include "../Core/ExecutionContext.hppml"
 #include "../Core/ExecutionContextImpl.hppml"
-#include "Instruction.hppml"
-#include "Continuation.hppml"
-#include "AxiomCache.hppml"
 #include "../Core/ExecutionContextConfiguration.hppml"
 #include "../Core/ExecutionContextScope.hppml"
-#include "EvalFrame.hpp"
-#include "CallFrame.hpp"
 #include "../Core/StackFrame.hpp"
 #include "../Core/StackFrameAllocator.hpp"
 #include "../TypedFora/ABI/NativeLayoutType.hppml"
@@ -138,76 +132,53 @@ NativeRuntimeContinuationValue<1> instantiatePausedComputation(
 
 	ExecutionContext* context = ExecutionContext::currentExecutionContext();
 
-	for (long k = 0; k < frames.size(); k++)
+	TypedCfgInterpreterStackFrame* stackFramePtr = nullptr;
+
+	for (auto frame: frames)
 		{
-		PausedComputationFrame frame = frames[k];
-
-		EvalFrame* evalFramePtr = EvalFrame::allocate(
-			frame.graph(),
-			frame.label(),
-			allocator,
-			evalFrameUniqueId && k == 0 ?
-				*evalFrameUniqueId
-			:	EvalFrame::allocateNewUniqueEvalFrameID(),
-			null() << frameMetadata[k]
-			);
-
-		std::vector<ImplVal> values;
-
-		for (long k = 0; k < frame.values().size(); k++)
-			values.push_back(
-				context->getRefcountPool()->add(frame.values()[k].getReference())
+		if (stackFramePtr == nullptr)
+			stackFramePtr = TypedCfgInterpreterStackFrame::allocate(
+				allocator,
+				continuations,
+				frame.graph(),
+				frame.label(),
+				&context->getRuntimeCallbacks()
+				);
+		else
+			stackFramePtr = TypedCfgInterpreterStackFrame::allocate(
+				allocator,
+				stackFramePtr,
+				frame.graph(),
+				frame.label(),
+				&context->getRuntimeCallbacks()
 				);
 
-		evalFramePtr->copyPooledImplValsIntoFrame(values);
-
-		evalFramePtr->callFrame.conts = continuations;
-
-		evalFramePtr->callFrame.callbacks = &context->getRuntimeCallbacks();
-
-		if (k + 1 == frames.size())
-			{
-			NativeRuntimeContinuationValue<1> result =
-				Runtime::getRuntime().getTypedForaCompiler()->wrapCPPCallback(
-					&InterpreterFrame::interpreter,
-					evalFramePtr,
-					allocator.getMemBlockPtr()
-					) +
-				NativeRuntimeContinuationSlot(
-					!pendingResult ? cont_internal :
-					pendingResult->second ?  cont_cont_right : cont_cont_left,
-					&evalFramePtr->resultValue
-					);
-
-			if (pendingResult)
-				evalFramePtr->resultValue = context->getRefcountPool()->add(
-					pendingResult->first.getReference()
-					);
-
-			return result;
-			}
-		else
-			{
-			auto newConts =
-				Runtime::getRuntime().getTypedForaCompiler()->wrapCPPCallback(
-					&InterpreterFrame::interpreter,
-					evalFramePtr,
-					allocator.getMemBlockPtr()
-					) +
-				NativeRuntimeContinuationSlot(
-					cont_cont_left,
-					&evalFramePtr->resultValue
-					) +
-				NativeRuntimeContinuationSlot(
-					cont_cont_right,
-					&evalFramePtr->resultValue
-					);
-
-			continuations = newConts;
-			}
+		for (long k = 0; k < frame.values().size(); k++)
+			stackFramePtr->frameValue(k) =
+				context->getRefcountPool()->add(frame.values()[k].getReference())
+				;
 		}
 
-	lassert(false);
+	NativeRuntimeContinuationValue<1> result =
+		Runtime::getRuntime().getTypedForaCompiler()->wrapCPPCallback(
+			&TypedCfgInterpreter::interpreter,
+			stackFramePtr,
+			allocator.getMemBlockPtr()
+			) +
+		NativeRuntimeContinuationSlot(
+			!pendingResult ? TypedCfgInterpreter::continuation_execute_from_node :
+			pendingResult->second ?  
+				TypedCfgInterpreter::continuation_resume_with_exception_result
+			:	TypedCfgInterpreter::continuation_resume_with_normal_result,
+			&stackFramePtr->getResultValue()
+			);
+
+	if (pendingResult)
+		stackFramePtr->getResultValue() = context->getRefcountPool()->add(
+			pendingResult->first.getReference()
+			);
+
+	return result;
 	}
 
 NativeRuntimeContinuationValue<1>
@@ -259,10 +230,6 @@ NativeRuntimeContinuationValue<1> transferNativeStackframeIntoInterpreter(
 
 	//grab the continuation and free it
 	(*memory)->allocator()->free(data);
-
-	if (context->getConfiguration()->allowInterpreterTracing())
-		context->getInterpreterHistory()
-			.onTransferToInterpreterFromNativeCode(continuation);
 
 	RippedDownNativeStackframe rippedDownStack = 
 		ripDownNativeStackFrame(continuation, *(*memory)->allocator());
@@ -316,17 +283,17 @@ adaptContinuationsToInterpreterContinuations(
 			);
 
 	lassert_dump(
-		resumption.slots()[0].blockID() == cont_internal,
+		resumption.slots()[0].blockID() == TypedCfgInterpreter::continuation_execute_from_node,
 		"we expected a resume continuation (which we could turn into an apply-resume)"
 		);
 
 	return resumption.base() +
 		NativeRuntimeContinuationSlot(
-			cont_cont_left,
+			TypedCfgInterpreter::continuation_resume_with_normal_result,
 			resumption.slots()[0].target()
 			) +
 		NativeRuntimeContinuationSlot(
-			cont_cont_right,
+			TypedCfgInterpreter::continuation_resume_with_exception_result,
 			resumption.slots()[0].target()
 			)
 		;
@@ -357,11 +324,11 @@ removeAdapterContinuations(
 		void* wrappedCPPPointer = tempFrame->cppFunctionPointerToCall();
 		void* slots = tempFrame->actualStackPointer();
 
-		if (wrappedCPPPointer == (void*)&Fora::Interpreter::InterpreterFrame::interpreter)
+		if (wrappedCPPPointer == (void*)&TypedCfgInterpreter::interpreter)
 			{
 			lassert(nextFrameContinuations.size() == 2);
-			lassert(nextFrameContinuations.slots()[0].blockID() == cont_cont_left);
-			lassert(nextFrameContinuations.slots()[1].blockID() == cont_cont_right);
+			lassert(nextFrameContinuations.slots()[0].blockID() == TypedCfgInterpreter::continuation_resume_with_normal_result);
+			lassert(nextFrameContinuations.slots()[1].blockID() == TypedCfgInterpreter::continuation_resume_with_exception_result);
 
 			return nextFrameContinuations;
 			}
@@ -375,21 +342,6 @@ removeAdapterContinuations(
 				f->continuation.continuations();
 
 			f->~ResultSignatureAdapterFrame();
-
-			allocator.free(tempFrame);
-			allocator.free(f);
-
-			return removeAdapterContinuations(parentContinuations, allocator);
-			}
-			else
-		if (wrappedCPPPointer == (void*)&InterpreterUniqueIdHolderFrame::teardownAndFollowContinuation)
-			{
-			InterpreterUniqueIdHolderFrame* f = (InterpreterUniqueIdHolderFrame*)slots;
-
-			NativeRuntimeContinuationValueVector parentContinuations =
-				f->continuation.continuations();
-
-			f->~InterpreterUniqueIdHolderFrame();
 
 			allocator.free(tempFrame);
 			allocator.free(f);
@@ -463,11 +415,11 @@ allocateInterpreterContinuations(
 		void* wrappedCPPPointer = tempFrame->cppFunctionPointerToCall();
 		void* slots = tempFrame->actualStackPointer();
 
-		if (wrappedCPPPointer == (void*)&Fora::Interpreter::InterpreterFrame::interpreter)
+		if (wrappedCPPPointer == (void*)&TypedCfgInterpreter::interpreter)
 			{
 			lassert(nextFrameContinuations.size() == 2);
-			lassert(nextFrameContinuations.slots()[0].blockID() == cont_cont_left);
-			lassert(nextFrameContinuations.slots()[1].blockID() == cont_cont_right);
+			lassert(nextFrameContinuations.slots()[0].blockID() == TypedCfgInterpreter::continuation_resume_with_normal_result);
+			lassert(nextFrameContinuations.slots()[1].blockID() == TypedCfgInterpreter::continuation_resume_with_exception_result);
 
 			return NativeRuntimeContinuationValue<2>(nextFrameContinuations);
 			}
@@ -481,23 +433,6 @@ allocateInterpreterContinuations(
 				f->continuation.continuations();
 
 			f->~ResultSignatureAdapterFrame();
-
-			allocator.free(tempFrame);
-			allocator.free(f);
-
-			return allocateInterpreterContinuations(parentContinuations, ioEvalFrameUniqueId, allocator);
-			}
-			else
-		if (wrappedCPPPointer == (void*)&InterpreterUniqueIdHolderFrame::teardownAndFollowContinuation)
-			{
-			InterpreterUniqueIdHolderFrame* f = (InterpreterUniqueIdHolderFrame*)slots;
-
-			NativeRuntimeContinuationValueVector parentContinuations =
-				f->continuation.continuations();
-
-			ioEvalFrameUniqueId = f->originalStackFrameUniqueId;
-
-			f->~InterpreterUniqueIdHolderFrame();
 
 			allocator.free(tempFrame);
 			allocator.free(f);

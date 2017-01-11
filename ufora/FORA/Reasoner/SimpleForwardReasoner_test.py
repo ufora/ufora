@@ -45,8 +45,7 @@ class TestSimpleForwardReasoner(unittest.TestCase):
         pyforaPath = os.path.join(os.path.split(pyfora.__file__)[0], "fora/purePython")
         self.purePythonAsJOV = FORANative.JudgmentOnValue.Constant(FORA.importModule(pyforaPath).implVal_)
 
-        self.instructionGraph = self.runtime.getInstructionGraph()
-        self.reasoner = FORANative.SimpleForwardReasoner(self.compiler, self.instructionGraph, self.axioms)
+        self.reasoner = FORANative.SimpleForwardReasoner(self.compiler, self.axioms)
 
 
     def nodeAndFrameCounts(self, reasoner, frame):

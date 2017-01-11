@@ -16,13 +16,15 @@
 #include "StackFrameVisitor.hppml"
 #include "../TypedFora.hppml"
 #include "Stackframes.hppml"
-#include "../../Interpreter/InterpreterFrame.hppml"
 #include "../../../core/Logging.hpp"
+#include "../../TypedCfg/TypedCfgInterpreter.hppml"
+#include "../JitCompiler/NativeCppCallbackStackframe.hppml"
+#include "../JitCompiler/Compiler.hppml"
 
 namespace TypedFora {
 namespace Abi {
 
-NativeRuntimeContinuationBase StackFrameVisitor::visitStackFrame(
+void StackFrameVisitor::visitStackFrame(
 			NativeRuntimeContinuationBase stackFramePtr,
 			StackFrameVisitor& ioVisitor
 			)
@@ -39,7 +41,7 @@ NativeRuntimeContinuationBase StackFrameVisitor::visitStackFrame(
 			NativeStackFrameWrapper wrapper(stackFramePtr);
 
 			if (!ioVisitor.visitNativeStackFrame(wrapper))
-				return parentStackFramePtr;
+				return;
 
 			stackFramePtr = parentStackFramePtr;
 			}
@@ -54,16 +56,24 @@ NativeRuntimeContinuationBase StackFrameVisitor::visitStackFrame(
 			void* slots = tempFrame->actualStackPointer();
 
 			if (!ioVisitor.visitCppCallbackFrame(tempFrame))
-				return stackFramePtr;
+				return;
 
-			if (wrappedCPPPointer == (void*)&Fora::Interpreter::InterpreterFrame::interpreter)
+			if (wrappedCPPPointer == (void*)&TypedCfgInterpreter::interpreter)
 				{
-				Fora::Interpreter::EvalFrame* evalFramePtr = (Fora::Interpreter::EvalFrame*)slots;
+				TypedCfgInterpreterStackFrame* interpreterStackFrame = (TypedCfgInterpreterStackFrame*)slots;
 
-				NativeRuntimeContinuationBase parentStackFramePtr = evalFramePtr->callFrame.conts.base();
+				if (!ioVisitor.visitInterpreterStackFrame(interpreterStackFrame))
+					return;
 
-				if (!ioVisitor.visitInterpreterStackFrame(evalFramePtr))
-					return parentStackFramePtr;
+				while (interpreterStackFrame->getParentFrame())
+					{
+					interpreterStackFrame = interpreterStackFrame->getParentFrame();
+
+					if (!ioVisitor.visitInterpreterStackFrame(interpreterStackFrame))
+						return;
+					}
+
+				NativeRuntimeContinuationBase parentStackFramePtr = interpreterStackFrame->getContinuations().base();
 
 				stackFramePtr = parentStackFramePtr;
 				}
@@ -75,19 +85,7 @@ NativeRuntimeContinuationBase StackFrameVisitor::visitStackFrame(
 				NativeRuntimeContinuationBase parentStackFramePtr = f->continuation.continuations().base();
 
 				if (!ioVisitor.visitResultSignatureAdapterStackFrame(f))
-					return parentStackFramePtr;
-
-				stackFramePtr = parentStackFramePtr;
-				}
-				else
-			if (wrappedCPPPointer == (void*)&InterpreterUniqueIdHolderFrame::teardownAndFollowContinuation)
-				{
-				InterpreterUniqueIdHolderFrame* f = (InterpreterUniqueIdHolderFrame*)slots;
-
-				NativeRuntimeContinuationBase parentStackFramePtr = f->continuation.continuations().base();
-
-				if (!ioVisitor.visitHeldImplvalTeardownFrame(f))
-					return parentStackFramePtr;
+					return;
 
 				stackFramePtr = parentStackFramePtr;
 				}
@@ -96,15 +94,8 @@ NativeRuntimeContinuationBase StackFrameVisitor::visitStackFrame(
 				lassert_dump(false, "Unknown wrapped CPP function");
 				}
 			}
-			else
-		if (Runtime::getRuntime().getTypedForaCompiler()->isDummyContinuationTarget(fp))
-			{
-			return stackFramePtr;
-			}
 		else
-			{
-			return stackFramePtr;
-			}
+			return;
 		}
 	}
 

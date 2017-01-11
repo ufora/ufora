@@ -14,8 +14,7 @@
    limitations under the License.
 ****************************************************************************/
 #include "Stackframes.hppml"
-#include "../../Interpreter/TransferNativeStackframeIntoInterpreter.hppml"
-#include "../../Interpreter/InterpreterThreadObserver.hppml"
+#include "../../TypedCfg/TransferNativeStackframeIntoInterpreter.hppml"
 #include "LiveValue.hppml"
 #include "NativeLayoutType.hppml"
 #include "../../Native/NativeCode.hppml"
@@ -49,22 +48,6 @@ ResultSignatureAdapterFrame::adaptDataAndFollowContinuation(
 	const ImmutableTreeVector<TypedFora::TypedContinuationJudgment>& judgments =
 		stackframe->continuation.continuationJudgments();
 
-	if (context->getConfiguration()->allowInterpreterTracing())
-		{
-		auto compiler = Runtime::getRuntime().getTypedForaCompiler();
-
-		bool isPassingToNative = compiler->isNativeFunctionPointer(
-			stackframe->continuation.continuations().base().jumpPtr()
-			);
-
-		context->getInterpreterHistory().continuationAdapterFollowed(
-			typeAndIsException.second,
-			typeAndIsException.first,
-			isPassingToNative
-			);
-		}
-
-
 	//search for a continuation we can follow
 	for (long k = 0; k < judgments.size(); k++)
 		if (judgments[k].isException() == typeAndIsException.second &&
@@ -76,16 +59,6 @@ ResultSignatureAdapterFrame::adaptDataAndFollowContinuation(
 				)
 			{
 			NativeRuntimeContinuationValue<1> cont = stackframe->continuation.continuations()[k];
-
-			//we're returning to a native stackframe
-			if (context->getConfiguration()->allowInterpreterTracing())
-				{
-				context->getInterpreterHistory().onFollowingTypedNativeContinuation(
-							cont,
-							judgments[k].resultType().jov(),
-							typeAndIsException.second
-							);
-				}
 
 			LOG_DEBUG << "transferring a value of type " << prettyPrintString(typeAndIsException.first)
 				<< " to " << prettyPrintString(judgments[k].resultType());
@@ -131,35 +104,9 @@ ResultSignatureAdapterFrame::adaptDataAndFollowContinuation(
 			);
 
 
-	if (context->getConfiguration()->allowInterpreterTracing())
-		context->getInterpreterHistory()
-			.onReturnToNativeCodeButImmediatelyTransferToInterpreter();
-
 	NativeRuntimeContinuationValue<1> cont = newContinuation[typeAndIsException.second ? 1 : 0];
 
 	*(ImplVal*)cont.slots()[0].target() = finalResult;
-
-	return cont;
-	}
-
-NativeRuntimeContinuationValue<1>
-InterpreterUniqueIdHolderFrame::teardownAndFollowContinuation(
-						StackFrame** memBlock, 
-						uword_t resumption,
-						InterpreterUniqueIdHolderFrame* stackframe
-						)
-	{
-	NativeRuntimeContinuationValue<1> cont = stackframe->continuation.continuations()[resumption];
-
-	stackframe->~InterpreterUniqueIdHolderFrame();
-
-	FORA_clib_freeStackFrame(memBlock, stackframe);
-
-	Fora::Interpreter::ExecutionContext* context =
-		Fora::Interpreter::ExecutionContext::currentExecutionContext();
-
-	if (context->getConfiguration()->allowInterpreterTracing())
-		context->getInterpreterHistory().onArbitraryInterpreterLogging("teardownAndFollowContinuation");
 
 	return cont;
 	}
@@ -213,49 +160,6 @@ void* packArgumentsIntoStackframeFromTuple(
 	lassert(index == inTypes.size());
 
 	return inDataPtr;
-	}
-
-TypedContinuation createTeardownContinuationForUntransferrableArgs(
-				const TypedContinuation& inCurrentContinuation,
-				ImplVal* inValues,
-				uint64_t uniqueId,
-				const ImmutableTreeVector<TypedFora::Type>& targetTypes,
-				StackFrame** memBlock,
-				Compiler& compiler
-				)
-	{
-	InterpreterUniqueIdHolderFrame* wrapFrame =
-		reinterpret_cast<InterpreterUniqueIdHolderFrame*>(
-			FORA_clib_allocateStackFrame(memBlock, sizeof(InterpreterUniqueIdHolderFrame))
-			);
-
-	wrapFrame->originalStackFrameUniqueId = uniqueId;
-
-	new (&wrapFrame->continuation) TypedContinuation(inCurrentContinuation);
-
-	//now build the relevant continuations
-	NativeRuntimeContinuationValueVector continuations(
-		compiler.wrapCPPCallback(
-			(NativeCppCallback)&InterpreterUniqueIdHolderFrame::teardownAndFollowContinuation,
-			wrapFrame,
-			memBlock
-			)
-		);
-
-	//we don't allocate storage for a return value. We just use the return value in the continuations
-	//given to us.
-	for (long k = 0; k < inCurrentContinuation.continuations().size(); k++)
-		continuations = continuations +
-			NativeRuntimeContinuationSlot(
-				k,
-				inCurrentContinuation.continuations().slots()[k].target()
-				);
-
-	return TypedContinuation(
-		inCurrentContinuation.continuationJudgments(),
-		continuations,
-		inCurrentContinuation.runtimeCallbacks()
-		);
 	}
 
 void* packArgumentsIntoStackframeAndAddToRefcountPool(

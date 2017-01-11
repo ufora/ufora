@@ -13,23 +13,19 @@
    See the License for the specific language governing permissions and
    limitations under the License.
 ****************************************************************************/
-#include "InstructionBody.hppml"
-#include "Instruction.hppml"
-
-#include <boost/python.hpp>
-#include <boost/random.hpp>
-
+#include <stdint.h>
+#include <vector>
+#include <string>
 #include "../../native/Registrar.hpp"
-#include "../../core/python/CPPMLWrapper.hpp"
 #include "../../core/python/ScopedPyThreads.hpp"
-#include "../../core/python/ValueLikeCPPMLWrapper.hppml"
-#include "../../core/containers/ImmutableTreeVector.py.hpp"
+#include "../../core/python/CPPMLWrapper.hpp"
+#include "../../core/PolymorphicSharedPtrFuncFromMemberFunc.hpp"
+#include "../Runtime.hppml"
+#include "TypedCfgStats.hppml"
+#include <boost/python.hpp>
 
-using namespace Fora::Interpreter;
-using namespace Fora::Compiler;
-
-class InstructionBodyWrapper :
-		public native::module::Exporter<InstructionBodyWrapper> {
+class TypedCfgStatsWrapper :
+		public native::module::Exporter<TypedCfgStatsWrapper> {
 public:
 		std::string		getModuleName(void)
 			{
@@ -40,15 +36,18 @@ public:
 			{
 			using namespace boost::python;
 
-			Ufora::python::CPPMLWrapper<InstructionBody>(true).class_();
+			class_<PolymorphicSharedPtr<TypedCfgStats> >("TypedCfgStats", no_init)
+                .def("resolveAxiomDirectly", 
+                        macro_polymorphicSharedPtrFuncFromMemberFunc(TypedCfgStats::resolveAxiomDirectly)
+                    )
+                ;
 			}
 };
 
 //explicitly instantiating the registration element causes the linker to need
 //this file
 template<>
-char native::module::Exporter<InstructionBodyWrapper>::mEnforceRegistration =
+char native::module::Exporter<TypedCfgStatsWrapper>::mEnforceRegistration =
 		native::module::ExportRegistrar<
-			InstructionBodyWrapper>::registerWrapper();
-
+			TypedCfgStatsWrapper>::registerWrapper();
 

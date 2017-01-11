@@ -43,7 +43,7 @@
 
 #include "DestroyingStackFrameVisitor.hppml"
 #include "CreatePausedComputationStackFrameVisitor.hppml"
-#include "../Interpreter/InterpreterFrame.hppml"
+#include "../TypedCfg/TypedCfgInterpreter.hppml"
 #include "../Runtime.hppml"
 #include "../TypedFora/JitCompiler/TypedJumpTarget.hppml"
 #include "../TypedFora/TypedForaUtil.hppml"
@@ -65,11 +65,9 @@ class SetExecutingThread {
 public:
 	SetExecutingThread(
 				ExecutionContext* context, 
-				ExecutionContextThreadState* thread,
-				boost::shared_ptr<InterpreterThreadObserver> history
+				ExecutionContextThreadState* thread
 				) :
-			mContext(context),
-			mInterpreterHistory(*history)
+			mContext(context)
 		{
 		auto impl = mContext->getImpl();
 
@@ -77,19 +75,14 @@ public:
 
 		impl->mCurrentlyExecutingThread = thread;
 		impl->unreportAllSlots();
-
-		mInterpreterHistory.resume();
 		}
 
 	~SetExecutingThread()
 		{
 		mContext->getImpl()->mCurrentlyExecutingThread = nullptr;
-		mInterpreterHistory.pause();
 		}
 private:
 	ExecutionContext* mContext;
-
-	InterpreterThreadObserver& mInterpreterHistory;
 };
 
 ExecutionContextThreadState::ExecutionContextThreadState(
@@ -100,8 +93,7 @@ ExecutionContextThreadState::ExecutionContextThreadState(
 		mErrorState(ErrorState::None()),
 		mWhichContinuationIx(cont_state_empty),
 		mRuntimeCallbacks(inExecutionContext->getRuntimeCallbacks()),
-		mMemoryPool(&*inExecutionContext->mMemoryPool),
-		mInterpreterHistory(inExecutionContext->mInterpreterHistory)
+		mMemoryPool(&*inExecutionContext->mMemoryPool)
 	{
 	initialize_();
 	}
@@ -154,9 +146,6 @@ void ExecutionContextThreadState::initialize_()
 		LOG_CRITICAL << "unknown exception initializing an ExecutionContextThreadState";
 		throw;
 		}
-
-	mInterpreterHistory->clear();
-	mInterpreterHistory->pause();
 	}
 
 std::string ExecutionContextThreadState::stateAsString() const
@@ -183,11 +172,6 @@ std::string ExecutionContextThreadState::stateAsString() const
 void ExecutionContextThreadState::pageUsed(Fora::PageId inPage)
 	{
 	mExecutionContext->getImpl()->pageTouched(inPage);
-	}
-
-InterpreterThreadObserver& ExecutionContextThreadState::getInterpreterHistory()
-	{
-	return *mInterpreterHistory;
 	}
 
 TimeElapsed& ExecutionContextThreadState::getTotalTimeElapsed()
@@ -243,8 +227,6 @@ void ExecutionContextThreadState::teardown()
 	mInterruptionResult.second = TypedFora::Abi::VectorLoadRequest();
 	mWhichContinuationIx = cont_state_empty;
 	mErrorState = ErrorState::None();
-	mInterpreterHistory->clear();
-	mInterpreterHistory->pause();
 	mTimeElapsed = TimeElapsed();
 
 	LOG_DEBUG << "Tearing down ECTS " << this;
@@ -377,15 +359,13 @@ void ExecutionContextThreadState::evaluateFunctionPointer(
 				);
 		}
 
-	SetExecutingThread executing(mExecutionContext, this, mInterpreterHistory);
+	SetExecutingThread executing(mExecutionContext, this);
 
 	callNativeRuntimeCallTarget(callTarget);
 
 	checkForNaturalResumption_();
 
 	releaseUnusedStackMemory_();
-
-	mInterpreterHistory->pause();
 	}
 
 void ExecutionContextThreadState::placeInEvaluationState(
@@ -439,7 +419,7 @@ void ExecutionContextThreadState::compute()
 			"unknown")
 		);
 
-	SetExecutingThread executing(mExecutionContext, this, mInterpreterHistory);
+	SetExecutingThread executing(mExecutionContext, this);
 
 	if (isVectorLoad())
 		if (!resolveVectorLoad_())
@@ -609,7 +589,7 @@ bool ExecutionContextThreadState::computeForFixedTime(double total)
 		<< " with " 
 		<< extractPausedComputation([&](ImplValContainer in) { return in; }).frames().size()
 		<< " frames."
-		<< (mInterpreterHistory->isTracing() ? "tracing":"not tracing");
+		;
 
 	mExecutionContext->getImpl()->disableScheduledInternalInterruptTrigger();
 
@@ -728,8 +708,8 @@ void ExecutionContextThreadState::placeInEvaluationState(
 		{
 		mCacheRequest.second.setTo(vals + vals.slots()[0]);
 
-		mCacheRequest.second.slots()[0].blockID() = cont_cont_left;
-		mCacheRequest.second.slots()[1].blockID() = cont_cont_right;
+		mCacheRequest.second.slots()[0].blockID() = TypedCfgInterpreter::continuation_resume_with_normal_result;
+		mCacheRequest.second.slots()[1].blockID() = TypedCfgInterpreter::continuation_resume_with_exception_result;
 
 		mCacheRequest.first = mExecutionContext->getRefcountPool()->add(
 			valueImportFunction(computation.tail().getCachecall().cachecallRequest())
@@ -775,8 +755,6 @@ ExecutionContextThreadState::instantiatePausedComputation_(
 						boost::function1<ImplValContainer, ImplValContainer> valueImportFunction
 						)
 	{
-	mInterpreterHistory->clear();
-
 	if (computation.tail().isFailure())
 		{
 		setErrorState(computation.tail().getFailure().error());
@@ -811,71 +789,53 @@ ExecutionContextThreadState::instantiatePausedComputation_(
 
 	//this is the return stackframe address for the outermost function call
 	NativeRuntimeContinuationValueVector curFramePtrPair(mNormalContinuations);
+	TypedCfgInterpreterStackFrame* framePtr = nullptr;
 
-	for (long frameIx = 0; frameIx < frames.size(); frameIx++)
+	for (auto frame: frames)
 		{
-		std::vector<ImplVal> values;
-
-		PausedComputationFrame frame(frames[frameIx]);
+		if (framePtr == nullptr)
+			framePtr = TypedCfgInterpreterStackFrame::allocate(
+				mStackAllocator,
+				curFramePtrPair,
+				frame.graph(),
+				frame.label(),
+				&mRuntimeCallbacks
+				);
+		else
+			framePtr = TypedCfgInterpreterStackFrame::allocate(
+				mStackAllocator,
+				framePtr,
+				frame.graph(),
+				frame.label(),
+				&mRuntimeCallbacks
+				);
 
 		for (long k = 0; k < frame.values().size();k++)
 			{
 			ImplValContainer importedValue = valueImportFunction(frame.values()[k]);
 
-			values.push_back(
+			framePtr->frameValue(k) =
 				mExecutionContext->getRefcountPool()->add(
 					importedValue.getReference()
-					)
-				);
-			}
-
-		EvalFrame* evalFramePtr = EvalFrame::allocate(
-			frame.graph(),
-			frame.label(),
-			mStackAllocator,
-			EvalFrame::allocateNewUniqueEvalFrameID(),
-			null()
-			);
-
-		evalFramePtr->copyPooledImplValsIntoFrame(values);
-
-		evalFramePtr->callFrame.conts.setTo(curFramePtrPair);
-		evalFramePtr->callFrame.callbacks = &mRuntimeCallbacks;
-
-		NativeRuntimeContinuationValueVector continuations(
-			Runtime::getRuntime().getTypedForaCompiler()->wrapCPPCallback(
-				&InterpreterFrame::interpreter,
-				evalFramePtr,
-				mStackAllocator.getMemBlockPtr()
-				)
-			);
-
-		if (frameIx + 1 == frames.size())
-			{
-			continuations = continuations +
-				NativeRuntimeContinuationSlot(
-					cont_internal,
-					&evalFramePtr->resultValue
 					);
 			}
-		else
-			{
-			continuations = continuations +
-				NativeRuntimeContinuationSlot(
-					cont_cont_left,
-					&evalFramePtr->resultValue
-					) +
-				NativeRuntimeContinuationSlot(
-					cont_cont_right,
-					&evalFramePtr->resultValue
-					)
-					;
-			}
-
-		curFramePtrPair = continuations;
 		}
 
-	return curFramePtrPair;
+	NativeRuntimeContinuationValueVector continuations(
+		Runtime::getRuntime().getTypedForaCompiler()->wrapCPPCallback(
+			&TypedCfgInterpreter::interpreter,
+			framePtr,
+			mStackAllocator.getMemBlockPtr()
+			)
+		);
+
+	continuations = continuations +
+		NativeRuntimeContinuationSlot(
+			TypedCfgInterpreter::continuation_execute_from_node,
+			&framePtr->getResultValue()
+			);
+
+	return continuations;
 	}
 
 bool ExecutionContextThreadState::isExceptionResult() const

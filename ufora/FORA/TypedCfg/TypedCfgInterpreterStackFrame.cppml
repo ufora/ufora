@@ -41,6 +41,34 @@ TypedCfgInterpreterStackFrame::TypedCfgInterpreterStackFrame(
 	{
 	}
 
+TypedCfgInterpreterStackFrame::TypedCfgInterpreterStackFrame(
+	        NativeRuntimeContinuationValue<2> conts,
+	        ControlFlowGraph graph,
+	        ControlFlowGraphLabel label,
+	        NativeRuntimeCallbacks* callbacks
+	        ) : 
+		mContinuations(conts),
+		mTypedCfgNode(nullptr),
+		mCallbacks(callbacks),
+		mParentStackFrame(nullptr),
+		mGraphAndLabel(new pair<ControlFlowGraph, ControlFlowGraphLabel>(graph, label))
+	{
+	}
+
+TypedCfgInterpreterStackFrame::TypedCfgInterpreterStackFrame(
+	        TypedCfgInterpreterStackFrame* parent,
+	        ControlFlowGraph graph,
+	        ControlFlowGraphLabel label,
+	        NativeRuntimeCallbacks* callbacks
+	        ) : 
+		mContinuations(),
+		mTypedCfgNode(nullptr),
+		mCallbacks(callbacks),
+		mParentStackFrame(parent),
+		mGraphAndLabel(new pair<ControlFlowGraph, ControlFlowGraphLabel>(graph, label))
+	{
+	}
+
 TypedCfgInterpreterStackFrame* TypedCfgInterpreterStackFrame::allocate(
             StackFrameAllocator& allocator, 
             NativeRuntimeContinuationValue<2> continuations,
@@ -85,7 +113,80 @@ TypedCfgInterpreterStackFrame* TypedCfgInterpreterStackFrame::allocate(
 	return data;
 	}
 
+TypedCfgInterpreterStackFrame* TypedCfgInterpreterStackFrame::allocate(
+            StackFrameAllocator& allocator, 
+            NativeRuntimeContinuationValue<2> continuations,
+            ControlFlowGraph graph,
+            ControlFlowGraphLabel label,
+            NativeRuntimeCallbacks* callbacks
+            )
+	{
+	int64_t maxArgs = graph.maxArgCount();
+
+	uint64_t bytecount = sizeof(TypedCfgInterpreterStackFrame) + sizeof(ImplVal) * maxArgs;
+
+	TypedCfgInterpreterStackFrame* data = (TypedCfgInterpreterStackFrame*)allocator.allocate(bytecount);
+
+	//verify that the top address is in bounds. We expect this check to pass by construction
+	//but leave it in to enforce the invariant if we're changing the code.
+	lassert((uint8_t*)&data->mFrameValues[maxArgs] <= (uint8_t*)data + bytecount)
+
+	new (data) TypedCfgInterpreterStackFrame(continuations, graph, label, callbacks);
+
+	return data;
+	}
+
+TypedCfgInterpreterStackFrame* TypedCfgInterpreterStackFrame::allocate(
+            StackFrameAllocator& allocator, 
+            TypedCfgInterpreterStackFrame* parent,
+            ControlFlowGraph graph,
+            ControlFlowGraphLabel label,
+            NativeRuntimeCallbacks* callbacks
+            )
+	{
+	int64_t maxArgs = graph.maxArgCount();
+
+	uint64_t bytecount = sizeof(TypedCfgInterpreterStackFrame) + sizeof(ImplVal) * maxArgs;
+
+	TypedCfgInterpreterStackFrame* data = (TypedCfgInterpreterStackFrame*)allocator.allocate(bytecount);
+
+	//verify that the top address is in bounds. We expect this check to pass by construction
+	//but leave it in to enforce the invariant if we're changing the code.
+	lassert((uint8_t*)&data->mFrameValues[maxArgs] <= (uint8_t*)data + bytecount)
+
+	new (data) TypedCfgInterpreterStackFrame(parent, graph, label, callbacks);
+
+	return data;
+	}
+
 void TypedCfgInterpreterStackFrame::destroy(TypedCfgInterpreterStackFrame* frame, StackFrameAllocator& allocator)
 	{
 	allocator.free(frame);
 	}
+
+uint32_t TypedCfgInterpreterStackFrame::currentActiveValueCount() const
+	{
+	return getGraph()[getLabel()].argCount();
+	}
+
+const ControlFlowGraph& TypedCfgInterpreterStackFrame::getGraph() const
+	{
+	if (mTypedCfgNode)
+		{
+		lassert(mTypedCfgNode->graphPtr());
+		return mTypedCfgNode->graphPtr()->graph();
+		}
+	if (mGraphAndLabel)
+		return mGraphAndLabel->first;
+	lassert_dump(false, "inconsistent state - either the node pointer or the graph should be populated");
+	}
+
+const ControlFlowGraphLabel& TypedCfgInterpreterStackFrame::getLabel() const
+	{
+	if (mTypedCfgNode)
+		return mTypedCfgNode->label();
+	if (mGraphAndLabel)
+		return mGraphAndLabel->second;
+	lassert_dump(false, "inconsistent state - either the node pointer or the graph should be populated");
+	}
+
