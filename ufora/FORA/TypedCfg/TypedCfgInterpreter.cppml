@@ -24,6 +24,7 @@
 #include "../Core/TupleCategory.hppml"
 #include "../Runtime.hppml"
 #include "../TypedFora/ABI/VectorLoadRequest.hppml"
+#include "../TypedFora/TypedFora.hppml"
 
 using namespace Fora::Interpreter;
 
@@ -73,6 +74,53 @@ NativeRuntimeContinuationValue<1> TypedCfgInterpreter::toFollow() const
 	return *mContinuationToExitAndFollow;
 	}
 
+void TypedCfgInterpreter::followUntypedContinuationWithInterpreterResult(const ControlFlowContinuation& cont)
+	{
+	mIndexOfReturnInParent = null();
+
+	@match ControlFlowContinuation(cont)
+		-| Return(arg, isException) ->> {
+				
+			auto parentFrame = mCurrentFrame->getParentFrame();
+			if (parentFrame)
+				{
+				parentFrame->getResultValue() = constructArgument(arg);
+				
+				mCurrentContinuation = isException ? 
+					continuation_resume_with_exception_result : 
+					continuation_resume_with_normal_result
+					;
+
+				TypedCfgInterpreterStackFrame::destroy(mCurrentFrame, mStackAllocator);
+
+				mCurrentFrame = parentFrame;
+				}
+			else
+				{
+				NativeRuntimeContinuationValue<1> toFollow = 
+					mCurrentFrame->getContinuations()[isException ? 1 : 0];
+
+				((ImplVal*)toFollow.slots()[0].target())[0] = constructArgument(arg);
+
+				mContinuationToExitAndFollow = toFollow;
+				}
+			}
+		-| Node(label, args) ->> {
+			uint8_t newValStorage[args.size() * sizeof(ImplVal)];
+			ImplVal* newVals = (ImplVal*)newValStorage;
+
+			for (long k = 0; k < args.size(); k++)
+				newVals[k] = constructArgument(args[k]);
+
+			for (long k = 0; k < args.size(); k++)
+				mCurrentFrame->frameValue(k) = newVals[k];
+
+			mCurrentFrame->advanceGraphLabelTo(null() << label);
+
+			mCurrentContinuation = continuation_execute_from_node;
+			}
+	}
+
 void TypedCfgInterpreter::followContinuation(const TypedCfgStats::Continuation& cont)
 	{
 	@match TypedCfgStats::Continuation(cont)
@@ -80,15 +128,17 @@ void TypedCfgInterpreter::followContinuation(const TypedCfgStats::Continuation& 
 			auto parentFrame = mCurrentFrame->getParentFrame();
 			if (parentFrame)
 				{
-				//we're returning to another typedCFG frame
-				mIndexOfReturnInParent = indexInParentConts;
+				//we're returning to another typedCFG frame that is the correct caller for this frame
+				if (parentFrame->getNodePtr() && parentFrame->getIntendedApplyGraphPtr() == mCurrentFrame->getNodePtr()->graphPtr())
+					mIndexOfReturnInParent = indexInParentConts;
+
 				parentFrame->getResultValue() = constructArgument(arg);
 				mCurrentContinuation = isException ? 
 					continuation_resume_with_exception_result : 
 					continuation_resume_with_normal_result
 					;
 
-				TypedCfgInterpreterStackFrame::destroy(parentFrame, mStackAllocator);
+				TypedCfgInterpreterStackFrame::destroy(mCurrentFrame, mStackAllocator);
 
 				mCurrentFrame = parentFrame;
 				}
@@ -249,26 +299,32 @@ ImplVal TypedCfgInterpreter::constructArgument(const ControlFlowContinuationArg&
 
 void TypedCfgInterpreter::step()
 	{
+	static int instructionCount = 0;
+	instructionCount++;
+
+	if (instructionCount % 100000 == 0)
+		LOG_TEST << instructionCount;
+
 	if (mCurrentFrame->getNodePtr() == nullptr)
 		{
-		ImmutableTreeVector<JOV> jovs;
-		auto graph = mCurrentFrame->getGraphAndLabel()->first;
-		auto label = mCurrentFrame->getGraphAndLabel()->second;
+		if (mCurrentContinuation == continuation_execute_from_node)
+			invokeReasonerToGetNewNodePtr();
+		else
+			{
+			@match ControlFlowNodeBody(mCurrentFrame->getGraph()[mCurrentFrame->getLabel()].body())
+				-| Apply(_, normal, excep) ->> {
+					followUntypedContinuationWithInterpreterResult(
+						mCurrentContinuation == continuation_resume_with_normal_result ? normal : excep
+						);
+					}
+				-| Cached(_, normal, excep) ->> {
+					followUntypedContinuationWithInterpreterResult(
+						mCurrentContinuation == continuation_resume_with_normal_result ? normal : excep
+						);
+					}
 
-		long valueCount = graph[label].argCount();
-
-		for (long k = 0; k < valueCount; k++)
-			jovs = jovs + relaxedJOV(JOV::FromLiveValue(mCurrentFrame->frameValue(k)));
-
-		mCurrentFrame->advanceNodePtrTo(
-			Runtime::getRuntime().getReasoner()->reasonAndProduceNodePtr(
-				Fora::ReasonerEntrypoint(
-					graph,
-					label,
-					jovs
-					)
-				)
-			);
+			return;
+			}
 		}
 
 	if (mCurrentContinuation == continuation_execute_from_node)
@@ -328,7 +384,7 @@ void TypedCfgInterpreter::step()
 					{
 					CSTValue testVal = valueAndCont.first;
 
-					if (testVal.type() == val.type() && val.type().cmp(val.data(), testVal.getData()))
+					if (testVal.type() == val.type() && val.type().cmp(val.data(), testVal.getData()) == 0)
 						{
 						followContinuation(valueAndCont.second);
 						return;
@@ -344,7 +400,7 @@ void TypedCfgInterpreter::step()
 				followContinuation(continuation);
 				}
 			-| TransferToInterpreter() ->> {
-				lassert_dump(false, "not implemented");
+				invokeReasonerToGetNewNodePtr();
 				}
 		}
 	else
@@ -355,19 +411,43 @@ void TypedCfgInterpreter::step()
 			-| Apply(args, Graph(targetNodePtr), normalConts, exceptConts) ->> {
 				const auto& whichSet = isExceptionResumption ? exceptConts : normalConts;
 
+				JudgmentOnResult whichReturns = 
+					targetNodePtr->graphPtr()->exits().jorByIsException(isExceptionResumption);
+
+				lassert_dump(whichSet.size() == whichReturns.size(), prettyPrintString(whichSet) << " vs. " << prettyPrintString(whichReturns));
+
 				if (!mIndexOfReturnInParent)
 					{
-					JudgmentOnResult whichReturns = 
-						targetNodePtr->graphPtr()->exits().jorByIsException(isExceptionResumption);
-
 					Nullable<uword_t> whichIndex = whichReturns.smallestCovering(mCurrentFrame->getResultValue());
-					lassert_dump(whichIndex, "somehow, our typing rules got violated");
+					if (!whichIndex)
+						{
+						//this can happen when the child stackframe moves to a different typing graph,
+						//usually because we're unwinding up the stack after resuming from a cachecall.
+						//we handle this by wiping our typing information and continuing as if we were
+						//untyped.
+						mCurrentFrame->replaceTypedCfgNodeWithGraphAndLabel();
+						return;
+						}
+
 
 					mIndexOfReturnInParent = *whichIndex;
+
+					lassert_dump(
+						whichSet.size() > *mIndexOfReturnInParent,
+						"can't find " << *mIndexOfReturnInParent << " in " << prettyPrintString(whichSet)
+						);
 					}
 
-				followContinuation(whichSet[*mIndexOfReturnInParent]);
+				lassert_dump(
+					whichSet.size() > *mIndexOfReturnInParent,
+					"can't find " << *mIndexOfReturnInParent << " in " << prettyPrintString(whichSet) 
+						<< " with " << prettyPrintString(whichReturns)
+					);
+
+				long index = *mIndexOfReturnInParent;
 				mIndexOfReturnInParent = null();
+				
+				followContinuation(whichSet[index]);
 				return;
 				}
 			-| Cached(args, normalCont, excepCont) ->> {
@@ -378,6 +458,35 @@ void TypedCfgInterpreter::step()
 		
 		lassert_dump(false, "this should never happen");
 		}	
+	}
+
+void TypedCfgInterpreter::invokeReasonerToGetNewNodePtr()
+	{
+	ImmutableTreeVector<JOV> jovs;
+	auto graph = mCurrentFrame->getGraph();
+	auto label = mCurrentFrame->getLabel();
+
+	long valueCount = graph[label].argCount();
+
+	for (long k = 0; k < valueCount; k++)
+		jovs = jovs + relaxedJOV(JOV::FromLiveValue(mCurrentFrame->frameValue(k)));
+
+	double t0 = curClock();
+
+	mCurrentFrame->advanceNodePtrTo(
+		Runtime::getRuntime().getReasoner()->reasonAndProduceNodePtr(
+			Fora::ReasonerEntrypoint(
+				graph,
+				label,
+				jovs
+				)
+			)
+		);
+	
+	if (curClock() - t0 > .5)
+		LOG_TEST << "Done re-transferring, which took " << curClock() - t0 << " at " << graph.graphName() << " and label " << label << " with " 
+			<< prettyPrintStringWithoutWrapping(jovs)
+			<< " at " << graph[label];
 	}
 
 void TypedCfgInterpreter::stepNativeAxiom()
@@ -435,7 +544,7 @@ void TypedCfgInterpreter::stepNativeAxiom()
 					}
 				else
 					{
-					tupleElts = tupleElts + make_pair(value, Nullable<Symbol>());
+					tupleElts = tupleElts + make_pair(value, name);
 					}
 				};
 
