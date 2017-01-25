@@ -22,398 +22,9 @@
 #include "../../core/Clock.hpp"
 #include "../Axioms/Axiom.hppml"
 #include "../Axioms/AxiomGroup.hppml"
+#include "JudgmentMerger.hppml"
 
 namespace Fora {
-
-class JudgmentMerger {
-public:
-	JudgmentOnResult collapseJORToComplexity(JudgmentOnResult jor, int maxTerms)
-		{
-		std::set<JOV> jovs;
-
-		auto insertJOV = [&](JOV newJOV) {
-			std::set<JOV> toRemove;
-			for (auto j: jovs)
-				if (newJOV.covers(j))
-					toRemove.insert(j);
-			for (auto j: toRemove)
-				jovs.erase(j);
-			jovs.insert(newJOV);
-			};
-
-		auto addJOV = [&](JOV newJOV) {
-			for (auto j: jovs)
-				{
-				JOV merged = mergeJudgments(j, newJOV);
-
-				if (!classMediatorCount(merged).unknownJudgmentsSeen() ||
-						classMediatorCount(j).unknownJudgmentsSeen())
-					{
-					insertJOV(merged);
-					return;
-					}
-				}
-
-			insertJOV(newJOV);
-
-			if (jovs.size() > maxTerms)
-				{
-				JOV finalMerge = newJOV;
-				for (auto j: jovs)
-					finalMerge = mergeJudgments(finalMerge, j);
-				insertJOV(finalMerge);
-				}
-			};
-
-		for (auto j: jor.vals())
-			addJOV(j);
-
-		return JudgmentOnResult(jovs);
-		}
-
-	JudgmentOnResult collapseJOR(JudgmentOnResult jor) const
-		{
-		if (jor.vals().size() == 0)
-			return jor;
-
-		JOV val = jor.vals()[0];
-
-		for (long k = 1; k < jor.vals().size();k++)
-			val = mergeJudgments(val, jor.vals()[k]);
-
-		return JudgmentOnResult(val);
-		}
-
-	@type VectorDepthVisitor = const JudgmentMerger* merger, int maxDepthSeen {
-	public:
-		template<class T>
-		void processDown(const T& in)
-			{
-			}
-
-		void processDown(const JudgmentOnValueVector& in)
-			{
-			for (auto jov: in.elementsJOR().vals())
-				maxDepthSeen() = std::max<long>(maxDepthSeen(), 1 + merger()->vectorDepth(jov));
-			}
-
-		template<class T>
-		void processUp(const T& in)
-			{
-			}
-	};
-
-	int vectorDepth(JOV jov) const
-		{
-		VectorDepthVisitor vis(this, 0);
-
-		::visit(jov, vis);
-
-		return vis.maxDepthSeen();
-		}
-
-	@type ClassMediatorCounterVisitor =
-		int classMediatorsSeen,
-		ImmutableTreeSet<ClassBody> allClassMediators,
-		int unknownJudgmentsSeen
-
-	{
-	public:
-		template<class T>
-		void processDown(const T& in)
-			{
-			}
-
-		void processDown(const JudgmentOnValueAtom& in)
-			{
-			@match JudgmentOnValueAtom(in)
-				-| Unknown() ->> {
-					unknownJudgmentsSeen()++;
-					}
-				-| Typed(Symbol()) ->> {
-					unknownJudgmentsSeen()++;
-					}
-				-| _ ->> {}
-			}
-
-		void processDown(const JudgmentOnValue& in)
-			{
-			if (in.isUnknown() || in.isUnknownCSTKnown())
-				unknownJudgmentsSeen()++;
-			}
-
-		void processDown(const JudgmentOnValueTupleExtras& in)
-			{
-			if (in.isExtras())
-				unknownJudgmentsSeen()++;
-			}
-
-		void processDown(const JudgmentOnValueClass& in)
-			{
-			if (in.isClass())
-				{
-				classMediatorsSeen()++;
-				allClassMediators() = allClassMediators() + in.getClass().classBody();
-				}
-			else
-				unknownJudgmentsSeen()++;
-			}
-
-		template<class T>
-		void processUp(const T& in)
-			{
-			}
-	};
-
-	template<class T>
-	ClassMediatorCounterVisitor classMediatorCount(T value) const
-		{
-		ClassMediatorCounterVisitor vis(0, emptyTreeSet(), 0);
-
-		::visit(value, vis);
-
-		return vis;
-		}
-
-	JudgmentOnValue mergeJudgments(JOV left, JOV right) const
-		{
-		JOVPair p(left, right);
-
-		@match JOVPair(p)
-			-|	(Unknown(),_) ->> {
-				return  JOV();
-				}
-			-|	(_,Unknown()) ->> {
-				return  JOV();
-				}
-			-|	(UnknownCSTKnown(isCST),o) ->> {
-				if (o.isCST() && *o.isCST() == isCST)
-					return  left;
-				return JOV();
-				}
-			-|	(o,UnknownCSTKnown(isCST)) ->> {
-				if (o.isCST() && *o.isCST() == isCST)
-					return  right;
-				return JOV();
-				}
-			-|  (Union(unionJOV), jov) ->> {
-				return mergeJudgments(unionJOV, jov);
-				}
-			-|	(JOVAsValue(j1), JOVAsValue(j2)) ->> {
-				return mergeJudgments(j1, j2);
-				}
-			-|	(Atom(j1), Atom(j2)) ->> {
-				return mergeJudgments(j1, j2);
-				}
-			-|	(Vector(j1), Vector(j2)) ->> {
-				return mergeJudgments(j1, j2);
-				}
-			-|	(MutableVector(j1), MutableVector(j2)) ->> {
-				return mergeJudgments(j1, j2);
-				}
-			-|	(Alternative(j1), Alternative(j2)) ->> {
-				return mergeJudgments(j1, j2);
-				}
-			-|	(Tuple(j1), Tuple(j2)) ->> {
-				return mergeJudgments(j1, j2);
-				}
-			-|	(Class(j1), Class(j2)) ->> {
-				return mergeJudgments(j1, j2);
-				}
-			-|	(Dictionary(j1), Dictionary(j2)) ->> {
-				return mergeJudgments(j1, j2);
-				}
-			-|	_ ->> {
-				return JOV();
-				}
-			;
-		}
-
-	JudgmentOnValue mergeJudgments(const JudgmentOnValueAlternative& lhs, const JudgmentOnValueAlternative& rhs) const
-		{
-		return JudgmentOnValue::Alternative(
-			JudgmentOnValueAlternative(
-				lhs.sym() == rhs.sym() ? lhs.sym() : Nullable<Symbol>(),
-				mergeJudgments(lhs.val(), rhs.val())
-				)
-			);
-		}
-
-	JudgmentOnValue		mergeJudgments(const JudgmentOnValueAtom& lhs, const JudgmentOnValueAtom& rhs) const
-		{
-		JOV j1 = JOV::Atom(lhs);
-		JOV j2 = JOV::Atom(rhs);
-
-		if (j1.covers(j2))
-			return j1;
-
-		if (j2.covers(j1))
-			return j2;
-
-		if (j1.type() && j2.type() && j1.type() == j2.type())
-			return JOV::OfType(*j1.type());
-
-		return JOV::Atom(JudgmentOnValueAtom::Unknown());
-		}
-
-	JudgmentOnValue mergeJudgments(const JudgmentOnValueClass& lhs, const JudgmentOnValueClass& rhs) const
-		{
-		if (lhs.isUnknown())
-			return JOV::Class(lhs);
-
-		if (rhs.isUnknown())
-			return JOV::Class(rhs);
-
-		@match JudgmentOnValueClass(lhs)
-			-| Class(jovs1, body1) ->> {
-
-				@match JudgmentOnValueClass(rhs)
-					-| Class(jovs2, body2) ->> {
-
-						if (body1 != body2 || jovs1.size() != jovs2.size())
-							return JudgmentOnValue::Class(
-								JudgmentOnValueClass::Unknown()
-								);
-
-						ImmutableTreeVector<JudgmentOnValue> jovs;
-						for (long k = 0; k < jovs1.size();k++)
-							jovs = jovs + mergeJudgments(jovs1[k], jovs2[k]);
-
-						return JudgmentOnValue::Class(
-							JudgmentOnValueClass::Class(
-								jovs,
-								body1
-								)
-							);
-						}
-						;
-
-				}
-			;
-		}
-
-	JudgmentOnValue mergeJudgments(const JudgmentOnValueDictionary& lhs, const JudgmentOnValueDictionary& rhs) const
-		{
-		if (JOV::Dictionary(lhs) == JOV::Dictionary(rhs))
-			return JOV::Dictionary(lhs);
-		return JOV::Dictionary(JudgmentOnValueDictionary::Unknown());
-		}
-
-	@type JOJOVPair = JudgmentOnJOV j1, JudgmentOnJOV j2;
-
-	JudgmentOnValue mergeJudgments(JudgmentOnJOV lhs, JudgmentOnJOV rhs) const
-		{
-		JOJOVPair p(lhs, rhs);
-
-		@match JOJOVPair(p)
-			-|	(Known(jov), Known(jov2)) ->> {
-				return  (
-					jov == jov2 ?
-						JOV::JOVAsValue(lhs)
-					: 	JOV::JOVAsValue(JudgmentOnJOV::Unknown(mergeJudgments(jov, jov2)))
-					);
-				}
-			-|	(Unknown(jov), Unknown(jov2)) ->> {
-				return JOV::JOVAsValue(JudgmentOnJOV::Unknown(mergeJudgments(jov, jov2)));
-				}
-			-|	(Unknown(jov), Known(jov2)) ->> {
-				return JOV::JOVAsValue(JudgmentOnJOV::Unknown(mergeJudgments(jov, jov2)));
-				}
-			-|	(Known(jov), Unknown(jov2)) ->> {
-				return JOV::JOVAsValue(JudgmentOnJOV::Unknown(mergeJudgments(jov, jov2)));
-				}
-			;
-		}
-
-	JudgmentOnValue	mergeJudgments(const JudgmentOnValueMutableVector& lhs, const JudgmentOnValueMutableVector& rhs) const
-		{
-		JOV jojovOfCovering = mergeJudgments(lhs.elementJudgment(), rhs.elementJudgment());
-
-		return JOV::MutableVector(
-			JudgmentOnValueMutableVector(
-				jojovOfCovering.getJOVAsValue().jov()
-				)
-			);
-		}
-
-
-	Nullable<JudgmentOnValue> 	accumulate(const Nullable<JudgmentOnValue>& jov, const JudgmentOnValue& jov2) const
-		{
-		if (jov)
-			return null() << mergeJudgments(*jov, jov2);
-		return null() << jov2;
-		}
-
-	JudgmentOnValue		mergeJudgments(JudgmentOnValueTuple lhs, const JudgmentOnValueTuple& rhs) const
-		{
-		//the elements we have in common we can just use the mergeJudgments function recursively
-		uword_t pairwiseElementCount = std::min(lhs.jovs().size(), rhs.jovs().size());
-
-		for (long k = 0; k < pairwiseElementCount; k++)
-			if (lhs.names()[k] != rhs.names()[k])
-				pairwiseElementCount = k;
-
-		ImmutableTreeVector<JudgmentOnValue> subjovs;
-		ImmutableTreeVector<Nullable<Symbol> > subnames;
-
-		for (long k = 0; k < pairwiseElementCount; k++)
-			{
-			subjovs = subjovs + mergeJudgments(lhs.jovs()[k], rhs.jovs()[k]);
-			subnames = subnames + lhs.names()[k];
-			}
-
-		Nullable<JudgmentOnValue> extraJOV;
-
-		if (lhs.extras().isExtras())
-			extraJOV = accumulate(extraJOV, lhs.extras().getExtras().jov());
-
-		if (rhs.extras().isExtras())
-			extraJOV = accumulate(extraJOV, rhs.extras().getExtras().jov());
-
-		for (long k = pairwiseElementCount; k < rhs.jovs().size(); k++)
-			extraJOV = accumulate(extraJOV, rhs.jovs()[k]);
-
-		for (long k = pairwiseElementCount; k < lhs.jovs().size(); k++)
-			extraJOV = accumulate(extraJOV, lhs.jovs()[k]);
-
-		if (!extraJOV)
-			return JOV::Tuple(JOVT(subjovs, subnames, JOVTE::NoExtras()));
-		else
-			return JOV::Tuple(JOVT(subjovs, subnames, JOVTE::Extras(*extraJOV)));
-		}
-
-	JudgmentOnValue	mergeJudgments(JudgmentOnValueUnion in, JOV otherJOV) const
-		{
-		ImmutableTreeSet<JOV> jovs;
-
-		@match JOV(otherJOV)
-			-| Union(((elts))) ->> {
-				jovs = elts + in.alternatives().vals();
-				}
-			-| _ ->> {
-				if (in.covers(otherJOV))
-					return JOV::Union(in);
-
-				jovs = in.alternatives().vals() + otherJOV;
-				}
-
-		return JudgmentOnValue::Union(JudgmentOnResult(jovs).removeExtraneousJudgments());
-		}
-
-	JudgmentOnValue	mergeJudgments(const JudgmentOnValueVector& lhs, const JudgmentOnValueVector& rhs) const
-		{
-		JOV val = JudgmentOnValue::Vector(
-			JudgmentOnValueVector(
-				lhs.elementsJOR() + rhs.elementsJOR()
-				)
-			);
-
-		if (vectorDepth(val) > 3)
-			return jovAnyVector();
-
-		return val;
-		}
-};
 
 bool ReasonerFrame::NodeRoot::covers(const NodeRoot& root) const
 	{
@@ -709,7 +320,7 @@ void ReasonerFrame::recalculate()
 		JudgmentOnResult res = merger.collapseJORToComplexity(exitJOA.resultPart(), mReasoner.maxOutputJudgments());
 
 			{
-			LOGGER_DEBUG_T log = LOGGER_DEBUG;
+			LOGGER_WARN_T log = LOGGER_WARN;
 			log << "Collapsing " <<
 				exitJOA.resultPart().size() << " output judgments in\n\t" << mFrameId << "\nfrom\n";
 
@@ -779,6 +390,11 @@ void ReasonerFrame::addRoot(NodeRoot root)
 				<< "\nand\n" << prettyPrintStringWithoutWrapping(existingRoot) << "\nis\n"
 				<< prettyPrintStringWithoutWrapping(candidate) << "\nwhich doesn't cover the first one");
 
+			LOG_TEST << "Merged\n\t" << prettyPrintStringWithoutWrapping(existingRoot) 
+				<< "\n\t" << prettyPrintStringWithoutWrapping(root) 
+				<< "\n\t" << prettyPrintStringWithoutWrapping(candidate)
+				;
+
 			insertRoot(candidate);
 			return;
 			}
@@ -805,9 +421,9 @@ void ReasonerFrame::addRoot(NodeRoot root)
 				merged = r.rootUnion(*merged);
 			}
 
-		if (SHOULD_LOG_WARN())
+		//if (SHOULD_LOG_WARN())
 			{
-			LOGGER_DEBUG_T log = LOGGER_DEBUG;
+			LOGGER_WARN_T log = LOGGER_WARN;
 
 			log << "Collapsing roots for "
 				<< mFrameId << ": " << root.label() << ":\n";
@@ -831,7 +447,7 @@ void ReasonerFrame::addRoot(NodeRoot root)
 				merged = r.rootUnion(*merged);
 			}
 
-		LOGGER_DEBUG_T log = LOGGER_DEBUG;
+		LOGGER_WARN_T log = LOGGER_WARN;
 
 		log << "Lots of roots (" << rootCount << ") are within complexity of " << totalComplexity << ": "
 			<< mFrameId << ": " << root.label() << ":\n";
