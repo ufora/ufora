@@ -253,7 +253,7 @@ class WithBlockExecutor(object):
         proxy_trace = tuple_of_proxies[1]
         trace = proxy_trace.toLocal().resultWithWakeup()
 
-        if isinstance(trace, tuple):
+        if isinstance(trace, (tuple, list)):
             self.traceAndException = (trace, tuple_of_proxies[2].toLocal().resultWithWakeup())
 
         proxy_dict = tuple_of_proxies[0]
@@ -303,6 +303,16 @@ class WithBlockExecutor(object):
             #not optimal, but it's better than the alternative which is to have the line-number
             #at the end of the 'with' block, which is just confusing.
             frame.f_lineno = frame.f_lineno-1
+
+            if isinstance(exceptionValue, str):
+                exceptionValue = Exceptions.InternalError(exceptionValue)
+
+            if not isinstance(exceptionValue, Exception):
+                exceptionValue = Exceptions.InternalError(
+                    "Unknown exception encountered: %s\n%s" % 
+                        (exceptionValue, "\n".join(traceback.format_tb(tb)))
+                    )
+
             raise exceptionValue, None, tb
 
         self.executor.connection.pullAllMessagesAndProcess()

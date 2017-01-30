@@ -30,7 +30,7 @@ from collections import namedtuple
 
 ImplValObjectAndMemberToObjectIdMap = namedtuple('ImplValObjectAndMemberToObjectIdMap',
                                                  ['implVal', 'memberToObjectIdMap'])
-emptyCodeDefinitionPoint = ForaNative.CodeDefinitionPoint.ExternalFromStringList([])
+emptyCodeDefinitionPoint = ForaNative.CodeDefinitionPoint.ExternalFromStringList(["dummy"])
 empytObjectExpression = ForaNative.parseStringToExpression(
     "object {}",
     emptyCodeDefinitionPoint,
@@ -39,6 +39,20 @@ empytObjectExpression = ForaNative.parseStringToExpression(
 Symbol_Call = ForaNative.makeSymbol("Call")
 Symbol_CreateInstance = ForaNative.makeSymbol("CreateInstance")
 Symbol_unconvertible = ForaNative.makeSymbol("PyforaUnconvertibleValue")
+
+def isUnconvertibleValueTuple(implVal):
+    if isinstance(implVal, ForaNative.ImplValContainer) and \
+       implVal.isTuple() and len(implVal) == 1:
+        if implVal.getTupleNames()[0] == "PyforaUnconvertibleValue":
+            return True
+    return False
+
+def isNameErrorTuple(implVal):
+    if isinstance(implVal, ForaNative.ImplValContainer) and \
+       implVal.isTuple() and len(implVal) == 1:
+        if implVal.getTupleNames()[0] == "PyforaNameError":
+            return True
+    return False
 
 
 def convertNativePythonToForaConversionError(err, path):
@@ -80,6 +94,9 @@ class NativeConverterAdaptor(object):
             builtinMemberMapping
             )
 
+    def teardown(self):
+        self.vdm_ = None
+
     def createList(self, listOfConvertedValues):
         return self.nativeListConverter.createList(
             listOfConvertedValues,
@@ -95,6 +112,9 @@ class NativeConverterAdaptor(object):
             self.constantConverter.nativeConstantConverter,
             self.vdm_
             )
+
+    def createListFromPackedData(self, constantConverter, tupleConverter, dtype, dataAsBytes):
+        return self.nativeListConverter.createListFromPackedData(constantConverter, tupleConverter, dtype, dataAsBytes)
 
     def convertConstant(self, value):
         return self.constantConverter.convert(value)
@@ -318,6 +338,14 @@ class NativeConverterAdaptor(object):
         assert pyAst is not None
 
         sourcePath = objectIdToObjectDefinition[classOrFunctionDefinition.sourceFileId].path
+        sourceText = objectIdToObjectDefinition[classOrFunctionDefinition.sourceFileId].text
+
+        newMetadata = ForaNative.CreateNamedTuple(
+            (ForaNative.encodeImplvalAsEmptyObjectMetadata(ForaNative.ImplValContainer(sourceText)),
+             ForaNative.ImplValContainer(sourcePath),
+             ForaNative.ImplValContainer(pyAst.extent.start.line)),
+            ("sourceText","sourcePath","sourceLine")
+            )
 
         tr = None
         if isinstance(classOrFunctionDefinition, TypeDescription.FunctionDefinition):
@@ -325,14 +353,16 @@ class NativeConverterAdaptor(object):
                 tr = self.nativeConverter.convertPythonAstFunctionDefToForaOrParseError(
                     pyAst.asFunctionDef,
                     pyAst.extent,
-                    ForaNative.CodeDefinitionPoint.ExternalFromStringList([sourcePath])
+                    ForaNative.CodeDefinitionPoint.ExternalFromStringList([sourcePath]),
+                    newMetadata
                     )
             else:
                 assert pyAst.isLambda()
                 tr = self.nativeConverter.convertPythonAstLambdaToForaOrParseError(
                     pyAst.asLambda,
                     pyAst.extent,
-                    ForaNative.CodeDefinitionPoint.ExternalFromStringList([sourcePath])
+                    ForaNative.CodeDefinitionPoint.ExternalFromStringList([sourcePath]),
+                    newMetadata
                     )
 
         elif isinstance(classOrFunctionDefinition, TypeDescription.ClassDefinition):
@@ -349,7 +379,8 @@ class NativeConverterAdaptor(object):
                 pyAst.asClassDef,
                 pyAst.extent,
                 ForaNative.CodeDefinitionPoint.ExternalFromStringList([sourcePath]),
-                baseClasses
+                baseClasses,
+                newMetadata
                 )
 
         else:
@@ -426,7 +457,7 @@ class NativeConverterAdaptor(object):
                 renamedVariableMapping[chain[0]] = implval
             else:
                 newName = Expression.freshVarname(
-                    '_'.join(chain),
+                    '.'.join(chain),
                     set(expr.mentionedVariables)
                     )
                 renamedVariableMapping[newName] = implval
@@ -451,6 +482,11 @@ class NativeConverterAdaptor(object):
             renamedVariableMapping
             )
 
+        foraExpression = self._handleNameErrorsInExpression(
+            foraExpression,
+            renamedVariableMapping
+            )
+
         return self._specializeFreeVariablesAndEvaluate(
             foraExpression,
             renamedVariableMapping
@@ -462,13 +498,30 @@ class NativeConverterAdaptor(object):
             renamedVariableMapping
             ):
         unconvertibles = [
-            k for k, v in renamedVariableMapping.iteritems() \
-            if v == Symbol_unconvertible
+            k for k, v in renamedVariableMapping.iteritems()
+                if isUnconvertibleValueTuple(v)
             ]
 
-        foraExpression = self.nativeConverter.replaceUnconvertiblesWithThrowExprs(
+        foraExpression = self.nativeConverter.replaceSymbolsWithCheckValidityExpressions(
             foraExpression,
             unconvertibles
+            )
+
+        return foraExpression
+
+    def _handleNameErrorsInExpression(
+            self,
+            foraExpression,
+            renamedVariableMapping
+            ):
+        nameErrorSymbols = [
+            k for k, v in renamedVariableMapping.iteritems()
+                if isNameErrorTuple(v)
+            ]
+
+        foraExpression = self.nativeConverter.replaceSymbolsWithCheckValidityExpressions(
+            foraExpression,
+            nameErrorSymbols
             )
 
         return foraExpression
@@ -542,13 +595,22 @@ class NativeConverterAdaptor(object):
             )
 
         sourcePath = objectIdToObjectDefinition[withBlockDescription.sourceFileId].path
+        sourceText = objectIdToObjectDefinition[withBlockDescription.sourceFileId].text
+
+        newMetadata = ForaNative.CreateNamedTuple(
+            (ForaNative.encodeImplvalAsEmptyObjectMetadata(ForaNative.ImplValContainer(sourceText)),
+             ForaNative.ImplValContainer(sourcePath),
+             ForaNative.ImplValContainer(withBlockDescription.lineNumber)),
+            ("sourceText","sourcePath","sourceLine")
+            )
 
         foraFunctionExpression = \
             self.nativeConverter.convertPythonAstWithBlockFunctionDefToForaOrParseError(
                 nativeWithBodyAst.asFunctionDef,
                 nativeWithBodyAst.extent,
                 ForaNative.CodeDefinitionPoint.ExternalFromStringList([sourcePath]),
-                [x.split(".")[0] for x in withBlockDescription.freeVariableMemberAccessChainsToId]
+                [x.split(".")[0] for x in withBlockDescription.freeVariableMemberAccessChainsToId],
+                newMetadata
                 )
 
         if isinstance(foraFunctionExpression, ForaNative.PythonToForaConversionError):

@@ -5,7 +5,7 @@
    you may not use this file except in compliance with the License.
    You may obtain a copy of the License at
 
-       http://www.apache.org/licenses/LICENSE-2.0
+	   http://www.apache.org/licenses/LICENSE-2.0
 
    Unless required by applicable law or agreed to in writing, software
    distributed under the License is distributed on an "AS IS" BASIS,
@@ -21,6 +21,7 @@
 #include "../Logging.hpp"
 #include "OProtocol.hpp"
 #include <stdio.h>
+#include <sys/socket.h>
 
 /******************
 
@@ -52,16 +53,23 @@ public:
 			mBufferBytesUsed(0),
 			mBufPtr(0)
 		{
-		lassert(mAlignment > 0 && mBufferSize % mAlignment == 0);
+		if (mAlignment)
+			{
+			lassert(mAlignment > 0 && mBufferSize % mAlignment == 0);
 
-		mBufferHolder.resize(mAlignment * 2 + mBufferSize);
-		uword_t bufptr = (uword_t)&mBufferHolder[0];
+			mBufferHolder.resize(mAlignment * 2 + mBufferSize);
+			uword_t bufptr = (uword_t)&mBufferHolder[0];
 
-		//make sure that the buffer is aligned to the alignment as well
-		if (bufptr % mAlignment)
-			bufptr += mAlignment - bufptr % mAlignment;
+			//make sure that the buffer is aligned to the alignment as well
+			if (bufptr % mAlignment)
+				bufptr += mAlignment - bufptr % mAlignment;
 
-		mBufPtr = (char*)bufptr;
+			mBufPtr = (char*)bufptr;
+			}
+		else
+			{
+			lassert(mBufferSize == 0);
+			}
 		}
 
 	~OFileDescriptorProtocol()
@@ -100,12 +108,18 @@ public:
 		return mPosition;
 		}
 
-	void write(uword_t inByteCount, void *inData)
+	void write(uword_t inByteCount, const void* inData)
 		{
 		if (inByteCount == 0)
 			return;
 
 		mPosition += inByteCount;
+
+		if (mAlignment == 0)
+			{
+			write_(inByteCount, inData);
+			return;
+			}
 
 		while (inByteCount)
 			{
@@ -133,19 +147,19 @@ public:
 		}
 
 private:
-	void write_(uword_t inByteCount, void *inData)
+	void write_(uword_t inByteCount, const void* inData)
 		{
-		uint8_t* toWrite = (uint8_t*)inData;
+		const uint8_t* toWrite = static_cast<const uint8_t*>(inData);
 
 		while (inByteCount > 0)
 			{
 			auto written = ::write(mFD, toWrite, inByteCount);
 
 			if (written == -1 || written == 0)
-				{
-				std::string err = strerror(errno);
-				lassert_dump(false, "failed to write: " << err << ". tried to write " << inByteCount);
-				}
+				throw StreamException(
+					"Failed to write data to file descriptor: " + std::string(strerror(errno))
+						+ Ufora::debug::StackTrace::getStringTrace()
+					);
 
 			inByteCount -= written;
 			toWrite += written;

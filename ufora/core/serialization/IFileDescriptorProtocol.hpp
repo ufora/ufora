@@ -18,6 +18,9 @@
 #include <vector>
 #include <deque>
 #include "../Common.hppml"
+#include "../Clock.hpp"
+#include "../Logging.hpp"
+
 #include "IProtocol.hpp"
 #include <stdio.h>
 
@@ -49,16 +52,23 @@ public:
 			mBufferBytesConsumed(0),
 			mBufPtr(0)
 		{
-		lassert(mBufferSize % mAlignment == 0);
+		if (mAlignment)
+			{
+			lassert(mBufferSize % mAlignment == 0);
 
-		mBufferHolder.resize(mAlignment * 2 + mBufferSize);
-		uword_t bufptr = (uword_t)&mBufferHolder[0];
+			mBufferHolder.resize(mAlignment * 2 + mBufferSize);
+			uword_t bufptr = (uword_t)&mBufferHolder[0];
 
-		//make sure that the buffer is aligned to the alignment as well
-		if (bufptr % mAlignment)
-			bufptr += mAlignment - bufptr % mAlignment;
+			//make sure that the buffer is aligned to the alignment as well
+			if (bufptr % mAlignment)
+				bufptr += mAlignment - bufptr % mAlignment;
 
-		mBufPtr = (char*)bufptr;
+			mBufPtr = (char*)bufptr;
+			}
+		else
+			{
+			lassert(mBufferSize == 0);
+			}
 		}
 
 	~IFileDescriptorProtocol()
@@ -79,6 +89,48 @@ public:
 		{
 		if (inByteCount == 0)
 			return 0;
+
+		if (mAlignment == 0)
+			{
+			if (inBlock)
+				{
+				uword_t bytesRead = 0;
+
+				while (inByteCount > 0)
+					{
+					auto resultCode = ::read(mFD, inData, inByteCount);
+
+					if (resultCode == 0)
+						throw StreamException("Stream terminated unexpectedly on fd=" + boost::lexical_cast<string>(mFD) + ".\n"
+							+ Ufora::debug::StackTrace::getStringTrace());
+
+					if (resultCode < 0)
+						throw StreamException("Stream had an error on fd=" + boost::lexical_cast<string>(mFD) 
+							+ ": " + std::string(strerror(errno)) + "\n"
+							+ Ufora::debug::StackTrace::getStringTrace());
+					
+					lassert(resultCode <= inByteCount);
+
+					bytesRead += resultCode;
+					inByteCount -= resultCode;
+					inData = (void*)((char*)inData + resultCode);
+					}
+
+				return bytesRead;
+				}
+			else
+				{
+				while (true)
+					{
+					auto resultCode = ::read(mFD, inData, inByteCount);
+					
+					if (resultCode <= 0)
+						return 0;
+					else
+						return resultCode;
+					}
+				}
+			}
 
 		char* dataTarget = (char*)inData;
 

@@ -80,7 +80,7 @@ class CumulusWorkerDatasetLoadServiceIntegrationTest(unittest.TestCase):
 
         self.assertIsNotNone(self.computeUsingSeveralWorkers(text, s3, 1))
 
-    def test_PythonIoTaskService3(self):
+    def DISABLEDtest_PythonIoTaskService3(self):
         s3 = InMemoryS3Interface.InMemoryS3InterfaceFactory()
 
         s3.setThroughputPerMachine(1024 * 1024 * 20)
@@ -227,10 +227,9 @@ class CumulusWorkerDatasetLoadServiceIntegrationTest(unittest.TestCase):
             let f = fun(ix) { fun(a) { a * ix } };
             let g = fun(ix) { sum(0,10**9, f(ix)) };
 
-            //first, do a papply so that we have some cachenodes in the system
+            //first, do an apply with cached so that we have some cachenodes in the system
             let res1 = Vector.range(4).apply(fun(ix) { cached(g(ix))[0] + 1 });
 
-            //now repeat the calculation with non-papply nodes
             let res2 = Vector.range(4).apply(fun(ix) { g(ix) + 1 });
 
             if (res1 == res2)
@@ -253,7 +252,7 @@ class CumulusWorkerDatasetLoadServiceIntegrationTest(unittest.TestCase):
         text = """
             let sumVec = fun(v) { v.sum() };
 
-            let v2 = Vector.range(100).papply(fun(ix) {
+            let v2 = Vector.range(100).apply(fun(ix) {
                 let v = Vector.range(ix).paged;
                 cached(sumVec(v))[0]
                 });
@@ -265,7 +264,7 @@ class CumulusWorkerDatasetLoadServiceIntegrationTest(unittest.TestCase):
 
         res = self.computeUsingSeveralWorkers(text, s3, 4, timeout=20)
 
-        self.assertTrue(res.isResult())
+        self.assertTrue(res.isResult(), res)
         self.assertEqual(res.asResult.result.pyval, "OK")
 
     @PerformanceTestReporter.PerfTest("python.InMemoryCumulus.VectorsAndSums")
@@ -442,7 +441,7 @@ class CumulusWorkerDatasetLoadServiceIntegrationTest(unittest.TestCase):
 
         interpreterTimes = []
 
-        for ix in range(10):
+        for ix in range(20):
             interpTime = self.computeUsingSeveralWorkers("""
                     let f = fun(x){x+x+x+x+x}
                     let v = [f((x+1,x+2,x-10,x)) for x in sequence(4000)];
@@ -458,12 +457,12 @@ class CumulusWorkerDatasetLoadServiceIntegrationTest(unittest.TestCase):
 
                     res
                     """ % ix, s3, 1, wantsStats = True, timeout=240
-                    )[1].timeSpentInInterpreter
+                    )[1].timeElapsed.timeSpentInInterpreter
 
             interpreterTimes.append(interpTime)
 
-        for interpTime in interpreterTimes[1:]:  # ignoring the first run
-            self.assertLess(interpTime, (sum(interpreterTimes) - interpTime) / (len(interpreterTimes) - 1) * 10)
+        for interpTime in interpreterTimes[10:]:  # ignoring the first few runs
+            self.assertLess(interpTime, interpreterTimes[0] / 5, interpreterTimes)
 
     @PerformanceTestReporter.PerfTest("python.InMemoryCumulus.gcOfPagedVectors")
     def test_gcOfPagedVectors(self):
@@ -540,6 +539,10 @@ class CumulusWorkerDatasetLoadServiceIntegrationTest(unittest.TestCase):
             worker = None
             vdm = None
             eventHandler = None
+        except Exception as e:
+            import traceback
+            logging.error("exception: %s", traceback.format_exc())
+            raise
         finally:
             simulation.teardown()
 

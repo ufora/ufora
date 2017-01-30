@@ -20,6 +20,14 @@
 #include "../Core/ComputationResult.hppml"
 #include "../Core/PausedComputation.hppml"
 #include "../Language/ApplySignature.hppml"
+#include "../../core/serialization/Serialization.fwd.hpp"
+
+namespace Fora {
+
+class ForaValueSerializationStream;
+class ForaValueDeserializationStream;
+
+}
 
 class CFGWithFuturesImpl;
 
@@ -37,16 +45,18 @@ and
     FutureSlot =
         // this value has to still be computed
         Future of
-        // the set of FutureValues present when the future was first produced,
-        // with values that would not be passed along during an exception nulled out
-        ImmutableTreeVector<FutureValue> valuesNeededIfWeGetAnException,
-        // the future values that define the apply operation we’re testing
-        ImmutableTreeVector<FutureValue> applyArgs
+            // the set of FutureValues present when the future was first produced,
+            // with values that would not be passed along during an exception nulled out
+            ImmutableTreeVector<FutureValue> valuesNeededIfWeGetAnException,
+            // the future values that define the apply operation we’re testing
+            ImmutableTreeVector<FutureValue> applyArgs
         // we’ve computed it, and here’s its value
     -|  Current of
-        ImplValContainer result, bool isException
-        // this slot is no longer used by anything in the simulation and has been
-        // garbage collected
+            ImplValContainer result, 
+            bool isException,
+            ImmutableTreeVector<FutureValue> valuesNeededBecauseWeGotExceptionOrMutable
+            // this slot is no longer used by anything in the simulation and has been
+            // garbage collected
     -|  GarbageCollected of ()
     with
         // the CFG node at the time the future was produced
@@ -93,6 +103,12 @@ public:
         const ImmutableTreeVector<ImplValContainer>& inCurrentValues
         );
 
+    static PolymorphicSharedPtr<CFGWithFutures> createEmpty();
+
+    PolymorphicSharedPtr<CFGWithFutures> deepcopy(
+                boost::function1<ImplValContainer, ImplValContainer> duplicator
+                );
+
     void disallowRepeatNodes();
 
     void setMaxRepeatNodesAllowed(uint64_t count);
@@ -103,6 +119,10 @@ public:
     // are responsible for examining it, submitting work to the system, and
     // eventually calling ‘slotCompleted’
     const std::vector<FutureSlot>& getSlots() const;
+
+    // how many futures slots are unfinished? This is a proxy for the amount of 
+    // unfinished work present in the simulation
+    long countOfUnfinishedSlots() const;
 
     // gives indices in getSlots() of FutureSlots which can be submitted.
     const std::set<uint64_t>& indicesOfSubmittableFutures() const;
@@ -148,6 +168,14 @@ public:
 
     Nullable<uint64_t> lowestKnownBailEarlyIndex() const;
 
+    void serialize(Fora::ForaValueSerializationStream& stream) const;
+
+    void deserialize(Fora::ForaValueDeserializationStream& stream);
+
+    hash_type hash() const;
+
+    void visitValues(boost::function1<void, ImplValContainer&> visitor);
+
 private:
     CFGWithFutures(const PolymorphicSharedPtr<CFGWithFuturesImpl>& in)
         : mImpl(in)
@@ -157,4 +185,72 @@ private:
     PolymorphicSharedPtr<CFGWithFuturesImpl> mImpl;
 };
 
+template<>
+class Serializer<PolymorphicSharedPtr<CFGWithFutures>, Fora::ForaValueSerializationStream> {
+public:
+    static void serialize(Fora::ForaValueSerializationStream& s, const PolymorphicSharedPtr<CFGWithFutures>& t);
+};
 
+template<>
+class Deserializer<PolymorphicSharedPtr<CFGWithFutures>, Fora::ForaValueDeserializationStream> {
+public:
+    static void deserialize(Fora::ForaValueDeserializationStream& s, PolymorphicSharedPtr<CFGWithFutures>& ivc);
+};
+
+template<>
+class CPPMLEquality<PolymorphicSharedPtr<CFGWithFutures>, void> {
+public:
+        static char cmp(const PolymorphicSharedPtr<CFGWithFutures>& lhs, 
+                        const PolymorphicSharedPtr<CFGWithFutures>& rhs)
+            {
+            return lhs->hash().cmp(rhs->hash());
+            }
+};
+
+template<>
+class Serializer<PolymorphicSharedPtr<CFGWithFutures>, HashingStreamSerializer> {
+public:
+        static inline void serialize(
+                                HashingStreamSerializer& s, 
+                                const PolymorphicSharedPtr<CFGWithFutures>& in
+                                )
+            {
+            s.serialize(in->hash());
+            }
+};
+template<>
+class CPPMLPrettyPrint<PolymorphicSharedPtr<CFGWithFutures> > {
+public:
+        static void prettyPrint(CPPMLPrettyPrintStream& s, const PolymorphicSharedPtr<CFGWithFutures>& t)   
+            {
+            s << "CFGWithFutures(" << t->hash() << ")";
+            }
+};
+
+template<class T, class T2>
+class CPPMLTransform;
+
+template<>
+class CPPMLTransform<PolymorphicSharedPtr<CFGWithFutures>, void> {
+public:
+        template<class F>
+        static Nullable<PolymorphicSharedPtr<CFGWithFutures> > apply(
+                            const PolymorphicSharedPtr<CFGWithFutures>& in, 
+                            const F& f
+                            )
+            {
+            return null();
+            }
+};
+
+template<class T, class T2>
+class CPPMLVisit;
+
+template<>
+class CPPMLVisit<PolymorphicSharedPtr<CFGWithFutures>, void> {
+public:
+        template<class F>
+        static void apply(const PolymorphicSharedPtr<CFGWithFutures>& in, F& f)
+            {
+            }
+};

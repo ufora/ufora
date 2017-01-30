@@ -14,9 +14,13 @@
    limitations under the License.
 ****************************************************************************/
 #include "MemoryPool.hpp"
-#include "../VectorDataManager/VectorPage.hppml"
+#include "ShareableMemoryBlocks.hppml"
 #include "../../core/Clock.hpp"
+#include "../../core/lassert.hpp"
+#include "../../core/Logging.hpp"
 #include "../../core/UnitTest.hpp"
+
+class VectorPage;
 
 namespace {
 

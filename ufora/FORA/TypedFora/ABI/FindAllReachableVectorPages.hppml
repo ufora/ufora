@@ -1,0 +1,429 @@
+/***************************************************************************
+   Copyright 2016 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include "../../Core/Type.hppml"
+#include "ForaValueArray.hppml"
+#include "VectorHandle.hpp"
+#include "ScatteredForaValues.hppml"
+#include "BigVectorLayouts.hppml"
+#include "../../VectorDataManager/VectorDataManager.hppml"
+#include "../../VectorDataManager/VectorPage.hppml"
+#include "../../VectorDataManager/PageletTree.hppml"
+#include "../../Vector/MutableVectorRecord.hppml"
+#include "../../TypedFora/ABI/VectorRecord.hpp"
+#include "../../Judgment/JudgmentUtil.hppml"
+
+namespace TypedFora {
+namespace Abi {
+
+class FindAllReachableVectorPages {
+public:
+	typedef ::Type ForaType;
+
+	FindAllReachableVectorPages(
+					PolymorphicSharedPtr<VectorDataManager> inVDM,
+					MemoryPool* owningPool) :
+			mVDM(inVDM),
+			mOwningMemoryPool(owningPool)
+		{
+		}
+
+	void visit(const ImplValContainer& value)
+		{
+		visit(value.type(), (uint8_t*)value.data(), 1, 0);
+		}
+
+	const std::set<Fora::PageId>& getReachablePages() const
+		{
+		return mReachablePages;
+		}
+
+	const std::set<Fora::PageId>& getLoadedPages() const
+		{
+		return mLoadedPages;
+		}
+
+	const std::set<Fora::PageId>& getMissedPages() const
+		{
+		return mMissedPages;
+		}
+
+private:
+	void visit(
+			const ForaType& inType,
+			uint8_t* source,
+			uword_t count,
+			uword_t stride = 0
+			)
+		{
+		uword_t sz = inType.size();
+		if (stride == 0)
+			stride = sz;
+
+		if (!typeMightHaveVectorsWithin(inType))
+			return;
+
+		@match ForaType(inType)
+			-|	Nothing() ->> {}
+			-|	String() ->> {}
+			-|	ExternalFunction() ->> {}
+			-|	Symbol() ->> {}
+			-|	Tag() ->> {}
+			-|	JOVAsValue() ->> {}
+			-|	StackTrace() ->> {}
+			-|	DateTime() ->> {}
+			-|	TimeDuration() ->> {}
+			-|	Integer(_) ->> {}
+			-|	Float(_) ->> {}
+			-|	Vector() ->> {
+					for (long k = 0; k < count;k++)
+						{
+						VectorRecord* sourceVD = (VectorRecord*)(source + k * stride);
+						visitVector(*sourceVD);
+						}
+					}
+			-|	MutableVector() ->> {
+					for (long k = 0; k < count;k++)
+						{
+						const MutableVectorRecord& sourceVH =
+							*(MutableVectorRecord*)(source + k * stride);
+
+						visitMutableVectorRecord(sourceVH);
+						}
+					}
+			-|	Alternative(t) ->> {
+					visit(t, source + sizeof(symbol_type), count, stride);
+					}
+			-|	Class(types) ->> {
+					uword_t offset = 0;
+
+					for (long k = 0; k < types.size(); k++)
+						{
+						visit(types[k], source + offset, count, stride);
+						offset += types[k].size();
+						}
+					}
+			-|	Tuple(types) ->> {
+					uword_t offset = 0;
+
+					for (long k = 0; k < types.size(); k++)
+						{
+						visit(types[k], source + offset, count, stride);
+						offset += types[k].size();
+						}
+					}
+			-|	Dictionary(isCST) ->> {
+					for (long k = 0; k < count; k++)
+						{
+						Dictionary* sourceDictPtr = (Dictionary*)(source + k * stride);
+
+						for (long k = 0; k < sourceDictPtr->size(); k++)
+							{
+							ImplValContainer sourceDictValue = sourceDictPtr->pairAtPosition(k).second;
+							ImplVal sourceValImpl = sourceDictValue.getReference();
+
+							visit(
+								sourceValImpl.type(),
+								(uint8_t*)sourceValImpl.data(),
+								1
+								);
+							}
+						}
+					}
+		}
+
+	void visitScattered(
+			const ForaType& inType,
+			uint8_t** source,
+			uword_t count,
+			uword_t nudge
+			)
+		{
+		if (!typeMightHaveVectorsWithin(inType))
+			return;
+
+		@match ForaType(inType)
+			-|	Nothing() ->> {}
+			-|	String() ->> {}
+			-|	ExternalFunction() ->> {}
+			-|	Symbol() ->> {}
+			-|	Tag() ->> {}
+			-|	JOVAsValue() ->> {}
+			-|	StackTrace() ->> {}
+			-|	DateTime() ->> {}
+			-|	TimeDuration() ->> {}
+			-|	Integer(_) ->> {}
+			-|	Float(_) ->> {}
+			-|	Vector() ->> {
+					for (long k = 0; k < count;k++)
+						{
+						VectorRecord* sourceVD = (VectorRecord*)(source[k] + nudge);
+						visitVector(*sourceVD);
+						}
+					}
+			-|	MutableVector() ->> {
+					for (long k = 0; k < count;k++)
+						{
+						const MutableVectorRecord& sourceVH =
+							*(MutableVectorRecord*)(source[k] + nudge);
+
+						visitMutableVectorRecord(sourceVH);
+						}
+					}
+			-|	Alternative(t) ->> {
+					visitScattered(t, source, count, nudge + sizeof(symbol_type));
+					}
+			-|	Class(types) ->> {
+					uword_t offset = 0;
+
+					for (long k = 0; k < types.size(); k++)
+						{
+						visitScattered(types[k], source, count, nudge + offset);
+						offset += types[k].size();
+						}
+					}
+			-|	Tuple(types) ->> {
+					uword_t offset = 0;
+
+					for (long k = 0; k < types.size(); k++)
+						{
+						visitScattered(types[k], source, count, nudge + offset);
+						offset += types[k].size();
+						}
+					}
+			-|	Dictionary(isCST) ->> {
+					for (long k = 0; k < count; k++)
+						{
+						Dictionary* sourceDictPtr = (Dictionary*)(source[k] + nudge);
+
+						for (long k = 0; k < sourceDictPtr->size(); k++)
+							{
+							ImplValContainer sourceDictValue = sourceDictPtr->pairAtPosition(k).second;
+							ImplVal sourceValImpl = sourceDictValue.getReference();
+
+							visit(
+								sourceValImpl.type(),
+								(uint8_t*)sourceValImpl.data(),
+								1
+								);
+							}
+						}
+					}
+		}
+
+	void visitVector(const VectorRecord& in)
+		{
+		if (!in.size())
+			return;
+		
+		if (in.pagedValueCount() == 0 && !jorMightHaveVectorsWithin(in.jor()))
+			return;
+
+		if (mVisitedVectors.find(in) != mVisitedVectors.end())
+			return;
+
+		mVisitedVectors.insert(in);
+
+		in.dataPtr()->visitAnyVectorHandleComponents(
+			[&](Fora::BigVectorId identity, IntegerSequence subseq) {
+				this->visitBigvec(identity, subseq);
+				return true;
+				},
+			[&](ForaValueArray* array, IntegerSequence subseq) {
+				this->visitForaValueArray(array, subseq);
+				return true;
+				},
+			in.indicesWithinHandle()
+			);
+		}
+
+	void visitBigvec(Fora::BigVectorId identity, IntegerSequence subseq)
+		{
+		BigVectorPageLayout layout = mVDM->getBigVectorLayouts()->getLayoutForId(identity);
+
+		ImmutableTreeVector<VectorDataIDSlice> slices =
+									layout.slicesCoveringRange(subseq);
+
+		auto visitSlice = [&](long k) {
+			auto pageId = slices[k].vector().getPage();
+
+			if (mMissedPages.find(pageId) != mMissedPages.end())
+				return;
+
+			boost::shared_ptr<VectorPage> page = mVDM->getPageFor(pageId);
+
+			mReachablePages.insert(pageId);
+
+			if (!page)
+				{
+				mMissedPages.insert(pageId);
+				return;
+				}
+
+			if (!mOwningMemoryPool->isVectorPageMapped(page))
+				{
+				boost::shared_ptr<Ufora::threading::Trigger> mappingWantsToUnmapTrigger;
+
+				mappingWantsToUnmapTrigger = page->attemptToMapTo();
+
+				if (!mappingWantsToUnmapTrigger)
+					{
+					mMissedPages.insert(pageId);
+					return;
+					}
+
+				mOwningMemoryPool->vectorPageMapped(
+					page,
+					mappingWantsToUnmapTrigger
+					);
+				}
+
+			mLoadedPages.insert(pageId);
+
+			page->getPageletTree()->visitTree(
+				[&](boost::shared_ptr<Fora::Pagelet> pagelet, IntegerRange range, long offset) {
+					visitForaValueArray(
+						pagelet->getValues(),
+						slices[k].slice().offset(-offset).intersect(
+							IntegerSequence(range)
+							)
+						);
+					},
+				slices[k].slice().containingRange(),
+				0,
+				subseq.stride() < 0
+				);
+			};
+
+		if (subseq.stride() > 0)
+			{
+			for (long k = 0; k < slices.size();k++)
+				visitSlice(k);
+			}
+		else
+			{
+			for (long k = ((long)slices.size())-1; k >= 0; k--)
+				visitSlice(k);
+			}
+
+		}
+
+	void visitForaValueArray(ForaValueArray* array, IntegerSequence subseq)
+		{
+		if (subseq.stride() == 1)
+			array->visitScatteredValues(
+				subseq.containingRange().low(), 
+				subseq.containingRange().high(),
+				[&](ScatteredForaValues values) {
+					this->visitScatteredValues(values);
+					}
+				);
+		else
+			for (long k = 0; k < subseq.size(); k++)
+				{
+				int64_t ix = subseq.offsetForIndex(k);
+
+				visitPackedForaValues(
+					PackedForaValues(
+						array->jovFor(ix),
+						array->offsetFor(ix),
+						0,
+						0
+						)
+					);
+				}
+		}
+
+	void visitScatteredValues(ScatteredForaValues values)
+		{
+		this->visitScattered(
+			*values.elementJOV().type(),
+			(uint8_t**)values.data(),
+			values.count(),
+			values.nudge()
+			);
+		}
+
+	void operator()(PackedForaValues values)
+		{
+		visitPackedForaValues(values);
+		}
+
+	void visitPackedForaValues(PackedForaValues values)
+		{
+		if (values.elementJOV().constant())
+			{
+			//do nothing since there is no data
+			}
+			else
+		if (values.elementJOV().type())
+			{
+			visit(
+				*values.elementJOV().type(),
+				values.data(),
+				values.count(),
+				values.stride()
+				);
+			}
+		else
+			{
+			for (long k = 0; k < values.count();k++)
+				{
+				ImplVal* val = values.pointerToElement<ImplVal>(k);
+
+				visit(val->type(), (uint8_t*)val->data(), 1);
+				}
+			}
+		}
+
+	void visitMutableVectorRecord(
+			const MutableVectorRecord& vec
+			)
+		{
+		if (!jovMightHaveVectorsWithin(vec.elementJOV()))
+			return;
+
+		if (mMutableVectorRecordsVisitedByHash.find(vec.hash())
+					== mMutableVectorRecordsVisitedByHash.end())
+			{
+			PackedForaValues values = vec.packedValues();
+
+			visitPackedForaValues(values);
+
+			mMutableVectorRecordsVisitedByHash.insert(vec.hash());
+			}
+		}
+
+	PolymorphicSharedPtr<VectorDataManager> mVDM;
+
+	MemoryPool* mOwningMemoryPool;
+
+	std::set<hash_type> mMutableVectorRecordsVisitedByHash;
+
+	std::set<Fora::PageId> mReachablePages;
+
+	std::set<Fora::PageId> mLoadedPages;
+
+	std::set<Fora::PageId> mMissedPages;
+
+	std::set<VectorRecord> mVisitedVectors;
+
+};
+
+
+}
+}

@@ -28,6 +28,7 @@
 #include "../../core/Logging.hpp"
 #include "../../core/Clock.hpp"
 #include "../../core/StringUtil.hpp"
+#include "../../core/cppml/CPPMLVisit.hppml"
 #include <fstream>
 #include <boost/filesystem.hpp>
 #include <ctype.h>
@@ -214,13 +215,29 @@ void LLVMFunctionBuilder::flattenNativeFun()
 				);
 		}
 
-	NativeCodeFlattened::flatten(
+	ImmutableTreeMap<NativeBlockID, ImmutableTreeSet<NativeVariable> > resumptionTargets;
+
+	CPPMLVisitor<>()
+		.down<NativeExpression_JumpToResumptionType>(
+			[&](const NativeExpression_JumpToResumptionType& in) {
+				if (!resumptionTargets.contains(in.targetBlock()))
+					resumptionTargets = resumptionTargets + in.targetBlock() + ImmutableTreeSet<NativeVariable>(in.variableDefinitions().keys());
+				else
+					resumptionTargets = resumptionTargets + in.targetBlock() + 
+						(*resumptionTargets[in.targetBlock()] + ImmutableTreeSet<NativeVariable>(in.variableDefinitions().keys()));
+				})
+		.visit(mNativeFun)
+		;
+
+
+	NativeCodeFlattened::flattenNativeCFG(
 		mNativeFun,
 		exits,
 		simpleExits,
 		mFlatBlockMap,
 		emptyTreeMap(),
 		emptyTreeVec(),
+		resumptionTargets,
 		false,
 		NativeBlockID::entry(),
 		1.0
@@ -555,7 +572,7 @@ void LLVMFunctionBuilder::createJumpFromStagingBlockToBlockById(
 					)
 				{
 				lassert(!mIsSimpleFunction);
-				lassert(inFlattenedNativeBlock.args()[k] == mVarsToSlots);
+				lassert(mVarsToSlots.find(inFlattenedNativeBlock.args()[k]) != mVarsToSlots.end());
 
 				llvm_value_ptr slotPtr =
 					bb(inFromStagingBlock).CreateConstGEP2_32(
@@ -627,7 +644,7 @@ void LLVMFunctionBuilder::createJumpFromStagingToBlockByIDForContinuationResumpt
 		if (!flattenedNativeBlock.liveOnInput()[k].type().isEmpty())
 			{
 			lassert_dump(
-				flattenedNativeBlock.liveOnInput()[k] == mVarsToSlots,
+				mVarsToSlots.find(flattenedNativeBlock.liveOnInput()[k]) != mVarsToSlots.end(),
 				"no slot variable for "
 					<< prettyPrintString(flattenedNativeBlock.liveOnInput()[k])
 					<< " in " << prettyPrintString(inToId)
@@ -697,7 +714,7 @@ bool LLVMFunctionBuilder::wantsArgumentTrace(void) const
 
 uword_t LLVMFunctionBuilder::entryBlockIDFor(NativeBlockID id)
 	{
-	if (id != mEntryBlockIDs)
+	if (mEntryBlockIDs.find(id) == mEntryBlockIDs.end())
 		mEntryBlockIDs[id] = mNextBlockID++;
 
 	return mEntryBlockIDs[id];
@@ -708,7 +725,7 @@ void LLVMFunctionBuilder::extractContinuationSlots(const NativeCodeFlattened::Co
 	NativeBlockID b = cont.block();
 
 	for (long i = 0; i < mFlatBlockMap[b].args().size(); i++)
-		if (mFlatBlockMap[b].args()[i] != mVarsToSlots)
+		if (mVarsToSlots.find(mFlatBlockMap[b].args()[i]) == mVarsToSlots.end())
 			{
 			uword_t ix = mSlots.size();
 			mVarsToSlots[mFlatBlockMap[b].args()[i]] = ix;
@@ -779,7 +796,7 @@ void LLVMFunctionBuilder::extractWriteBackSlots(const NativeCodeFlattened::Block
 
 	//these variables need slots
 	for (long k = 0; k < toWriteBack.size(); k++)
-		if (toWriteBack[k] != mVarsToSlots)
+		if (mVarsToSlots.find(toWriteBack[k]) == mVarsToSlots.end())
 			{
 			uword_t ix = mSlots.size();
 			mVarsToSlots[toWriteBack[k]] = ix;
@@ -1056,13 +1073,13 @@ LLVMValue LLVMFunctionBuilder::evaluate(
 				return LLVMValue(0, var.type());
 
 			//check to see whether this variable is already loaded into a value
-			if (var == ioVals)
+			if (ioVals.find(var) != ioVals.end())
 				return ioVals[var];
 
 			//it's not - load it from a slot
 			lassert(!mIsSimpleFunction);
 
-			lassert_dump(var == mVarsToSlots,
+			lassert_dump(mVarsToSlots.find(var) != mVarsToSlots.end(),
 				"don't have slot for variable " << prettyPrintString(var) << ".\n\n"
 				<< prettyPrintString(mFlatBlockMap) << "\n");
 
@@ -1100,7 +1117,7 @@ uword_t LLVMFunctionBuilder::mapMetadata(const NativeCodeFlattened::Input& meta)
 	@match NativeCodeFlattened::Input(meta)
 		-|	Constant(Nothing()) ->> { return 0; }
 		-|	Variable(v) ->> {
-				lassert_dump(v == mVarsToSlots,
+				lassert_dump(mVarsToSlots.find(v) != mVarsToSlots.end(),
 						"tried to produce metadata for a variable without a slot: "
 					<< 	prettyPrintString(v)
 					<< ". map = \n"
@@ -1185,7 +1202,7 @@ NativeContinuationExpressionSerialized
 				return NativeContinuationExpressionSerialized::Constant(c);
 				}
 		-|	Leaf(Variable(v)) ->> {
-				lassert_dump(v == mVarsToSlots,
+				lassert_dump(mVarsToSlots.find(v) != mVarsToSlots.end(),
 					"tried to produce metadata for a variable without a slot: "
 						<< prettyPrintString(v)
 						<< ". map = \n"
@@ -2005,7 +2022,7 @@ LLVMValue LLVMFunctionBuilder::evaluate(
 					else
 						{
 						lassert_dump(
-							mFlatBlockMap[conts[k].block()].args()[0] == mVarsToSlots,
+							mVarsToSlots.find(mFlatBlockMap[conts[k].block()].args()[0]) != mVarsToSlots.end(),
 							"vars-to-slots doesn't contain an entry for "
 								<< prettyPrintString(mFlatBlockMap[conts[k].block()].args()[0])
 								<< "\nfor continuation " << prettyPrintString(conts) << "\n"
@@ -2198,12 +2215,12 @@ void LLVMFunctionBuilder::terminate(
 			lassert(!mIsSimpleFunction);
 
 			lassert_dump(
-				toWrite[k] == ioVals,
+				ioVals.find(toWrite[k]) != ioVals.end(),
 				"can't write variable " << prettyPrintString(toWrite[k])
 					<< "because it's not loaded!"
 					);
 			lassert_dump(
-				toWrite[k] == mVarsToSlots,
+				mVarsToSlots.find(toWrite[k]) != mVarsToSlots.end(),
 				"can't write variable " << prettyPrintString(toWrite[k])
 					<< "because no slot exists for it!"
 					);
@@ -2253,7 +2270,7 @@ void LLVMFunctionBuilder::terminate(
 						//write the value to a slot
 						if (!v.type().isEmpty())
 							{
-							lassert(v == mVarsToSlots);
+							lassert(mVarsToSlots.find(v) != mVarsToSlots.end());
 
 							bb(blockPtr).CreateStore(vals[k],
 								bb(blockPtr).CreateConstGEP2_32(mSlotsPtr, 0, mVarsToSlots[v])
@@ -2289,7 +2306,7 @@ void LLVMFunctionBuilder::terminate(
 						);
 
 				//then jump
-				lassert_dump(b == mBlockMap, "don't have target " << prettyPrintString(b));
+				lassert_dump(mBlockMap.find(b) != mBlockMap.end(), "don't have target " << prettyPrintString(b));
 				bb(blockPtr).CreateBr(mBlockMap[b]);
 				}
 		-|	Call(target, blockID, _, _) ->> {

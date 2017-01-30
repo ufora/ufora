@@ -20,18 +20,16 @@ import ufora.FORA.python.ForaValue as ForaValue
 import ufora.native.FORA as ForaNative
 import ufora.FORA.python.FORA as FORA
 
-emptyCodeDefinitionPoint = ForaNative.CodeDefinitionPoint.ExternalFromStringList([])
+emptyCodeDefinitionPoint = ForaNative.CodeDefinitionPoint.ExternalFromStringList(["dummy"])
 
 def normalComputationResult(result):
     return ForaNative.ComputationResult.Result(
-            result,
-            ForaNative.ImplValContainer()
+            result
             )
 
 def exceptionComputationResult(result):
     return ForaNative.ComputationResult.Exception(
-            result,
-            ForaNative.ImplValContainer()
+            result
             )
 
 def evalSubmittableArgs(submittableArgs):
@@ -908,72 +906,6 @@ class CFGWithFuturesTest(unittest.TestCase):
             ForaNative.ImplValContainer((3,4))
             )
 
-    def test_cached_nodes_1(self):
-        text = "fun(f, g) { cached(f(), g()); }"
-        cfg = self.parseStringToFunction(text).toCFG(2)
-        fImplval = FORA.extractImplValContainer(FORA.eval("fun() { 1 }"))
-        gImplVal = FORA.extractImplValContainer(FORA.eval("fun() { 2 }"))
-
-        cfgWithFutures = ForaNative.CFGWithFutures.createCfgWithFutures(
-            cfg, None, (fImplval, gImplVal))
-
-        self.assertEqual(cfgWithFutures.indicesOfSubmittableFutures(), [0])
-
-        res = evalSubmittableArgs(cfgWithFutures.submittableArgs(0))
-
-        expectedResult = ForaNative.ImplValContainer((1, 2))
-
-        self.assertEqual(res.asResult.result, expectedResult)
-
-        cfgWithFutures.slotCompleted(0, res)
-
-        finalResult = cfgWithFutures.getFinalResult()
-
-        self.assertEqual(
-            finalResult.asResult.result.asResult.result,
-            expectedResult
-            )
-
-    def test_cached_nodes_2(self):
-        text = """fun() {
-                      let f = fun() { throw 0 };
-                      let g = fun() { 1 };
-                      cached(f(), g())
-                      }"""
-        cfg = self.parseStringToFunction(text).toCFG(0)
-
-        cfgWithFutures = ForaNative.CFGWithFutures.createCfgWithFutures(
-            cfg, None, ())
-
-        cfgWithFutures.slotCompleted(
-            0, evalSubmittableArgs(cfgWithFutures.submittableArgs(0))
-            )
-
-        self.assertEqual(
-            cfgWithFutures.getFinalResult().asResult.result.asException.exception,
-            ForaNative.ImplValContainer(0)
-            )
-
-    def test_cached_nodes_3(self):
-        text = """fun() {
-                      let f = fun() { 0 };
-                      let g = fun() { throw 1 };
-                      cached(f(), g())
-                      }"""
-        cfg = self.parseStringToFunction(text).toCFG(0)
-
-        cfgWithFutures = ForaNative.CFGWithFutures.createCfgWithFutures(
-            cfg, None, ())
-
-        cfgWithFutures.slotCompleted(
-            0, evalSubmittableArgs(cfgWithFutures.submittableArgs(0))
-            )
-
-        self.assertEqual(
-            cfgWithFutures.getFinalResult().asResult.result.asException.exception,
-            ForaNative.ImplValContainer(1)
-            )
-
     def test_cfg_with_no_applies(self):
         text = "fun() { if (1) true else false }"
         cfg = self.parseStringToFunction(text).toCFG(0)
@@ -1280,25 +1212,6 @@ class CFGWithFuturesTest(unittest.TestCase):
         self.assertTrue(final.isResult())
         self.assertTrue(final.asResult.result.isResult())
         self.assertEqual(final.asResult.result.asResult.result.pyval, 1)
-
-    def test_serialResultsWithExceptions_1(self):
-        cfg = self.parseStringToFunction("fun(f) { f(1) + f(2) }").toCFG(1)
-        funImplval = FORA.extractImplValContainer(FORA.eval("fun(x) { throw x; }"))
-
-        serialResult = self.serialResult(cfg, (funImplval,), "block_0Let")
-
-        pausedFrame = serialResult.asPaused.frame
-
-        self.assertEqual(
-            pausedFrame.values[0],
-            ForaNative.ImplValContainer(1)
-            )
-        self.assertEqual(
-            pausedFrame.values[1],
-            funImplval
-            )
-        self.assertEqual(pausedFrame.graph, cfg)
-        self.assertEqual(pausedFrame.label, "block_5Throw")
 
     # this test was disabled due to a refcounting bug in ControlFlowGraph/SimulationState:
     # the example is something like: bla = f(args) where bla is not consumed anywhere else

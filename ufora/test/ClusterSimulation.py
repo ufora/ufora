@@ -124,9 +124,16 @@ class WorkerProcesses(object):
 
                 env = dict(os.environ)
                 env['UFORA_WORKER_BASE_PORT'] = str(30009 + 2*self.num_ever_started)
+
                 core_log = log_path.split('.')
                 core_log.insert(-1, 'core')
                 env['UFORA_WORKER_CORE_LOG_FILE'] = '.'.join(core_log)
+
+                env['CUMULUS_VECTOR_MB'] = "400"
+                env['CUMULUS_MAX_MB'] = "500"
+                env['CUMULUS_TRACK_TCMALLOC'] = '0'
+                env['CUMULUS_DISK_STORAGE_SUBDIR'] = str(worker_id)
+
                 self.num_ever_started += 1
                 proc = SubprocessRunner.SubprocessRunner(
                     [sys.executable, '-u', self.worker_path],

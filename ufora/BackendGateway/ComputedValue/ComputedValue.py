@@ -443,7 +443,7 @@ class ComputedValue(ComputedGraph.Location):
 
         stats = self.checkpointStatus.statistics
 
-        totalSeconds = stats.timeSpentInCompiler + stats.timeSpentInInterpreter
+        totalSeconds = stats.timeElapsed.timeSpentInCompiledCode + stats.timeElapsed.timeSpentInInterpreter
         return self.totalComputeSecondsAtLastCheckpoint + 1.0 > totalSeconds
 
     @ComputedGraph.ExposedProperty()
@@ -489,12 +489,12 @@ class ComputedValue(ComputedGraph.Location):
                 },
             "timeSpentInCompiler": {
                 "title" : "Time in compiled code (across all cores)",
-                "value" : stats.timeSpentInCompiler,
+                "value" : stats.timeElapsed.timeSpentInCompiledCode,
                 "units" : "sec"
                 },
             "timeSpentInInterpreter": {
                 "title" : "Time in interpreted code (across all cores)",
-                "value" : stats.timeSpentInInterpreter,
+                "value" : stats.timeElapsed.timeSpentInInterpreter,
                 "units" : "sec"
                 },
             "totalSplitCount": {
@@ -542,7 +542,7 @@ class ComputedValue(ComputedGraph.Location):
                 "units" : ""
                 }
         else:
-            totalSeconds = stats.timeSpentInCompiler + stats.timeSpentInInterpreter
+            totalSeconds = stats.timeElapsed.timeSpentInCompiledCode + stats.timeElapsed.timeSpentInInterpreter
             if secondsAtCheckpoint + 1.0 >= totalSeconds:
                 result["checkpointStatus"] = {
                     "title" : "Checkpoint Status",

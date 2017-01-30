@@ -16,6 +16,7 @@ import logging
 import threading
 import time
 import traceback
+import os
 
 import ufora.distributed.S3.S3Interface as S3Interface
 import ufora.FORA.python.PythonIoTasks as PythonIoTasks
@@ -25,6 +26,12 @@ import ufora.util.ManagedThread as ManagedThread
 import ufora.config.Setup as Setup
 import ufora.native.FORA as FORANative
 import ufora.native.ImmutableTreeVector as NativeImmutableTreeVector
+
+import ufora.FORA.python.PurePython.Converter as Converter
+import ufora.FORA.python.PurePython.PyforaToJsonTransformer as PyforaToJsonTransformer
+import ufora.FORA.python.ModuleDirectoryStructure as ModuleDirectoryStructure
+import pyfora.BinaryObjectRegistry as BinaryObjectRegistry
+import pyfora
 
 class PythonIoTaskService(object):
     def __init__(self,
@@ -60,7 +67,7 @@ class PythonIoTaskService(object):
             "out of process" if s3Interface.isCompatibleWithOutOfProcessDownloadPool else \
                 "in memory"
             )
-
+        
         self.outOfProcessDownloaderPool = \
             OutOfProcessDownloader.OutOfProcessDownloaderPool(
                 self.threadcount,

@@ -33,7 +33,7 @@ class ExecutorTestCommon(object):
             executor = kwds['executor']
             shouldClose = False
         else:
-            executor = self.create_executor()
+            executor = self.create_executor(kwds.get('allowCached', True))
 
         try:
             func_proxy = executor.define(func).result()

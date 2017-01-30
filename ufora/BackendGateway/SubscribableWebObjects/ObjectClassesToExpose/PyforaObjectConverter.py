@@ -15,11 +15,11 @@
 import logging
 import time
 import traceback
+import base64
 
 import ufora.BackendGateway.SubscribableWebObjects.Exceptions as Exceptions
 import ufora.BackendGateway.ComputedGraph.ComputedGraph as ComputedGraph
 import ufora.BackendGateway.ComputedValue.ComputedValueGateway as ComputedValueGateway
-import ufora.FORA.python.ModuleDirectoryStructure as ModuleDirectoryStructure
 
 #global variables to hold the state of the converter. This is OK because
 #the PyforaObjectConverter is a singleton
@@ -27,74 +27,47 @@ objectIdToIvc_ = {}
 converter_ = [None]
 objectRegistry_ = [None]
 
+
+def convertJsonToObject(val):
+    import ufora.BackendGateway.SubscribableWebObjects.AllObjectClassesToExpose as AllObjectClassesToExpose
+
+    if val is None:
+        return
+
+    if isinstance(val, unicode):
+        return str(val)
+
+    if isinstance(val, (list, tuple)):
+        return tuple(convertJsonToObject(x) for x in val)
+
+    if not isinstance(val, dict):
+        return val
+
+    definition = val.get('objectDefinition_')
+
+    if definition is None:
+        return {k: convertJsonToObject(v) for k, v in val.iteritems()}
+    
+    return (AllObjectClassesToExpose.classMap[definition['type']])(**convertJsonToObject(definition['args']))
+
+
+
 class PyforaObjectConverter(ComputedGraph.Location):
     @ComputedGraph.ExposedFunction(expandArgs=True)
     def initialize(self, purePythonMDSAsJson):
         """Initialize the converter assuming a set of pyfora builtins"""
+        import pyfora.ObjectRegistry as ObjectRegistry
+        import ufora.FORA.python.PurePython.Converter as Converter
+
         try:
-            import pyfora.ObjectRegistry as ObjectRegistry
-            import ufora.FORA.python.PurePython.Converter as Converter
-            import ufora.FORA.python.PurePython.PyforaSingletonAndExceptionConverter as PyforaSingletonAndExceptionConverter
-            import ufora.native.FORA as ForaNative
-            import ufora.FORA.python.ModuleImporter as ModuleImporter
-
-
             logging.info("Initializing the PyforaObjectConverter")
 
             objectRegistry_[0] = ObjectRegistry.ObjectRegistry()
 
-            if purePythonMDSAsJson is None:
-                converter_[0] = Converter.Converter()
-            else:
-                purePythonModuleImplval = ModuleImporter.importModuleFromMDS(
-                    ModuleDirectoryStructure.ModuleDirectoryStructure.fromJson(purePythonMDSAsJson),
-                    "fora",
-                    "purePython",
-                    searchForFreeVariables=True
-                    )
-
-                singletonAndExceptionConverter = \
-                    PyforaSingletonAndExceptionConverter.PyforaSingletonAndExceptionConverter(
-                        purePythonModuleImplval
-                        )
-
-                primitiveTypeMapping = {
-                    bool: purePythonModuleImplval.getObjectMember("PyBool"),
-                    str: purePythonModuleImplval.getObjectMember("PyString"),
-                    int: purePythonModuleImplval.getObjectMember("PyInt"),
-                    float: purePythonModuleImplval.getObjectMember("PyFloat"),
-                    type(None): purePythonModuleImplval.getObjectMember("PyNone"),
-                    }
-
-
-                nativeConstantConverter = ForaNative.PythonConstantConverter(
-                    primitiveTypeMapping
-                    )
-
-                nativeListConverter = ForaNative.makePythonListConverter(
-                    purePythonModuleImplval.getObjectMember("PyList")
-                    )
-
-                nativeTupleConverter = ForaNative.makePythonTupleConverter(
-                    purePythonModuleImplval.getObjectMember("PyTuple")
-                    )
-
-                nativeDictConverter = ForaNative.makePythonDictConverter(
-                    purePythonModuleImplval.getObjectMember("PyDict")
-                    )
-
-                foraBuiltinsImplVal = ModuleImporter.builtinModuleImplVal()
-
-                converter_[0] = Converter.Converter(
-                    nativeListConverter=nativeListConverter,
-                    nativeTupleConverter=nativeTupleConverter,
-                    nativeDictConverter=nativeDictConverter,
-                    nativeConstantConverter=nativeConstantConverter,
-                    singletonAndExceptionConverter=singletonAndExceptionConverter,
-                    vdmOverride=ComputedValueGateway.getGateway().vdm,
-                    purePythonModuleImplVal=purePythonModuleImplval,
-                    foraBuiltinsImplVal=foraBuiltinsImplVal
-                    )
+            converter_[0] = Converter.constructConverter(
+                Converter.canonicalPurePythonModule(), 
+                ComputedValueGateway.getGateway().vdm
+                )
         except:
             logging.critical("Failed to initialize the PyforaObjectConverter: %s", traceback.format_exc())
             raise
@@ -118,9 +91,10 @@ class PyforaObjectConverter(ComputedGraph.Location):
         return converter_[0].unwrapPyforaTupleToTuple(tupleIVC)
 
     @ComputedGraph.ExposedFunction(expandArgs=True)
-    def convert(self, objectId, objectIdToObjectDefinition):
-        import pyfora.TypeDescription as TypeDescription
+    def convert(self, objectId, serializedBinaryObjectDefinition):
         import pyfora.Exceptions as PyforaExceptions
+        import pyfora.BinaryObjectRegistryDeserializer as BinaryObjectRegistryDeserializer
+
 
         result = [None]
         def onConverted(r):
@@ -128,10 +102,11 @@ class PyforaObjectConverter(ComputedGraph.Location):
 
         t0 = time.time()
 
-        objectRegistry_[0].objectIdToObjectDefinition.update({
-            int(k): TypeDescription.deserialize(v)
-            for k, v in objectIdToObjectDefinition.iteritems()
-            })
+        BinaryObjectRegistryDeserializer.deserializeFromString(
+            base64.b64decode(serializedBinaryObjectDefinition), 
+            objectRegistry_[0],
+            convertJsonToObject
+            )
 
         logging.info("Updated object registry in %s seconds.", time.time() - t0)
         t0 = time.time()
@@ -156,7 +131,7 @@ class PyforaObjectConverter(ComputedGraph.Location):
         return {'objectId': objectId}
 
     @ComputedGraph.Function
-    def transformPyforaImplval(self, result, transformer, vectorContentsExtractor):
-        return converter_[0].transformPyforaImplval(result, transformer, vectorContentsExtractor)
+    def transformPyforaImplval(self, result, transformer, vectorContentsExtractor, maxBytecount=None):
+        return converter_[0].transformPyforaImplval(result, transformer, vectorContentsExtractor, maxBytecount)
 
 

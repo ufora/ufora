@@ -38,10 +38,35 @@ class DoublesString:
     def __call__(self):
         return self.x + self.x
 
+def killSelf():
+    import os
+    os._exit(0)
+
 class OutOfProcessDownloaderTestCases:
-    def test_basic(self):
-        pool = OutOfProcessDownloader.OutOfProcessDownloaderPool(1)
+    def test_basic_in(self):
+        pool = OutOfProcessDownloader.OutOfProcessDownloaderPool(1, actuallyRunOutOfProcess=False)
         pool.teardown()
+
+    def test_basic_out(self):
+        pool = OutOfProcessDownloader.OutOfProcessDownloaderPool(1, actuallyRunOutOfProcess=True)
+        pool.teardown()
+
+    def test_subprocess_dies(self):
+        pool = OutOfProcessDownloader.OutOfProcessDownloaderPool(1, actuallyRunOutOfProcess=True)
+
+        queue = Queue.Queue()
+
+        for ix in xrange(20):
+            try:
+                pool.getDownloader().executeAndCallbackWithString(killSelf, lambda s: s)
+            except:
+                pass
+
+            pool.getDownloader().executeAndCallbackWithString(returnsAString, queue.put)
+
+        pool.teardown()
+
+        self.assertTrue(queue.qsize(), 20)
 
     def test_in_process(self):
         pool = OutOfProcessDownloader.OutOfProcessDownloaderPool(1, actuallyRunOutOfProcess=False)
@@ -53,6 +78,17 @@ class OutOfProcessDownloaderTestCases:
 
         pool.getDownloader().executeAndCallbackWithString(DoublesString("haro"), queue.put)
         self.assertEqual(queue.get(), "haroharo")
+
+        pool.teardown()
+
+    def test_in_process_looping(self):
+        pool = OutOfProcessDownloader.OutOfProcessDownloaderPool(1, actuallyRunOutOfProcess=False)
+
+        queue = Queue.Queue()
+
+        for ix in xrange(10):
+            pool.getDownloader().executeAndCallbackWithString(returnsAString, queue.put)
+            self.assertEqual(queue.get(), "asdf")
 
         pool.teardown()
 

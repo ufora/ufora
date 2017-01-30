@@ -15,7 +15,7 @@
 import os
 import os.path
 import tempfile
-import ufora.util.SubprocessingModified as subprocess
+import subprocess
 import shutil
 import sys
 import traceback

@@ -271,7 +271,7 @@ class BigboxPerformanceTest(unittest.TestCase):
                 returnSimulation=True,
                 ioTaskThreadOverride=8,
                 useInMemoryCache=False,
-                timeout=30,
+                timeout=60,
                 objectStore=self.createObjectStore(s3),
                 pageSizeOverride=pageSizeOverride
                 )

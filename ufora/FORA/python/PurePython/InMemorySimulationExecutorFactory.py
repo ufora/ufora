@@ -21,7 +21,16 @@ import ufora.distributed.SharedState.tests.SharedStateTestHarness as SharedState
 import pyfora.Connection as Connection
 
 
-def create_executor():
+def create_executor(**kwds):
+    kwds = dict(kwds)
+
+    if 'pageSizeOverride' not in kwds:
+        kwds['pageSizeOverride'] = 10000000
+
+    if 'useInMemoryCache' not in kwds:
+        kwds['useInMemoryCache'] = 200
+    
+
     s3 = []
     def createMessageProcessor():
         harness = SharedStateTestHarness.SharedStateTestHarness(inMemory=True)
@@ -33,8 +42,7 @@ def create_executor():
                         harness.callbackScheduler.getFactory(),
                         harness.callbackScheduler,
                         vdm,
-                        pageSizeOverride=10000000,
-                        useInMemoryCache=200
+                        **kwds
                         )
 
                     #pull out the inmemory s3 interface so that we can surface it

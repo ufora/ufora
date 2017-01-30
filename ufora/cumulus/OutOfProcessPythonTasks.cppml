@@ -1,0 +1,322 @@
+/***************************************************************************
+    Copyright 2016 Ufora Inc.
+
+    Licensed under the Apache License, Version 2.0 (the "License");
+    you may not use this file except in compliance with the License.
+    You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+    Unless required by applicable law or agreed to in writing, software
+    distributed under the License is distributed on an "AS IS" BASIS,
+    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    See the License for the specific language governing permissions and
+    limitations under the License.
+****************************************************************************/
+
+#include "OutOfProcessPythonTasks.hppml"
+#include "OutOfProcessPythonTaskPolicy.hppml"
+
+#include "../core/serialization/IFileDescriptorProtocol.hpp"
+#include "../core/serialization/OFileDescriptorProtocol.hpp"
+#include "../FORA/Core/ExecutionContextImpl.hppml"
+#include "../FORA/python/PurePython/PythonBinaryStreamToImplval.hppml"
+#include "../FORA/python/PurePython/PythonBinaryStreamFromImplval.hppml"
+#include "../FORA/TypedFora/ABI/FindAllReachableVectorPages.hppml"
+
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <errno.h>
+
+namespace Cumulus {
+
+class NamedSocketConnection {
+public:
+    NamedSocketConnection(std::string path) :
+            mFileDescriptor(-1)
+        {
+        int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+
+        lassert_dump(fd != -1, "failed to create a new socket: " << strerror(errno));
+
+        struct sockaddr_un addr;
+        memset(&addr, 0, sizeof(addr));
+
+        addr.sun_family = AF_UNIX;
+        strncpy(addr.sun_path, path.c_str(), sizeof(addr.sun_path)-1);
+
+        if (connect(fd, (struct sockaddr*)&addr, sizeof(addr)) == -1)
+            {
+            close(fd);
+            lassert_dump(false, "failed to connect to " << path << ": " << strerror(errno));
+            }
+
+        mFileDescriptor = fd;
+
+        mInProtocol.reset(new IFileDescriptorProtocol(fd, 0, 0));
+        mOutProtocol.reset(new OFileDescriptorProtocol(fd, 0, 0));
+        }
+
+    ~NamedSocketConnection()
+        {
+        if (mFileDescriptor != -1)
+            {
+            lassert_dump(close(mFileDescriptor) != -1, "failed to close fd " << mFileDescriptor << ": " << strerror(errno));
+            }
+        }
+
+    IProtocol& inputProtocol()
+        {
+        return *mInProtocol;
+        }
+
+    OProtocol& outputProtocol()
+        {
+        return *mOutProtocol;
+        }
+
+    int fileDescriptor() const
+        {
+        return mFileDescriptor;
+        }
+
+private:
+    int mFileDescriptor;
+
+    boost::shared_ptr<IFileDescriptorProtocol> mInProtocol;
+
+    boost::shared_ptr<OFileDescriptorProtocol> mOutProtocol;
+};
+
+const static uint8_t MSG_GET_WORKER = 'W';
+const static uint8_t MSG_RELEASE_WORKER = 'R';
+const static uint8_t MSG_TERMINATE_WORKER = 'T';
+const static uint8_t MSG_OOPP_CALL = 'P';
+const static uint8_t MSG_NO_OP = 'N';
+
+class WorkerPoolCommunicator {
+public:
+    WorkerPoolCommunicator(std::string socketPath) : mSocketPath(socketPath)
+        {
+        }
+
+
+    std::string getWorker()
+        {
+        NamedSocketConnection connection(mSocketPath + "/" + "selector");
+
+            {
+            OBinaryStream outStream(connection.outputProtocol());
+            outStream << MSG_GET_WORKER;
+            }
+
+        std::string result;
+
+            {
+            IBinaryStream inStream(connection.inputProtocol());
+            inStream >> result;
+            }
+
+        return result;
+        }
+
+    void releaseWorker(std::string workername)
+        {
+        NamedSocketConnection connection(mSocketPath + "/" + "selector");
+
+            {
+            OBinaryStream outStream(connection.outputProtocol());
+            outStream << MSG_TERMINATE_WORKER;
+            outStream << workername;
+            }
+        }
+
+    template<class callback>
+    void withWorker(const callback& c)
+        {
+        auto name = getWorker();
+
+            {
+            NamedSocketConnection connection(mSocketPath + "/" + name);
+
+            try {
+                c(connection, name);
+                }
+            catch(...)
+                {
+                releaseWorker(name);
+                throw;
+                }
+            }
+
+        releaseWorker(name);
+        }
+
+private:
+    std::string mSocketPath;
+};
+
+class ExternalMemoryAllocator {
+public:
+    ExternalMemoryAllocator(PolymorphicSharedPtr<VectorDataMemoryManager> inVDMM) : 
+            mVDMM(inVDMM),
+            mBytesAllocated(0)
+        {
+        }
+
+    ~ExternalMemoryAllocator()
+        {
+        if (mBytesAllocated)
+            mVDMM->releaseExternalMemory(mBytesAllocated);
+        }
+
+    bool tryToAllocate(int64_t bytes)
+        {
+        if (mVDMM->allocateExternalMemory(bytes))
+            {
+            mBytesAllocated += bytes;
+            return true;
+            }
+        else
+            return false;
+        }
+
+
+private:
+    PolymorphicSharedPtr<VectorDataMemoryManager> mVDMM;
+
+    int64_t mBytesAllocated;
+};
+
+OutOfProcessPythonTaskResult OutOfProcessPythonTasks::execute(
+                    const ImplValContainer& toCall, 
+                    PolymorphicSharedPtr<Fora::Interpreter::ExecutionContext> containingContext,
+                    Ufora::threading::Trigger& earlyTerminationTrigger,
+                    const OutOfProcessPythonTaskPolicy& taskPolicy
+                    )
+    {
+    Nullable<OutOfProcessPythonTaskResult> finalResult;
+
+    WorkerPoolCommunicator communicator(mPathToSocket);
+
+    ExternalMemoryAllocator memAllocator(containingContext->getVDM().getMemoryManager());
+
+    communicator.withWorker([&](NamedSocketConnection& conn, std::string workername) {
+        
+        containingContext->getImpl()->lockAndExecute([&]() {
+
+            TypedFora::Abi::FindAllReachableVectorPages reachable(
+                containingContext->getVDM().polymorphicSharedPtrFromThis(), 
+                containingContext->getMemoryPool()
+                );
+
+            reachable.visit(toCall);
+
+            if (reachable.getMissedPages().size())
+                {
+                finalResult = OutOfProcessPythonTaskResult::Blocked(
+                    ImmutableTreeSet<Fora::PageId>(reachable.getReachablePages()),
+                    taskPolicy.bytesOfExternalMemoryRequired()
+                    );
+
+                OBinaryStream stream(conn.outputProtocol());
+                stream << MSG_NO_OP;
+
+                return;
+                }
+
+            //now try to allocate physical memory
+            if (!memAllocator.tryToAllocate(taskPolicy.bytesOfExternalMemoryRequired()))
+                {
+                finalResult = OutOfProcessPythonTaskResult::Blocked(
+                    ImmutableTreeSet<Fora::PageId>(), 
+                    taskPolicy.bytesOfExternalMemoryRequired()
+                    );
+
+                OBinaryStream stream(conn.outputProtocol());
+                stream << MSG_NO_OP;
+
+                return;
+                }
+
+            PolymorphicSharedPtr<Fora::PythonBinaryStreamFromImplval> converter(
+                new Fora::PythonBinaryStreamFromImplval(
+                    containingContext->getVDM().polymorphicSharedPtrFromThis(),
+                    mPyforaBuiltins,
+                    mPythonNameToPyforaName
+                    )
+                );
+
+            OBinaryStream stream(conn.outputProtocol());
+
+            stream << MSG_OOPP_CALL;
+
+            try {
+                int64_t id = converter->write(stream, toCall);
+                converter->writeTerminator(stream);
+                stream.write(sizeof(id), &id);
+                }
+            catch(StreamException& err)
+                {
+                LOG_ERROR << "OutOfProcessPythonTasks caught an error communicating with "
+                    << "worker process: " << err.what();
+
+                finalResult = OutOfProcessPythonTaskResult::TerminatedEarly();
+                return;
+                }
+            });
+        
+        if (finalResult)
+            return;
+
+        //now read
+
+        try {
+            IBinaryStream stream(conn.inputProtocol());
+
+            //read at least one byte before locking the execution context
+            stream.refillBuffer(1);
+
+            containingContext->getImpl()->lockAndSetFinishedResult([&]() {
+                PolymorphicSharedPtr<Fora::PythonBinaryStreamToImplval> converter(
+                    new Fora::PythonBinaryStreamToImplval(
+                        containingContext->getVDM().polymorphicSharedPtrFromThis(),
+                        mPyforaBuiltins,
+                        mForaBuiltins,
+                        mPythonNameToPyforaName,
+                        mPyAstParser,
+                        containingContext->getMemoryPool()
+                        )
+                    );
+
+                converter->read(stream);
+
+                int64_t id;
+                
+                stream.read(sizeof(id), &id);
+
+                auto result = converter->getObjectById(id);
+
+                lassert_dump(result, "object of id " << id << " not found in converter");
+
+                return Fora::Interpreter::ComputationResult::Result(*result);
+                });
+
+            containingContext->pageLargeVectorHandles(containingContext->getVDM().maxPageSizeInBytes());
+
+            finalResult = OutOfProcessPythonTaskResult::ValidResult();
+            }
+        catch(StreamException& err)
+            {
+            LOG_ERROR << "OutOfProcessPythonTasks caught an error communicating with "
+                << "worker process: " << err.what();
+            
+            finalResult = OutOfProcessPythonTaskResult::TerminatedEarly();
+            }
+        });
+    
+    return *finalResult;
+    }
+
+}

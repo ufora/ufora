@@ -23,6 +23,8 @@ import ufora.cumulus.distributed.CumulusGatewayInProcess as CumulusGatewayInProc
 import ufora.BackendGateway.ComputedValue.ComputedValueGateway as ComputedValueGateway
 import ufora.distributed.SharedState.tests.SharedStateTestHarness as SharedStateTestHarness
 
+import ufora.FORA.python.PurePython.InMemorySimulationExecutorFactory as \
+    InMemorySimulationExecutorFactory
 
 import unittest
 import logging
@@ -36,7 +38,7 @@ class TestAllBinaryOperators(unittest.TestCase):
             executor = kwds['executor']
             shouldClose = False
         else:
-            executor = self.create_executor()
+            executor = InMemorySimulationExecutorFactory.create_executor()
 
         try:
             func_proxy = executor.define(func).result()
@@ -52,43 +54,7 @@ class TestAllBinaryOperators(unittest.TestCase):
                 executor.close()
 
     def create_executor(self):
-        s3 = []
-        def createMessageProcessor():
-            harness = SharedStateTestHarness.SharedStateTestHarness(inMemory=True)
-
-            def createCumulusComputedValueGateway():
-                def createCumulusGateway(callbackScheduler, vdm):
-                    with harness.viewFactory:
-                        result = CumulusGatewayInProcess.InProcessGateway(
-                            harness.callbackScheduler.getFactory(),
-                            harness.callbackScheduler,
-                            vdm
-                            )
-
-                        # pull out the inmemory s3 interface so that we can surface
-                        # it and attach it to the connection object.
-
-                        s3.append(result.s3Service)
-                        return result
-
-                return ComputedValueGateway.CumulusComputedValueGateway(
-                    harness.callbackScheduler.getFactory(),
-                    harness.callbackScheduler,
-                    createCumulusGateway
-                    )
-
-            return MessageProcessor.MessageProcessor(
-                harness.callbackScheduler,
-                harness.viewFactory,
-                createCumulusComputedValueGateway
-                )
-
-        socketIoToJsonInterface = InMemorySocketIoJsonInterface.InMemorySocketIoJsonInterface(
-            createMessageProcessor
-            )
-        connection = Connection.connectGivenSocketIo(socketIoToJsonInterface)
-        connection.__dict__['s3Interface'] = s3[0]
-        return connection
+        return InMemorySimulationExecutorFactory.create_executor()
 
     def equivalentEvaluationTestThatHandlesExceptions(self, executor, func, *args):
         try:

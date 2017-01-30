@@ -22,14 +22,13 @@
 #include "../../../core/python/CPPMLWrapper.hpp"
 #include "../../../core/python/CPPMLToSimple.hpp"
 #include "../../../core/python/ScopedPyThreads.hpp"
-#include "../FORAPythonUtil.hppml"
+#include "../../../core/python/ValueLikeCPPMLWrapper.hppml"
 #include "../../../core/containers/ImmutableTreeVector.py.hpp"
 #include "PythonAstConverter.hppml"
 #include "PythonToForaConversionError.hppml"
 #include "PythonListConverter.hppml"
 #include "PythonTupleConverter.hppml"
 #include "PythonParseError.hppml"
-#include "../../Language/ExpressionLocationTagging.hppml"
 #include "../../Language/FreeVariableListFromPython.hpp"
 
 using namespace Fora;
@@ -52,8 +51,8 @@ public:
             return CPPML::replaceCommonData<PythonAstStatement>(
                 statement,
                 SimpleParseRange(
-                    SimpleParsePosition(offset, lineNumber, columnNumber),
-                    SimpleParsePosition(offset+1, lineNumber, columnNumber+1)
+                    SimpleParsePosition(lineNumber, columnNumber),
+                    SimpleParsePosition(lineNumber, columnNumber+1)
                     )
                 );
             }
@@ -68,8 +67,8 @@ public:
             return CPPML::replaceCommonData<PythonAstExpr>(
                 expr,
                 SimpleParseRange(
-                    SimpleParsePosition(offset, lineNumber, columnNumber),
-                    SimpleParsePosition(offset+1, lineNumber, columnNumber+1)
+                    SimpleParsePosition(lineNumber, columnNumber),
+                    SimpleParsePosition(lineNumber, columnNumber+1)
                     )
                 );
             }
@@ -121,17 +120,19 @@ public:
                 PolymorphicSharedPtr<PythonAstConverter>& converter,
                 PythonAstStatement_FunctionDefType& functionDef,
                 SimpleParseRange& extent,
-                CodeDefinitionPoint defPoint
+                CodeDefinitionPoint defPoint,
+                ImplValContainer objectMetadata
                 )
             {
             try {
                 return boost::python::object(
-                    ExpressionLocationTagging::setCodeLocation(
-                        converter->convertPythonAstFunctionDefToFora(
-                            functionDef, extent
-                            ),
-                        CodeLocation(defPoint, extent)
-                        )
+                    converter
+                        ->withCodeDefinitionPoint(defPoint)
+                        ->withObjectMetadata(objectMetadata)
+                        ->convertPythonAstFunctionDefToFora(
+                            functionDef, 
+                            extent
+                            )
                     );
                 }
             catch (PythonToForaConversionError& e)
@@ -144,17 +145,20 @@ public:
                 PolymorphicSharedPtr<PythonAstConverter>& converter,
                 PythonAstExpr_LambdaType& functionDef,
                 SimpleParseRange& extent,
-                CodeDefinitionPoint defPoint
+                CodeDefinitionPoint defPoint,
+                ImplValContainer objectMetadata
                 )
             {
             try {
                 return boost::python::object(
-                    ExpressionLocationTagging::setCodeLocation(
-                        converter->convertPythonAstLambdaToFora(
-                            functionDef.args(), functionDef.body(), extent
-                            ),
-                        CodeLocation(defPoint, extent)
-                        )
+                    converter
+                        ->withCodeDefinitionPoint(defPoint)
+                        ->withObjectMetadata(objectMetadata)
+                        ->convertPythonAstLambdaToFora(
+                            functionDef.args(), 
+                            functionDef.body(), 
+                            extent
+                            )
                     );
                 }
             catch (PythonToForaConversionError& e)
@@ -169,7 +173,8 @@ public:
                 PythonAstStatement_FunctionDefType& functionDef,
                 SimpleParseRange& extent,
                 CodeDefinitionPoint defPoint,
-                boost::python::list namesToConsiderFree
+                boost::python::list namesToConsiderFree,
+                ImplValContainer objectMetadata
                 )
             {
             ImmutableTreeVector<std::string> names;
@@ -177,14 +182,14 @@ public:
 
             try {
                 return boost::python::object(
-                    ExpressionLocationTagging::setCodeLocation(
-                        converter->convertPythonAstWithBlockFunctionDefToFora(
-                                functionDef,
-                                extent,
-                                names
-                                ),
-                        CodeLocation(defPoint, extent)
-                        )
+                    converter
+                        ->withObjectMetadata(objectMetadata)
+                        ->withCodeDefinitionPoint(defPoint)
+                        ->convertPythonAstWithBlockFunctionDefToFora(
+                            functionDef,
+                            extent,
+                            names
+                            )
                     );
                 }
             catch (PythonToForaConversionError& e)
@@ -198,7 +203,8 @@ public:
                 PythonAstStatement_ClassDefType& classDef,
                 SimpleParseRange& extent,
                 CodeDefinitionPoint defPoint,
-                boost::python::list baseClassMemberAccessChains
+                boost::python::list baseClassMemberAccessChains,
+                ImplValContainer objectMetadata
                 )
             {
             ImmutableTreeVector<ImmutableTreeVector<std::string>> baseChains;
@@ -211,14 +217,14 @@ public:
 
             try {
                 return boost::python::object(
-                    ExpressionLocationTagging::setCodeLocation(
-                        converter->convertPythonAstClassDefToFora(
+                    converter
+                        ->withCodeDefinitionPoint(defPoint)
+                        ->withObjectMetadata(objectMetadata)
+                        ->convertPythonAstClassDefToFora(
                             classDef,
                             extent,
                             baseChains
-                            ),
-                        CodeLocation(defPoint, extent)
-                        )
+                            )
                     );
                 }
             catch (PythonToForaConversionError& e)
@@ -265,7 +271,7 @@ public:
                 );
             }
 
-        static Expression replaceUnconvertiblesWithThrowExprs(
+        static Expression replaceSymbolsWithCheckValidityExpressions(
                 PolymorphicSharedPtr<PythonAstConverter>& converter,
                 Expression e,
                 boost::python::list varNames
@@ -279,7 +285,7 @@ public:
                 varNamesVec = varNamesVec + Symbol(varName);
                 }
 
-            return converter->replaceUnconvertiblesWithThrowExprs(
+            return converter->replaceSymbolsWithCheckValidityExpressions(
                 e, varNamesVec
                 );
             }
@@ -297,30 +303,30 @@ public:
                     &convertPythonAstClassDefToForaOrParseError)
                 .def("convertPythonAstWithBlockFunctionDefToForaOrParseError",
                     &convertPythonAstWithBlockFunctionDefToForaOrParseError)
-                .def("replaceUnconvertiblesWithThrowExprs",
-                    &replaceUnconvertiblesWithThrowExprs)
+                .def("replaceSymbolsWithCheckValidityExpressions",
+                    &replaceSymbolsWithCheckValidityExpressions)
                 ;
 
             def("makePythonAstConverter", makePythonAstConverter);
 
             Ufora::python::CPPMLWrapper<PythonAstModule>("PythonAstModule", true).class_()
-                .def("__str__", &FORAPythonUtil::scopedPrettyPrinter<PythonAstModule>)
+                .def("__str__", &ValueLikeCPPMLWrapper::scopedPrettyPrinter<PythonAstModule>)
                 .def("functionClassOrLambdaDefAtLine", &functionClassOrLambdaDefAtLine)
                 .def("withBlockAtLine", &withBlockAtLine)
                 ;
 
             Ufora::python::CPPMLWrapper<PythonAstStatement>("PythonAstStatement", true).class_()
-                .def("__str__", &FORAPythonUtil::scopedPrettyPrinter<PythonAstStatement>)
+                .def("__str__", &ValueLikeCPPMLWrapper::scopedPrettyPrinter<PythonAstStatement>)
                 .def("withParseInfo", &statementWithParseInfo)
                 ;
             Ufora::python::CPPMLWrapper<PythonAstExpr>("PythonAstExpr", true).class_()
-                .def("__str__", &FORAPythonUtil::scopedPrettyPrinter<PythonAstExpr>)
+                .def("__str__", &ValueLikeCPPMLWrapper::scopedPrettyPrinter<PythonAstExpr>)
                 .def("withParseInfo", &expressionWithParseInfo)
                 ;
 
             Ufora::python::CPPMLWrapper<PythonToForaConversionError>(
                 "PythonToForaConversionError", true).class_()
-                .def("__str__", FORAPythonUtil::scopedPrettyPrinter<PythonToForaConversionError>)
+                .def("__str__", ValueLikeCPPMLWrapper::scopedPrettyPrinter<PythonToForaConversionError>)
                 .enable_pickling()
                 ;
 

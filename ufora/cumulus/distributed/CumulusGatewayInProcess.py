@@ -23,15 +23,48 @@ import ufora.distributed.S3.InMemoryS3Interface as InMemoryS3Interface
 
 class InProcessGateway(CumulusGateway.CumulusGateway):
     def __init__(self, callbackSchedulerFactory, callbackScheduler, vdm, **kwds):
-        s3Service = InMemoryS3Interface.InMemoryS3InterfaceFactory()
+        #don't modify callers directly
+        kwds = dict(kwds)
+
+        if 's3Service' in kwds:
+            s3Service = kwds['s3Service']
+            del kwds['s3Service']
+        else:
+            s3Service = InMemoryS3Interface.InMemoryS3InterfaceFactory()
+
+        if 'threadsPerWorker' in kwds:
+            threadsPerWorker = kwds['threadsPerWorker']
+            del kwds['threadsPerWorker']
+        else:
+            threadsPerWorker = Setup.config().cumulusServiceThreadCount
+
+        if 'memoryPerWorkerMB' in kwds:
+            memoryPerWorkerMB = kwds['memoryPerWorkerMB']
+            del kwds['memoryPerWorkerMB']
+        else:
+            memoryPerWorkerMB = 400
+
+
+        if 'maxMBPerOutOfProcessPythonTask' in kwds:
+            maxBytesPerOutOfProcessPythonTask = kwds['maxMBPerOutOfProcessPythonTask'] * 1024 * 1024
+            del kwds['maxMBPerOutOfProcessPythonTask']
+        else:
+            maxBytesPerOutOfProcessPythonTask = None
+
+
+        workerCount = 1
+        if 'workerCount' in kwds:
+            workerCount = kwds['workerCount']
+            del kwds['workerCount']
 
         simulation = InMemoryCumulusSimulation.InMemoryCumulusSimulation(
-            1,
+            workerCount,
             0,
             s3Service=s3Service,
-            memoryPerWorkerMB=400,
+            memoryPerWorkerMB=memoryPerWorkerMB,
             callbackScheduler=callbackScheduler,
-            threadsPerWorker=Setup.config().cumulusServiceThreadCount,
+            threadsPerWorker=threadsPerWorker,
+            maxBytesPerOutOfProcessPythonTask=maxBytesPerOutOfProcessPythonTask,
             **kwds
             )
 
@@ -44,28 +77,32 @@ class InProcessGateway(CumulusGateway.CumulusGateway):
         self.simulation = simulation
 
         self.viewFactory = self.simulation.sharedStateViewFactory
+
+        for workerIx in xrange(workerCount):
+            worker = self.simulation.getWorker(workerIx)
+            workerVdm = self.simulation.getWorkerVdm(workerIx)
+
+            channel1Client, channel1Worker = StringChannelNative.InMemoryStringChannel(self.callbackScheduler)
+            channel2Client, channel2Worker = StringChannelNative.InMemoryStringChannel(self.callbackScheduler)
+
+            machineId = workerVdm.getMachineId()
+
+            self.cumulusClient.addMachine(
+                machineId,
+                [channel1Client, channel2Client],
+                ModuleImporter.builtinModuleImplVal(),
+                self.callbackScheduler
+                )
+
+            worker.addCumulusClient(
+                self.cumulusClientId,
+                [channel1Worker, channel2Worker],
+                ModuleImporter.builtinModuleImplVal(),
+                self.callbackScheduler
+                )
+
         self.worker = self.simulation.getWorker(0)
         self.workerVdm = self.simulation.getWorkerVdm(0)
-
-        channel1Client, channel1Worker = StringChannelNative.InMemoryStringChannel(self.callbackScheduler)
-        channel2Client, channel2Worker = StringChannelNative.InMemoryStringChannel(self.callbackScheduler)
-
-        machineId = self.workerVdm.getMachineId()
-
-        self.cumulusClient.addMachine(
-            machineId,
-            [channel1Client, channel2Client],
-            ModuleImporter.builtinModuleImplVal(),
-            self.callbackScheduler
-            )
-
-        self.worker.addCumulusClient(
-            self.cumulusClientId,
-            [channel1Worker, channel2Worker],
-            ModuleImporter.builtinModuleImplVal(),
-            self.callbackScheduler
-            )
-
         self.loadingService = self.simulation.loadingServices[0]
 
 

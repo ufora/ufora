@@ -32,7 +32,6 @@ from pyfora.PureImplementationMapping import pureMapping
 # 'reversed', 'round', 'set', 'setattr', 'slice', 'sorted', 'staticmethod', 'str',
 # 'sum', 'super', 'tuple', 'type', 'unichr', 'unicode', 'vars', 'xrange', 'zip'
 
-
 @pureMapping(abs)
 class Abs(object):
     def __call__(self, val):

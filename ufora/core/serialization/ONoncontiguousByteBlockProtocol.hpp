@@ -30,7 +30,7 @@ public:
 
 	~ONoncontiguousByteBlockProtocol();
 
-	void write(uword_t inByteCount, void *inData);
+	void write(uword_t inByteCount, const void* inData);
 
 	uword_t position(void);
 

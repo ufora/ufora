@@ -17,7 +17,7 @@
 #include <boost/python.hpp>
 #include "../../Vector/VectorDataID.hppml"
 #include "VectorDataIDSlice.hppml"
-#include "../../python/FORAPythonUtil.hppml"
+#include "../../../core/python/ValueLikeCPPMLWrapper.hppml"
 #include "../../../core/python/ScopedPyThreads.hpp"
 #include "../../../core/python/CPPMLWrapper.hpp"
 #include "../../../native/Registrar.hpp"
@@ -45,10 +45,10 @@ public:
 
 			Ufora::python::CPPMLWrapper<VectorDataIDSlice>
 					("VectorDataIDSlice", false).class_()
-				.def("__str__", &FORAPythonUtil::scopedPrettyPrinter<VectorDataIDSlice>)
-				.def("__repr__", &FORAPythonUtil::scopedPrettyPrinter<VectorDataIDSlice>)
-				.def("__cmp__", &FORAPythonUtil::comparer<VectorDataIDSlice>)
-				.def("__hash__", &FORAPythonUtil::hasher<VectorDataIDSlice>)
+				.def("__str__", &ValueLikeCPPMLWrapper::scopedPrettyPrinter<VectorDataIDSlice>)
+				.def("__repr__", &ValueLikeCPPMLWrapper::scopedPrettyPrinter<VectorDataIDSlice>)
+				.def("__cmp__", &ValueLikeCPPMLWrapper::comparer<VectorDataIDSlice>)
+				.def("__hash__", &ValueLikeCPPMLWrapper::hasher<VectorDataIDSlice>)
 				;
 
 			PythonWrapper<ImmutableTreeSet<VectorDataIDSlice> >::exportPythonInterface("VectorDataIDSlice");

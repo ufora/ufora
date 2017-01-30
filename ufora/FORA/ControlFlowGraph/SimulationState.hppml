@@ -27,23 +27,18 @@ well as a SimulationHead.
 
 The rules for refcounting are as follows:
 
-*) Each new slot is introduced with refct = 1
-*) Each direct dependency between slots adds a +1
-*) Each resolved direct dependency adds a -1
-*) Say the args of a CFGNode depend on a slot. If this slot is not depended on
-in the next node, we decref it when we advance there.
-*) Each time a completed slot is an exception or mutable, we incref+1 it
-(otherwise, in the "normal" path, it might be decrefed and GC'd)
-*) When we initially reach an apply/cached node, we incref all the arguments
-to the node that are needed in continuations. When the corresponding slot is
-completed, and if it's not a mutable or exception, we decref the arguments. The
-reason for this is that if we got back a mutable or exception at this point, we
-might have to bail early at this point, and then we'd need the (appropriate)
-node args to form the resumption computation.
+1. every slot increfs every other slot that it has a reference to.
+2. have a refcount on every slot referred to by the simulation head.
+3. all outstanding futures have an incref on them (by virtue of being
+    computed by the external world)
+4. the top value has an incref on it (since it's the currently submitted
+    value of the current simulation head)
  */
 
 class SimulationState:
     public PolymorphicSharedPtrBase<SimulationState> {
+private:
+    SimulationState(); //for the deepcopier
 public:
     SimulationState(const SimulationHead&);
 
@@ -52,6 +47,8 @@ public:
     uint64_t nSlots() const;
 
     const std::vector<FutureSlot>& getSlots() const;
+
+    long countOfUnfinishedSlots() const;
 
     Nullable<CFGWithFutures::SubmittableArgs>
     asSubmittable(uint64_t slotIndex) const;
@@ -75,27 +72,29 @@ public:
     void slotCompleted(
         uint64_t inSlotIndex,
         const ImplValContainer& inResult,
-        const ImplValContainer& inComputationLog,
         bool isException
         );
 
     std::string toString() const;
 
-private:
-    void addDependenciesAndRefcounts(
-        const std::set<uint64_t>& inSlotIndicesOfDependencies,
-        uint64_t inDependentSlotIndex
-        );
+    void serialize(Fora::ForaValueSerializationStream& stream) const;
 
+    void deserialize(Fora::ForaValueDeserializationStream& stream);
+
+    PolymorphicSharedPtr<SimulationState> deepcopy(
+                boost::function1<ImplValContainer, ImplValContainer> duplicator
+                );
+
+    hash_type hash() const;
+
+    void visitValues(boost::function1<void, ImplValContainer&> visitor);
+
+private:
     void updateSimulationHeadAndDependentSlotIndices(
         const SimulationHead& inNewSimulationHead
         );
 
     void updateSubmittableFuturesSet(uint64_t inCompletedSlotIndex);
-
-    void decrefKeysForSlotIndex(uint64_t inCompletedSlotIndex);
-
-    void decrefSlotArgs(uint64_t slotIndex);
 
     void incref(uint64_t inSlotIndex);
 
@@ -127,7 +126,5 @@ private:
     SimulationHead mSimulationHead;
 
     std::set<uint64_t> mSlotDependenciesAtSimulationHead;
-
-    std::map<uint64_t, std::set<uint64_t>> mSlotsToDecrefOnResult;
 };
 

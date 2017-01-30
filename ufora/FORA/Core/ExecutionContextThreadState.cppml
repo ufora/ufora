@@ -14,140 +14,197 @@
    limitations under the License.
 ****************************************************************************/
 
-#include "DestroyingStackFrameVisitor.hppml"
-#include "ExecutionContextConfiguration.hppml"
-#include "ExecutionContextImpl.hppml"
-#include "ExecutionContextMemoryPool.hppml"
-#include "ExecutionContextScope.hppml"
 #include "ExecutionContextThreadState.hppml"
-#include "ImplValContainerUtilities.hppml"
-#include "MemBlock.hpp"
-#include "MemBlockAllocator.hpp"
-#include "PageUnpagedVectorsValueUpdater.hppml"
+#include "ExecutionContextImpl.hppml"
 #include "PausedComputation.hppml"
-#include "PrintStacktraceStackFrameVisitor.hppml"
-#include "RefcountPool.hppml"
-#include "RefcountPoolAddingStackFrameVisitor.hppml"
-#include "StackValueModifyingStackFrameVisitor.hppml"
-#include "ValidateVectorRefcountsValueUpdater.hppml"
+#include "ExecutionContextScope.hppml"
 
-#include "../ControlFlowGraph/ControlFlowGraphUtil.hppml"
-#include "../Interpreter/CallFrame.hpp"
-#include "../Interpreter/EvalFrame.hpp"
-#include "../Interpreter/InterpreterFrame.hppml"
-#include "../Native/NativeRuntimeContinuationValue.hppml"
-#include "../Native/NativeRuntimeCallTarget.hppml"
-#include "../Runtime.hppml"
-#include "../Serialization/SerializedObject.hpp"
-#include "../TypedFora/ABI/ImplValVisitor.hppml"
-#include "../TypedFora/ABI/NativeLayoutType.hppml"
-#include "../TypedFora/ABI/StackFrameVisitor.hppml"
-#include "../TypedFora/ABI/Stackframes.hppml"
-#include "../TypedFora/ABI/VectorHandle.hpp"
-#include "../TypedFora/JitCompiler/TypedJumpTarget.hppml"
-#include "../TypedFora/TypedForaUtil.hppml"
-#include "../VectorDataManager/PageRefcountTracker.hppml"
-#include "../VectorDataManager/VectorDataManager.hppml"
-#include "../VectorDataManager/VectorDataManagerImpl.hppml"
-
-#include "../../core/cppml/CPPMLPrettyPrinter.hppml"
-#include "../../core/Clock.hpp"
 #include "../../core/Logging.hpp"
 #include "../../core/Memory.hpp"
-#include "../../core/PolymorphicSharedPtrBinder.hpp"
-#include "../../core/ScopedProfiler.hppml"
+#include "../../core/threading/ScopedThreadLocalContext.hpp"
+#include "PausedComputation.hppml"
+#include "ExecutionContextMemoryPool.hppml"
+#include "../ControlFlowGraph/ControlFlowGraphUtil.hppml"
+#include "../Serialization/SerializedObject.hpp"
+#include "RefcountPool.hppml"
+#include "StackFrame.hpp"
+#include "StackFrameAllocator.hpp"
+#include "../VectorDataManager/VectorDataManager.hppml"
+#include "../VectorDataManager/VectorDataManagerImpl.hppml"
+#include "../TypedFora/ABI/VectorHandle.hpp"
+#include "../../core/cppml/CPPMLPrettyPrinter.hppml"
+#include "../../core/threading/ScopedThreadLocalContext.hpp"
+#include "../../core/Memory.hpp"
 #include "../../core/StringUtil.hpp"
-#include "../../core/SymbolExport.hpp"
-#include "../../core/threading/ScopedThreadLocalContext.hpp"
-#include "../../core/threading/ScopedThreadLocalContext.hpp"
+#include "../../core/Logging.hpp"
+#include "../../core/Clock.hpp"
+#include "../../core/Memory.hpp"
+#include "ImplValContainerUtilities.hppml"
 
-#include "../../cumulus/SystemwidePageRefcountTracker.hppml"
-
-#include <boost/uuid/uuid_generators.hpp>
-#include <boost/uuid/uuid_io.hpp>
-
-
+#include "DestroyingStackFrameVisitor.hppml"
+#include "CreatePausedComputationStackFrameVisitor.hppml"
+#include "../Interpreter/InterpreterFrame.hppml"
+#include "../Runtime.hppml"
+#include "../TypedFora/JitCompiler/TypedJumpTarget.hppml"
+#include "../TypedFora/TypedForaUtil.hppml"
+#include "../TypedFora/ABI/NativeLayoutType.hppml"
+#include "../Native/NativeRuntimeContinuationValue.hppml"
+#include "../Native/NativeRuntimeCallTarget.hppml"
+#include "../TypedFora/ABI/ImplValVisitor.hppml"
+#include "../TypedFora/ABI/StackFrameVisitor.hppml"
+#include "../TypedFora/ABI/Stackframes.hppml"
 
 using namespace Ufora::threading;
+
+using TypedFora::Abi::VectorLoadRequest;
 
 namespace Fora {
 namespace Interpreter {
 
+class SetExecutingThread {
+public:
+	SetExecutingThread(
+				ExecutionContext* context, 
+				ExecutionContextThreadState* thread,
+				boost::shared_ptr<InterpreterThreadObserver> history
+				) :
+			mContext(context),
+			mInterpreterHistory(*history)
+		{
+		auto impl = mContext->getImpl();
+
+		lassert(!impl->mCurrentlyExecutingThread);
+
+		impl->mCurrentlyExecutingThread = thread;
+		impl->unreportAllSlots();
+
+		mInterpreterHistory.resume();
+		}
+
+	~SetExecutingThread()
+		{
+		mContext->getImpl()->mCurrentlyExecutingThread = nullptr;
+		mInterpreterHistory.pause();
+		}
+private:
+	ExecutionContext* mContext;
+
+	InterpreterThreadObserver& mInterpreterHistory;
+};
+
 ExecutionContextThreadState::ExecutionContextThreadState(
-								ExecutionContext* inActualExecutionContextPtr,
-								MemBlockAllocator& inStackAllocator,
-								PolymorphicSharedPtr<VectorDataManager> inVectorDataManager
+								ExecutionContextImpl* inExecutionContext
 								) :
-		mActualContextPtr(inActualExecutionContextPtr),
-		mStackAllocator(inStackAllocator),
+		mExecutionContext(inExecutionContext->mActualContextPtr),
+		mStackAllocator(32 * 1024, &*inExecutionContext->mMemoryPool),
 		mErrorState(ErrorState::None()),
-		mInitialized(false),
 		mWhichContinuationIx(cont_state_empty),
-		mVectorDataManager(inVectorDataManager)
+		mRuntimeCallbacks(inExecutionContext->getRuntimeCallbacks()),
+		mMemoryPool(&*inExecutionContext->mMemoryPool),
+		mInterpreterHistory(inExecutionContext->mInterpreterHistory)
 	{
+	initialize_();
 	}
 
 ExecutionContextThreadState::~ExecutionContextThreadState()
 	{
-	if (!mKeepAlive.type().isNothing())
-		LOG_WARN << "Tearing down a nonempty mKeepAlive in ~ExecutionContextThreadState";
+	teardown();
 	}
 
-void ExecutionContextThreadState::initialize()
+void ExecutionContextThreadState::initialize_()
 	{
-	if (!mInitialized)
-		{
-		mInitialized = true;
+	LOG_DEBUG << "ECTS " << this << " initialized. mem = " << 
+		Ufora::Memory::getTotalBytesAllocated() / 1024 / 1024.0;
 
-		LOG_DEBUG << "EC initialized. mem = " <<
-			Ufora::Memory::getTotalBytesAllocated() / 1024 / 1024.0;
+	try {
+		static_assert(cont_state_normal+1 == cont_state_exception, 
+			"expected cont_state_normal and cont_state_exception to be consecutive"
+			);
 
-		try {
-			static_assert(cont_state_normal+1 == cont_state_exception,
-				"expected cont_state_normal and cont_state_exception to be consecutive"
-				);
-
-			mNormalContinuations.setTo(
-				Runtime::getRuntime().getTypedForaCompiler()->generateDummyContinuation(
-					&mResult,
+		mNormalContinuations.setTo(
+			Runtime::getRuntime().getTypedForaCompiler()->generateDummyContinuation(
+				&mResult,
+				&mWhichContinuationIx,
+				cont_state_normal,
+				cont_state_normal + 2
+				)
+			);
+	
+		mInterruptContinuation = 
+			Runtime::getRuntime().getTypedForaCompiler()->generateDummyContinuation(
+					&mInterruptionResult,
 					&mWhichContinuationIx,
-					cont_state_normal,
-					cont_state_normal + 2
-					)
-				);
-
-			mRuntimeCallbacks.interruptContinuation =
-				Runtime::getRuntime().getTypedForaCompiler()->generateDummyContinuation(
-						&mInterruptionResult,
-						&mWhichContinuationIx,
-						cont_state_interrupt
-						);
-
-			mRuntimeCallbacks.cacheCallContinuation =
-				Runtime::getRuntime().getTypedForaCompiler()->generateDummyContinuation(
-						&mCacheRequest,
-						&mWhichContinuationIx,
-						cont_state_cache_request
-						);
-			}
-		catch(std::logic_error& e)
-			{
-			LOG_CRITICAL << "exception initializing an ExecutionContextThreadState: " << e.what();
-			throw e;
-			}
-		catch(...)
-			{
-			LOG_CRITICAL << "unknown exception initializing an ExecutionContextThreadState";
-			throw;
-			}
+					cont_state_interrupt
+					);
+			
+		mCachecallContinuation = 
+			Runtime::getRuntime().getTypedForaCompiler()->generateDummyContinuation(
+					&mCacheRequest,
+					&mWhichContinuationIx,
+					cont_state_cache_request
+					);
 		}
+	catch(std::logic_error& e) 
+		{
+		LOG_CRITICAL << "exception initializing an ExecutionContextThreadState: " << e.what();
+		throw e;
+		}
+	catch(...) 
+		{
+		LOG_CRITICAL << "unknown exception initializing an ExecutionContextThreadState";
+		throw;
+		}
+
+	mInterpreterHistory->clear();
+	mInterpreterHistory->pause();
+	}
+
+std::string ExecutionContextThreadState::stateAsString() const
+	{
+	if (isInterrupted())
+		return "interruped";
+	if (isVectorLoad())
+		return "VectorLoad(" + 
+			prettyPrintStringWithoutWrapping(
+				mExecutionContext->getVDM().getBigVectorLayouts()->convertSliceToPages(getVectorLoad())
+				) + 
+			")";
+	if (isCacheRequest())
+		return "cache request";
+	if (isError())
+		return "Error";
+	if (isFinished())
+		return "finished";
+	if (mWhichContinuationIx == cont_state_error)
+		return "UnknownCont";
+	return "Unknown";
+	}
+
+void ExecutionContextThreadState::pageUsed(Fora::PageId inPage)
+	{
+	mExecutionContext->getImpl()->pageTouched(inPage);
+	}
+
+InterpreterThreadObserver& ExecutionContextThreadState::getInterpreterHistory()
+	{
+	return *mInterpreterHistory;
+	}
+
+TimeElapsed& ExecutionContextThreadState::getTotalTimeElapsed()
+	{
+	return mTimeElapsed;
+	}
+
+void ExecutionContextThreadState::observeTimeElapsed(double time, bool isInInterpreter)
+	{
+	if (isInInterpreter)
+		mTimeElapsed.timeSpentInInterpreter() += time;
+	else
+		mTimeElapsed.timeSpentInCompiledCode() += time;
 	}
 
 void ExecutionContextThreadState::teardown()
 	{
-	if (!mInitialized)
-		return;
-
 	lassert(mWhichContinuationIx != cont_state_error);
 
 	if (isCacheRequest())
@@ -183,55 +240,46 @@ void ExecutionContextThreadState::teardown()
 		{
 		}
 
-	try {
-		mKeepAlive = ImplValContainer();
-		}
-	catch(std::logic_error& e)
-		{
-		throw std::logic_error(e.what() +
-			std::string(". error destroying mKeepAlive in ExecutionContextThreadState::teardown."));
-		}
-
-	try {
-		mComputationLog = ImplValContainer();
-		}
-	catch(std::logic_error& e)
-		{
-		throw std::logic_error(e.what() +
-			std::string(". error destroying mComputationLog in ExecutionContextThreadState::teardown."));
-		}
-
 	mInterruptionResult.second = TypedFora::Abi::VectorLoadRequest();
 	mWhichContinuationIx = cont_state_empty;
 	mErrorState = ErrorState::None();
+	mInterpreterHistory->clear();
+	mInterpreterHistory->pause();
+	mTimeElapsed = TimeElapsed();
+
+	LOG_DEBUG << "Tearing down ECTS " << this;
 	}
 
+ImplVal ExecutionContextThreadState::getResult() const
+	{
+	return mResult;
+	}
 
-bool ExecutionContextThreadState::isEmpty(void) const
+bool ExecutionContextThreadState::isEmpty() const
 	{
 	return mWhichContinuationIx == cont_state_empty && mErrorState.isNone();
 	}
 
-bool ExecutionContextThreadState::isError(void) const
+bool ExecutionContextThreadState::isError() const
 	{
-	return mWhichContinuationIx == cont_state_error && mErrorState.isNone();
+	return !mErrorState.isNone();
 	}
 
-bool ExecutionContextThreadState::isInterrupted(void) const
+bool ExecutionContextThreadState::isInterrupted() const
 	{
 	return mWhichContinuationIx == cont_state_interrupt &&
 				!mInterruptionResult.second.getHandle() &&
 				mErrorState.isNone();
 	}
 
-bool ExecutionContextThreadState::isVectorLoad(void) const
+bool ExecutionContextThreadState::isVectorLoad() const
 	{
 	return mWhichContinuationIx == cont_state_interrupt &&
 				mInterruptionResult.second.getHandle() &&
 				mErrorState.isNone();
 	}
 
-Fora::BigVectorSlice ExecutionContextThreadState::getVectorLoad(void) const
+Fora::BigVectorSlice ExecutionContextThreadState::getVectorLoad() const
 	{
 	lassert(isVectorLoad());
 
@@ -242,13 +290,13 @@ Fora::BigVectorSlice ExecutionContextThreadState::getVectorLoad(void) const
 		);
 	}
 
-bool ExecutionContextThreadState::isCacheRequest(void) const
+bool ExecutionContextThreadState::isCacheRequest() const
 	{
 	return mWhichContinuationIx == cont_state_cache_request &&
 			mErrorState.isNone();
 	}
 
-bool ExecutionContextThreadState::isFinished(void) const
+bool ExecutionContextThreadState::isFinished() const
 	{
 	return mWhichContinuationIx == cont_state_normal ||
 			mWhichContinuationIx == cont_state_exception ||
@@ -262,33 +310,15 @@ const ImplVal& ExecutionContextThreadState::getCacheRequestTuple() const
 
 void ExecutionContextThreadState::prepareStateToEnterNativeCode()
 	{
+	mRuntimeCallbacks.interruptContinuation = mInterruptContinuation;
+	mRuntimeCallbacks.cacheCallContinuation = mCachecallContinuation;
+
 	mWhichContinuationIx = cont_state_error;
 
 	mInterruptionResult.second = VectorLoadRequest();
 	}
 
-void ExecutionContextThreadState::resumeComputation(
-						const ImplValContainer& inValue,
-						bool isException
-						)
-	{
-	initialize();
-
-	lassert(isCacheRequest());
-
-	prepareStateToEnterNativeCode();
-
-	//make sure there is enough space to write into the terminal continuation
-	NativeRuntimeContinuationValue<1> cont = mCacheRequest.second[isException ? 1 : 0];
-
-	ImplVal val = mActualContextPtr->getRefcountPool()->add(inValue.getReference());
-
-	resume(cont, &val, sizeof(ImplVal));
-
-	checkForNaturalResumption();
-	}
-
-void ExecutionContextThreadState::resumeInterruptedComputationInternally()
+void ExecutionContextThreadState::resumeInterruptedComputationInternally_()
 	{
 	prepareStateToEnterNativeCode();
 
@@ -302,15 +332,13 @@ void ExecutionContextThreadState::resumeInterruptedComputationInternally()
 
 void ExecutionContextThreadState::evaluateFunctionPointer(
 					const TypedFora::TypedJumpTarget& toCall,
-					const ImplValContainer& inArgs,
-					RefcountPool* inRefcountPool
+					const ImplValContainer& inArgs
 					)
 	{
-	initialize();
+	LOG_DEBUG << "ECTS " << this << " evaluating a FP";
 
-	if (mWhichContinuationIx != cont_state_empty)
+	if (!isEmpty())
 		teardown();
-
 
 	ImmutableTreeVector<JudgmentOnValue> jovs =
 		TypedFora::jovListFromTypes(toCall.callSignature())
@@ -327,9 +355,7 @@ void ExecutionContextThreadState::evaluateFunctionPointer(
 		);
 
 
-	mKeepAlive = inArgs;
-
-	ImplVal inputVal = mKeepAlive.getReference();
+	ImplVal inputVal = mExecutionContext->getRefcountPool()->add(inArgs.getReference());
 
 	prepareStateToEnterNativeCode();
 
@@ -347,13 +373,19 @@ void ExecutionContextThreadState::evaluateFunctionPointer(
 					),
 				mStackAllocator.getMemBlockPtr(),
 				inputVal,
-				inRefcountPool
+				&*mExecutionContext->getRefcountPool()
 				);
 		}
 
+	SetExecutingThread executing(mExecutionContext, this, mInterpreterHistory);
+
 	callNativeRuntimeCallTarget(callTarget);
 
-	checkForNaturalResumption();
+	checkForNaturalResumption_();
+
+	releaseUnusedStackMemory_();
+
+	mInterpreterHistory->pause();
 	}
 
 void ExecutionContextThreadState::placeInEvaluationState(
@@ -361,6 +393,8 @@ void ExecutionContextThreadState::placeInEvaluationState(
 							boost::function1<ImplValContainer, ImplValContainer> valueImportFunction
 							)
 	{
+	LOG_DEBUG << "ECTS " << this << " placed into an Apply eval state";
+
 	ControlFlowGraph graph = ControlFlowGraphUtil::canonicalApplyGraph(*inArgs.tupleGetSize());
 
 	ImmutableTreeVector<ImplValContainer> arguments;
@@ -368,22 +402,19 @@ void ExecutionContextThreadState::placeInEvaluationState(
 		arguments = arguments + *inArgs.tupleGetItem(k);
 
 	NativeRuntimeContinuationValueVector vals =
-		instantiatePausedComputation(
+		instantiatePausedComputation_(
 			PausedComputation(
 				emptyTreeVec() +
 					PausedComputationFrame(
 						arguments,
 						graph,
 						null()
-						),
-				null()
+						)
 				),
 			valueImportFunction
 			);
 
 	lassert(vals.size()==1)
-
-	mKeepAlive = valueImportFunction(inArgs);
 
 	mInterruptionResult.first = vals[0];
 	mInterruptionResult.second = TypedFora::Abi::VectorLoadRequest();
@@ -391,58 +422,9 @@ void ExecutionContextThreadState::placeInEvaluationState(
 	mWhichContinuationIx = cont_state_interrupt;
 	}
 
-
-void ExecutionContextThreadState::evaluate(const ImplValContainer& inArgs)
+void ExecutionContextThreadState::compute()
 	{
-	initialize();
-
-	if (mWhichContinuationIx != cont_state_empty)
-		teardown();
-
-	mKeepAlive = inArgs;
-
-	ImplVal inputVal = mKeepAlive.getReference();
-
-	prepareStateToEnterNativeCode();
-
-	lassert(inArgs.type().isTuple());
-
-	ControlFlowGraph graph =
-		ControlFlowGraphUtil::canonicalApplyGraph(
-			ApplySignature(inArgs.type().getTuple().names())
-			);
-
-	EvalFrame* evalFrame = EvalFrame::allocate(
-		graph,
-		null(),
-		mActualContextPtr->getStackAllocator(),
-		mActualContextPtr->getImpl()->allocateNewUniqueEvalFrameID(),
-		null()
-		);
-
-	evalFrame->callFrame.conts = mNormalContinuations;
-	evalFrame->callFrame.callbacks = &mRuntimeCallbacks;
-
-	evalFrame->unpackUnownedTupleIntoPooledArguments(
-		inArgs.getReference(),
-		mActualContextPtr->getRefcountPool()
-		);
-
-	NativeRuntimeContinuationValue<1> term;
-
-	term = callInterpreter(Fora::Interpreter::cont_internal, evalFrame);
-
-	lassert(!term.jumpPtr().isEmpty());
-
-	callNativeRuntimeCallTarget(term.getTypedForaCompilerCallTarget(0));
-
-	checkForNaturalResumption();
-	}
-
-
-void ExecutionContextThreadState::resumeComputation()
-	{
-	initialize();
+	LOG_DEBUG << "ECTS " << this << " computing. state=" << stateAsString();
 
 	if (isFinished())
 		return;
@@ -457,22 +439,25 @@ void ExecutionContextThreadState::resumeComputation()
 			"unknown")
 		);
 
-	resumeInterruptedComputationInternally();
+	SetExecutingThread executing(mExecutionContext, this, mInterpreterHistory);
 
-	checkForNaturalResumption();
-	}
+	if (isVectorLoad())
+		if (!resolveVectorLoad_())
+			return;
 
-bool ExecutionContextThreadState::isRunningInInterpreter() const
-	{
-	return Runtime::getRuntime().getTypedForaCompiler()->isWrappedCPPCallbackPtr(
-				mInterruptionResult.first.jumpPtr()
-				);
+	resumeInterruptedComputationInternally_();
+
+	checkForNaturalResumption_();
+
+	releaseUnusedStackMemory_();
+
+	LOG_DEBUG << "ECTS " << this << " done computing. state=" << stateAsString();
 	}
 
 NativeRuntimeContinuationValue<1>
 ExecutionContextThreadState::callInterpreter(uword_t inBlockID, void* inCallFrame)
 	{
-	ExecutionContextScope scope(*mActualContextPtr, ExecutionContextScope::interpreter);
+	ExecutionContextScope scope(*mExecutionContext, ExecutionContextScope::interpreter);
 
 	try {
 		return InterpreterFrame::interpreter(mStackAllocator.getMemBlockPtr(), inBlockID, inCallFrame);
@@ -491,7 +476,7 @@ ExecutionContextThreadState::callInterpreter(uword_t inBlockID, void* inCallFram
 
 void ExecutionContextThreadState::callNativeRuntimeCallTarget(const NativeRuntimeCallTarget& inCallTarget)
 	{
-	ExecutionContextScope scope(*mActualContextPtr, ExecutionContextScope::machineCode);
+	ExecutionContextScope scope(*mExecutionContext, ExecutionContextScope::machineCode);
 
 	try {
 		Runtime::getRuntime().getTypedForaCompiler()->callFunction(inCallTarget, mStackAllocator.getMemBlockPtr());
@@ -515,8 +500,6 @@ void ExecutionContextThreadState::resume(
 			uword_t bytes
 			)
 	{
-	initialize();
-
 	memcpy(value.slots()[0].target(), data, bytes);
 
 	callNativeRuntimeCallTarget(
@@ -524,9 +507,86 @@ void ExecutionContextThreadState::resume(
 		);
 	}
 
+bool ExecutionContextThreadState::resolveVectorLoad_()
+	{
+	//check whether this was a vector load
+	lassert(mInterruptionResult.second.isPopulated());
 
+	double t0 = curClock();
 
-void ExecutionContextThreadState::checkForNaturalResumption()
+	TypedFora::Abi::VectorLoadRequest request = mInterruptionResult.second;
+
+	TypedFora::Abi::VectorHandle::LoadCheckResult result = 
+		TypedFora::Abi::VectorHandle::LoadCheckResult::Failed;
+
+	lassert(mMemoryPool->isExecuting());
+	lassert(mMemoryPool->hasAcquiredPageLocks());
+
+	if (request.getHandle() && 
+			!mExecutionContext->getVDM().getImpl()
+				->contextMayMapVectorHandles(
+					mExecutionContext->getImpl().get()
+					)
+				)
+		{
+		LOG_DEBUG << "Context " << mExecutionContext 
+			<< " unmapping everything because we may not map vector handles.";
+
+		result = TypedFora::Abi::VectorHandle::LoadCheckResult::UnmapAllAndTryAgain;
+		}
+		else
+	if (request.getHandle())
+		{
+		result = request.getHandle()->attemptToLoadValues(
+			&mExecutionContext->getVDM(),
+			request.getIndexLow(),
+			request.getIndexHigh()
+			);
+
+		LOG_DEBUG << "ECTS " << this << " calling attemptToLoadValues " 
+			<< request.getIndexLow() << " to " << request.getIndexHigh() 
+			<< " within " << request.getHandle()
+			<< " took " << curClock() - t0;
+		}
+
+	if (curClock() - t0 > .05)
+		LOG_WARN << "Took " << curClock() - t0 << " to call attemptToLoadValues on "
+			<< "[" << request.getIndexLow() << "," << request.getIndexHigh() << ") in "
+			<< request.getHandle()
+			;
+
+	if (result == TypedFora::Abi::VectorHandle::LoadCheckResult::UnmapAllAndTryAgain)
+		{
+		LOG_DEBUG << "Context " << mExecutionContext << " unmapping everything.";
+		
+		mExecutionContext->getImpl()->scheduleVdmCheck();
+		mInterruptionResult.second = TypedFora::Abi::VectorLoadRequest();
+
+		return false;
+		}
+		else
+	if (result == TypedFora::Abi::VectorHandle::LoadCheckResult::Success)
+		{
+		LOG_DEBUG << "Context " << mExecutionContext << " successfully mapped " << request.getHandle() << ".";
+		
+		mInterruptionResult.second = TypedFora::Abi::VectorLoadRequest();
+
+		return true;
+		}
+		else 
+	if (result == TypedFora::Abi::VectorHandle::LoadCheckResult::Failed)
+		{
+		LOG_DEBUG << "Context " << mExecutionContext << " failed to map " << request.getHandle() << ".";				
+
+		return false;
+		}
+	else
+		{
+		lassert_dump(false, "there are no other possibilities for the LoadCheckResult");
+		}
+	}
+
+void ExecutionContextThreadState::checkForNaturalResumption_()
 	{
 	while (isInterrupted() || isVectorLoad())
 		{
@@ -534,80 +594,10 @@ void ExecutionContextThreadState::checkForNaturalResumption()
 
 		//check whether this was a vector load
 		if (mInterruptionResult.second.isPopulated())
-			{
-			double t0 = curClock();
-
-			TypedFora::Abi::VectorLoadRequest request = mInterruptionResult.second;
-
-			TypedFora::Abi::VectorHandle::LoadCheckResult result =
-				TypedFora::Abi::VectorHandle::LoadCheckResult::Failed;
-
-			lassert(mActualContextPtr->getExecutionContextMemoryPool()->isExecuting());
-			lassert(mActualContextPtr->getExecutionContextMemoryPool()->hasAcquiredPageLocks());
-
-			if (request.getHandle() &&
-					!mVectorDataManager->getImpl()
-						->contextMayMapVectorHandles(
-							mActualContextPtr->getImpl().get()
-							)
-						)
-				{
-				LOG_DEBUG << "Context " << mActualContextPtr
-					<< " unmapping everything because we may not map vector handles.";
-
-				result = TypedFora::Abi::VectorHandle::LoadCheckResult::UnmapAllAndTryAgain;
-				}
-				else
-			if (request.getHandle())
-				{
-				result = request.getHandle()->attemptToLoadValues(
-					&*mVectorDataManager,
-					request.getIndexLow(),
-					request.getIndexHigh()
-					);
-
-				LOG_DEBUG << "calling attemptToLoadValues " << request.getIndexLow() << " to " << request.getIndexHigh()
-					<< " within " << request.getHandle()
-					<< " took " << curClock() - t0;
-				}
-
-			if (curClock() - t0 > .05)
-				LOG_WARN << "Took " << curClock() - t0 << " to call attemptToLoadValues on "
-					<< "[" << request.getIndexLow() << "," << request.getIndexHigh() << ") in "
-					<< request.getHandle()
-					;
-
-			if (result == TypedFora::Abi::VectorHandle::LoadCheckResult::UnmapAllAndTryAgain)
-				{
-				LOG_DEBUG << "Context " << mActualContextPtr << " unmapping everything.";
-
-				mActualContextPtr->getImpl()->scheduleVdmCheck();
-				shouldResumeImmediately = false;
-				mInterruptionResult.second = TypedFora::Abi::VectorLoadRequest();
-				}
-				else
-			if (result == TypedFora::Abi::VectorHandle::LoadCheckResult::Success)
-				{
-				LOG_DEBUG << "Context " << mActualContextPtr << " successfully mapped " << request.getHandle() << ".";
-
-				shouldResumeImmediately = true;
-				mInterruptionResult.second = TypedFora::Abi::VectorLoadRequest();
-				}
-				else
-			if (result == TypedFora::Abi::VectorHandle::LoadCheckResult::Failed)
-				{
-				LOG_DEBUG << "Context " << mActualContextPtr << " failed to map " << request.getHandle() << ".";
-
-				shouldResumeImmediately = false;
-				}
-			else
-				{
-				lassert_dump(false, "there are no other possibilities for the LoadCheckResult");
-				}
-			}
+			shouldResumeImmediately = resolveVectorLoad_();
 
 		if (shouldResumeImmediately)
-			resumeInterruptedComputationInternally();
+			resumeInterruptedComputationInternally_();
 		else
 			return;
 		}
@@ -615,16 +605,38 @@ void ExecutionContextThreadState::checkForNaturalResumption()
 
 void ExecutionContextThreadState::setResult(const ImplValContainer& finalValue, bool isException)
 	{
-	lassert(mWhichContinuationIx == cont_state_empty);
+	lassert(isEmpty());
 
-	mResult = mActualContextPtr->getRefcountPool()->add(finalValue.getReference());
+	mResult = mExecutionContext->getRefcountPool()->add(finalValue.getReference());
 
 	if (isException)
 		mWhichContinuationIx = cont_state_exception;
 	else
 		mWhichContinuationIx = cont_state_normal;
 
+	mStackAllocator.releaseAll();
 	}
+
+bool ExecutionContextThreadState::computeForFixedTime(double total)
+	{
+	double thresholdT = curClock() + total;
+
+	mExecutionContext->getImpl()->triggerInternalInterruptAtTime(thresholdT);
+
+	compute();
+
+	LOG_DEBUG << "Computed " << this << " for " << curClock() - (thresholdT - total)
+		<< " with " 
+		<< extractPausedComputation([&](ImplValContainer in) { return in; }).frames().size()
+		<< " frames."
+		<< (mInterpreterHistory->isTracing() ? "tracing":"not tracing");
+
+	mExecutionContext->getImpl()->disableScheduledInternalInterruptTrigger();
+
+	return mExecutionContext->getImpl()->resetInterruptStateIfOnlyTriggeredInternallyAndNoGcPending() &&
+		curClock() >= thresholdT;
+	}
+
 
 void ExecutionContextThreadState::destroyFrame(
 		NativeRuntimeContinuationValue<1> stackFramePtr
@@ -635,74 +647,171 @@ void ExecutionContextThreadState::destroyFrame(
 	}
 
 
-void ExecutionContextThreadState::resumePausedComputation(
-						const PausedComputation& computation,
-						boost::function1<ImplValContainer, ImplValContainer> valueImportFunction
+PausedComputation ExecutionContextThreadState::extractPausedComputation(
+						boost::function1<ImplValContainer, ImplValContainer> inExportFunction
 						)
 	{
-	NativeRuntimeContinuationValueVector vals =
-		instantiatePausedComputation(computation, valueImportFunction);
+	if (isEmpty())
+		return PausedComputation();
 
-	if (vals.size() == 0)
+	if (isFinished())
 		{
-		lassert_dump(isFinished(), "Expected to be finished if we have no continuations");
+		if (!mErrorState.isNone())
+			return PausedComputation(emptyTreeVec(), PausedComputationTail::Failure(mErrorState));
+
+		return PausedComputation(
+			emptyTreeVec(), 
+			PausedComputationTail::PendingResult(
+				inExportFunction(ImplValContainer(mResult)),
+				isExceptionResult()
+				)
+			);
+		}
+	
+	CreatePausedComputationStackFrameVisitor visitor(inExportFunction);
+	
+	visitStackFramesAndValues(visitor);
+
+	PausedComputationTail tail;
+
+	if (visitor.getPendingResultValue())
+		{
+		lassert(isInterrupted());
+		tail = PausedComputationTail::PendingResult(
+			visitor.getPendingResultValue()->first,
+			visitor.getPendingResultValue()->second
+			);
 		}
 		else
-	if (vals.size()==1)
+	if (isCacheRequest())
+		tail = PausedComputationTail::Cachecall(inExportFunction(mCacheRequest.first));
+		else
+	if (isVectorLoad())
 		{
-		mInterruptionResult.first = vals[0];
-		mInterruptionResult.second = TypedFora::Abi::VectorLoadRequest();
+		TypedFora::Abi::PooledVectorRecord vec(
+			mInterruptionResult.second.getHandle(), 
+			mInterruptionResult.second.getHandle()->size(),
+			0,
+			1
+			);
 
-		mWhichContinuationIx = cont_state_interrupt;
+		tail = PausedComputationTail::VectorLoad(
+			inExportFunction(
+				ImplValContainerUtilities::createVector(
+					vec.getVectorRecord()
+					)
+				),
+			mInterruptionResult.second.getIndexLow(),
+			mInterruptionResult.second.getIndexHigh()
+			);
 		}
 	else
 		{
-		mCacheRequest.second.setTo(vals);
+		lassert(isInterrupted());
+		}
 
-		mCacheRequest.first = CSTValue().getReference();
+	return PausedComputation(visitor.getFrames(), tail);
+	}
+
+
+void ExecutionContextThreadState::placeInEvaluationState(
+						const PausedComputation& computation,
+						boost::function1<ImplValContainer, ImplValContainer> valueImportFunction
+						)
+	{
+	if (computation.frames().size() == 0 && computation.tail().isNone())
+		return;
+	
+	LOG_DEBUG << "ECTS " << this << " evaluating a paused computation";
+
+	NativeRuntimeContinuationValueVector vals =
+		instantiatePausedComputation_(computation, valueImportFunction);
+
+	if (vals.size() == 0)
+		{
+		lassert_dump(
+			isFinished() || isError(), 
+			"Expected to be finished if we have no continuations"
+			);
+		return;
+		}
+
+	if (vals.size() != 1)
+		{
+		lassert_dump(
+			false,
+			"Expected zero or one continuation. Got " << vals.size()
+			);
+		}
+
+	if (computation.tail().isCachecall())
+		{
+		mCacheRequest.second.setTo(vals + vals.slots()[0]);
+
+		mCacheRequest.second.slots()[0].blockID() = cont_cont_left;
+		mCacheRequest.second.slots()[1].blockID() = cont_cont_right;
+
+		mCacheRequest.first = mExecutionContext->getRefcountPool()->add(
+			valueImportFunction(computation.tail().getCachecall().cachecallRequest())
+				.getReference()
+			);
 
 		mWhichContinuationIx = cont_state_cache_request;
+
+		return;
+		}
+
+	mInterruptionResult.first = vals[0];
+	mInterruptionResult.second = TypedFora::Abi::VectorLoadRequest();
+	
+	mWhichContinuationIx = cont_state_interrupt;
+
+	if (computation.tail().isVectorLoad())
+		{
+		ImplVal vec = mExecutionContext->getRefcountPool()->add(
+			valueImportFunction(
+				computation.tail().getVectorLoad().vector()
+				).getReference()
+			);
+
+		lassert(vec.type().isVector());
+
+		int64_t low = computation.tail().getVectorLoad().low();
+		int64_t high = computation.tail().getVectorLoad().high();
+
+		mInterruptionResult.second = 
+			TypedFora::Abi::VectorLoadRequest(
+				vec.cast<VectorRecord>().dataPtr(),
+				low,
+				high
+				);
 		}
 	}
 
-void ExecutionContextThreadState::resumePausedComputationAsCacheRequest(
-						const PausedComputation& computation,
-						const ImplValContainer& cacheRequestTuple,
-						boost::function1<ImplValContainer, ImplValContainer> valueImportFunction
-						)
-	{
-	NativeRuntimeContinuationValueVector vals =
-		instantiatePausedComputation(computation, valueImportFunction);
-
-	lassert(vals.size() == 1);
-
-	mCacheRequest.second.setTo(vals + vals.slots()[0]);
-
-	mCacheRequest.second.slots()[0].blockID() = cont_cont_left;
-	mCacheRequest.second.slots()[1].blockID() = cont_cont_right;
-
-	mCacheRequest.first = mActualContextPtr->getRefcountPool()->add(
-		valueImportFunction(cacheRequestTuple).getReference()
-		);
-
-	mWhichContinuationIx = cont_state_cache_request;
-	}
 
 NativeRuntimeContinuationValueVector
-ExecutionContextThreadState::instantiatePausedComputation(
+ExecutionContextThreadState::instantiatePausedComputation_(	
 						const PausedComputation& computation,
 						boost::function1<ImplValContainer, ImplValContainer> valueImportFunction
 						)
 	{
+	mInterpreterHistory->clear();
+
+	if (computation.tail().isFailure())
+		{
+		setErrorState(computation.tail().getFailure().error());
+		return NativeRuntimeContinuationValueVector();
+		}
+
 	if (computation.frames().size() == 0)
 		{
-		lassert_dump(computation.pendingResult(), "can't instantiate an empty computation");
+		lassert_dump(computation.tail().isPendingResult(), "can't instantiate an empty computation");
 
-		ImplValContainer imported = valueImportFunction(computation.pendingResult()->first);
+		ImplValContainer imported = valueImportFunction(computation.tail().getPendingResult().value());
 
 		setResult(
-			mActualContextPtr->getRefcountPool()->add(imported.getReference()),
-			computation.pendingResult()->second
+			mExecutionContext->getRefcountPool()->add(imported.getReference()), 
+			computation.tail().getPendingResult().isException()
 			);
 
 		return NativeRuntimeContinuationValueVector();
@@ -710,12 +819,12 @@ ExecutionContextThreadState::instantiatePausedComputation(
 
 	ImmutableTreeVector<PausedComputationFrame> frames = computation.frames();
 
-	if (computation.pendingResult())
+	if (computation.tail().isPendingResult())
 		{
 		frames = frames +
 			PausedComputationFrame(
-				emptyTreeVec() + valueImportFunction(computation.pendingResult()->first),
-				ControlFlowGraphUtil::canonicalReturnGraph(computation.pendingResult()->second),
+				emptyTreeVec() + valueImportFunction(computation.tail().getPendingResult().value()),
+				ControlFlowGraphUtil::canonicalReturnGraph(computation.tail().getPendingResult().isException()),
 				null()
 				);
 		}
@@ -734,7 +843,7 @@ ExecutionContextThreadState::instantiatePausedComputation(
 			ImplValContainer importedValue = valueImportFunction(frame.values()[k]);
 
 			values.push_back(
-				mActualContextPtr->getRefcountPool()->add(
+				mExecutionContext->getRefcountPool()->add(
 					importedValue.getReference()
 					)
 				);
@@ -743,8 +852,8 @@ ExecutionContextThreadState::instantiatePausedComputation(
 		EvalFrame* evalFramePtr = EvalFrame::allocate(
 			frame.graph(),
 			frame.label(),
-			mActualContextPtr->getStackAllocator(),
-			mActualContextPtr->getImpl()->allocateNewUniqueEvalFrameID(),
+			mStackAllocator,
+			EvalFrame::allocateNewUniqueEvalFrameID(),
 			null()
 			);
 
@@ -789,7 +898,7 @@ ExecutionContextThreadState::instantiatePausedComputation(
 	return curFramePtrPair;
 	}
 
-bool ExecutionContextThreadState::isExceptionResult()
+bool ExecutionContextThreadState::isExceptionResult() const
 	{
 	lassert(isFinished());
 
@@ -806,49 +915,8 @@ void ExecutionContextThreadState::setErrorState(const ErrorState& inErrorState)
 	mErrorState = inErrorState;
 	}
 
-void ExecutionContextThreadState::logAMessage(const ImplValContainer& message, MemoryPool* inPool)
-	{
-	if (mComputationLog.type().isNothing())
-		mComputationLog = ImplValContainerUtilities::createVector(
-			TypedFora::Abi::VectorRecord()
-			);
-
-	mComputationLog.cast<VectorRecord>() =
-		mComputationLog.cast<VectorRecord>().append(
-			inPool,
-			message,
-			&*mVectorDataManager,
-			boost::bind(&Fora::Interpreter::ExecutionContext::newVectorHash, mActualContextPtr)
-			);
-	}
-
-void ExecutionContextThreadState::logSomeMessages(const ImplValContainer& messagesOrNone, MemoryPool* inPool)
-	{
-	if (messagesOrNone.type().isNothing())
-		return;
-
-	lassert(messagesOrNone.type().isVector());
-
-	if (mComputationLog.type().isNothing())
-		mComputationLog = ImplValContainerUtilities::createVector(
-			TypedFora::Abi::VectorRecord()
-			);
-
-	mComputationLog.cast<VectorRecord>() =
-		VectorRecord::concatenate(
-			mComputationLog.cast<VectorRecord>(),
-			messagesOrNone.cast<VectorRecord>(),
-			inPool,
-			&*mVectorDataManager,
-			mActualContextPtr->newVectorHash()
-			);
-	}
-
 void ExecutionContextThreadState::visitStackFramesAndValues(TypedFora::Abi::StackFrameVisitor& visitor)
 	{
-	visitor.visitFreeValue(mKeepAlive);
-	visitor.visitFreeValue(mComputationLog);
-
 	if (isInterrupted() || isVectorLoad())
 		{
 		visitStackFrames(
@@ -894,7 +962,9 @@ void ExecutionContextThreadState::visitStackFramesAndValues(TypedFora::Abi::Stac
 		}
 	else
 		{
-		lassert_dump(false, "Unknown State");
+		if (mWhichContinuationIx == cont_state_error)
+			lassert_dump(false, this << " in an unknown state: cont_state_error");	
+		lassert_dump(false, this << " in an unknown state");	
 		}
 	}
 
@@ -904,6 +974,11 @@ void ExecutionContextThreadState::visitStackFrames(
 		)
 	{
 	TypedFora::Abi::StackFrameVisitor::visitStackFrame(stackFramePtr.base(), visitor);
+	}
+
+void ExecutionContextThreadState::releaseUnusedStackMemory_()
+	{
+	mStackAllocator.releaseTail();
 	}
 
 }

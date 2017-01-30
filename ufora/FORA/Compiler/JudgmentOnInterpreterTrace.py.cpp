@@ -13,7 +13,7 @@
    See the License for the specific language governing permissions and
    limitations under the License.
 ****************************************************************************/
-#include "../python/FORAPythonUtil.hppml"
+#include "../../core/python/ValueLikeCPPMLWrapper.hppml"
 #include <boost/python.hpp>
 #include "../../native/Registrar.hpp"
 #include "../../core/python/CPPMLWrapper.hpp"
@@ -106,7 +106,7 @@ public:
 			{
 			using namespace boost::python;
 
-			FORAPythonUtil::exposeValueLikeCppmlType<Fora::JudgmentOnInterpreterTrace::Term>()
+			ValueLikeCPPMLWrapper::exposeValueLikeCppmlType<Fora::JudgmentOnInterpreterTrace::Term>()
 				.class_()
 				.def("withFinalResultOf", withFinalResultOf)
 				.def("getJovs", getJovs)
@@ -116,8 +116,8 @@ public:
 				.def("getHeight", &getHeight)
 				;
 
-			FORAPythonUtil::exposeValueLikeCppmlType<Fora::JudgmentOnInterpreterTrace::Stackframe>();
-			FORAPythonUtil::exposeValueLikeCppmlType<Fora::JudgmentOnInterpreterTrace::Result>();
+			ValueLikeCPPMLWrapper::exposeValueLikeCppmlType<Fora::JudgmentOnInterpreterTrace::Stackframe>();
+			ValueLikeCPPMLWrapper::exposeValueLikeCppmlType<Fora::JudgmentOnInterpreterTrace::Result>();
 
 			def("reasonForward", &reasonForward);
 			def("reasonBackward", &reasonBackward);

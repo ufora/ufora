@@ -43,6 +43,8 @@ int test(void)
 
 	char* toss[2] = { substr, 0 };
 
+	ScopedPyThreads releaseTheGil;
+
 	return ::boost::unit_test::unit_test_main( &init_unit_test, 1, toss);
 	}
 int testWithArgs(boost::python::object args)
@@ -65,6 +67,8 @@ int testWithArgs(boost::python::object args)
 
 	//make sure there's a null terminator
 	charptrs.push_back(0);
+
+	ScopedPyThreads releaseTheGil;
 
 	return ::boost::unit_test::unit_test_main( &init_unit_test, charptrs.size()-1, &charptrs[0]);
 	}
@@ -94,7 +98,10 @@ public:
 		{
 		fflush(stdout);
 		fflush(stderr);
-		((char*)0)[0] = 0;
+		// cause a SIGSEGV (segfault) by attempting to write to address 0x1.
+		// trying to write to address 0x0 apparently fails to send the signal
+		// with an error of 'invalid signal argument'
+		((char*)0)[1] = 0;
 		}
 
 	void exportPythonWrapper()

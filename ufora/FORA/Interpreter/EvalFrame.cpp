@@ -16,6 +16,7 @@
 #include "EvalFrame.hpp"
 #include "Instruction.hppml"
 #include "InstructionGraph.hppml"
+#include "../ControlFlowGraph/ControlFlowGraph.hppml"
 #include "../TypedFora/TypedFora.hppml"
 
 namespace Fora {
@@ -24,7 +25,7 @@ namespace Interpreter {
 EvalFrame* EvalFrame::allocate(
 				const ControlFlowGraph& controlFlowGraph,
 				Nullable<string> label,
-				MemBlockAllocator& allocator,
+				StackFrameAllocator& allocator,
 				uint64_t inUniqueId,
 				const Nullable<TypedFora::MetadataInstruction>& inWasEverMachineCodeFrame
 				)
@@ -59,6 +60,13 @@ EvalFrame* EvalFrame::allocate(
 	return newEvalFramePtr;
 	}
 
+uint64_t EvalFrame::allocateNewUniqueEvalFrameID()
+	{
+	static AO_t curEvalFrameUniqueID = 0;
+
+	return AO_fetch_and_add_full(&curEvalFrameUniqueID, 1);
+	}
+
 void EvalFrame::setInstructionPtr(InstructionPtr newInstructionPtr)
 	{
 	instructionPtr = newInstructionPtr;
@@ -67,7 +75,7 @@ void EvalFrame::setInstructionPtr(InstructionPtr newInstructionPtr)
 		wasEverMachineCodeFrame->second++;
 	}
 
-void EvalFrame::free(EvalFrame* frame, MemBlockAllocator& allocator)
+void EvalFrame::free(EvalFrame* frame, StackFrameAllocator& allocator)
 	{
 	EvalFrameArgList::free(frame->mEvalFrameArgList, allocator);
 	allocator.free(frame);

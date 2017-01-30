@@ -1,0 +1,343 @@
+/***************************************************************************
+    Copyright 2016 Ufora Inc.
+
+    Licensed under the Apache License, Version 2.0 (the "License");
+    you may not use this file except in compliance with the License.
+    You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+    Unless required by applicable law or agreed to in writing, software
+    distributed under the License is distributed on an "AS IS" BASIS,
+    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    See the License for the specific language governing permissions and
+    limitations under the License.
+****************************************************************************/
+
+#pragma once
+
+#include "../../Core/Type.hppml"
+#include "../../Core/ClassMediator.hppml"
+#include "../../Core/ImplValContainer.hppml"
+#include "../../../core/Logging.hpp"
+#include "../../Language/RebindFreeMemberAccesses.hppml"
+#include "../../Language/FunctionStage1Simulation.hppml"
+
+namespace Fora {
+
+class PythonBinaryStreamCommon {
+public:
+    constexpr static uint8_t CODE_NONE=1;
+    constexpr static uint8_t CODE_INT=2;
+    constexpr static uint8_t CODE_LONG=3;
+    constexpr static uint8_t CODE_FLOAT=4;
+    constexpr static uint8_t CODE_BOOL=5;
+    constexpr static uint8_t CODE_STR=6;
+    constexpr static uint8_t CODE_LIST_OF_PRIMITIVES=7;
+    constexpr static uint8_t CODE_TUPLE=8;
+    constexpr static uint8_t CODE_PACKED_HOMOGENOUS_DATA=9;
+    constexpr static uint8_t CODE_LIST=10;
+    constexpr static uint8_t CODE_FILE=11;
+    constexpr static uint8_t CODE_DICT=12;
+    constexpr static uint8_t CODE_REMOTE_PY_OBJECT=13;
+    constexpr static uint8_t CODE_BUILTIN_EXCEPTION_INSTANCE=14;
+    constexpr static uint8_t CODE_NAMED_SINGLETON=15;
+    constexpr static uint8_t CODE_FUNCTION=16;
+    constexpr static uint8_t CODE_CLASS=17;
+    constexpr static uint8_t CODE_UNCONVERTIBLE=18;
+    constexpr static uint8_t CODE_CLASS_INSTANCE=19;
+    constexpr static uint8_t CODE_INSTANCE_METHOD=20;
+    constexpr static uint8_t CODE_WITH_BLOCK=21;
+    constexpr static uint8_t CODE_PY_ABORT_EXCEPTION=22;
+    constexpr static uint8_t CODE_STACKTRACE_AS_JSON=23;
+    constexpr static uint8_t CODE_UNRESOLVED_SYMBOL=24;
+
+    @type DtypePrimitive = 
+        -| Int of int64_t i
+        -| Str of std::string
+        -| Tuple of ImmutableTreeVector<DtypePrimitive> elts
+        ;
+
+    static bool isUnconvertibleValueTuple(const ImplValContainer& val)
+        {
+        if (!val.type().isTuple())
+            return false;
+        if (val.type().getTuple().types().size() != 1)
+            return false;
+        auto name = val.type().getTuple().names()[0];
+
+        static Symbol symbolPyforaUnconvertibleValue("PyforaUnconvertibleValue");
+
+        if (!name || *name != symbolPyforaUnconvertibleValue)
+            return false;
+
+        return true;
+        }
+
+
+    static bool isNameErrorTuple(const ImplValContainer& val)
+        {
+        if (!val.type().isTuple())
+            return false;
+        if (val.type().getTuple().types().size() != 1)
+            return false;
+        auto name = val.type().getTuple().names()[0];
+
+        static Symbol symbolPyforaNameError("PyforaNameError");
+
+        if (!name || *name != symbolPyforaNameError)
+            return false;
+
+        return true;
+        }
+
+
+    template<class target_type>
+    static ImmutableTreeVector<target_type> splitOnDot(const std::string& name)
+        {
+        ImmutableTreeVector<target_type> res;
+
+        long last = 0;
+        long cur = 0;
+        while (cur < name.size())
+            {
+            if (name[cur] == '.')
+                {
+                res = res + target_type(name.substr(last, cur-last));
+                last = cur+1;
+                }
+            cur += 1;
+            }
+        res = res + target_type(name.substr(last, cur-last));
+
+        return res;
+        }
+
+    template<class T>
+    static Expression rebindChains(Expression expr, const map<string, T>& vars)
+        {
+        ImmutableTreeMap<ImmutableTreeVector<Symbol>, Expression> varsToRemap;
+
+        for (const auto& kv: vars)
+            {
+            const std::string& varname = kv.first;
+            auto pos = varname.find('.');
+            if (pos != string::npos)
+                varsToRemap = varsToRemap + splitOnDot<Symbol>(varname) + Expression::Variable(Symbol(varname));
+            }
+
+        return Fora::rebindFreeMemberAccessChains(expr, varsToRemap);
+        }
+
+    static Nullable<ImplValContainer>
+    simulateApply(const ImmutableTreeVector<ImplValContainer>& applyArgs)
+        {
+        constexpr static int DEFAULT_FUNCTION_STAGE_1_SIMULATION_STEPS = 100;
+
+        FunctionStage1::Simulation simulation(
+            DEFAULT_FUNCTION_STAGE_1_SIMULATION_STEPS
+            );
+
+        FunctionStage1::ExpressionEvaluationResult result =
+            simulation.evaluateApply(applyArgs);
+
+        if (result.isResult())
+            return null() << result.getResult().val();
+
+        return null();
+        }
+
+    static Nullable<ImplValContainer> simulateApply(
+            const ImplValContainer& a1,
+            const ImplValContainer& a2,
+            const ImplValContainer& a3
+            )
+        {
+        return simulateApply(emptyTreeVec() + a1 + a2 + a3);
+        }
+
+    static Nullable<ImplValContainer> getMember(
+            const ImplValContainer& a,
+            const std::string& s
+            )
+        {
+        return simulateApply(
+            a, 
+            ImplValContainer(CSTValue(Symbol("Member"))), 
+            ImplValContainer(CSTValue(Symbol(s)))
+            );
+        }
+
+    static ImmutableTreeVector<Symbol>
+    getObjectMembers(const ImplValContainer& value)
+        {
+        ImmutableTreeVector<Symbol> res;
+
+        if (!value.type().isClass())
+            return res;
+
+        ClassMediator mediator = *value.type().getClass().classBody().mediator();
+
+        if (mediator.isObject())
+            {
+            ObjectDefinitionBody body =
+                mediator.getObject().obj().body();
+
+            while (!body.isEmpty())
+                {
+                if (body.getTerm().termWithMetadata().objectDefinitionTerm().isMember())
+                    res = res + 
+                        body.getTerm().termWithMetadata().objectDefinitionTerm()
+                            .getMember().membername();
+                
+                body = body.getTerm().otherwise();
+                }
+
+            return res;
+            }
+            else
+        if (mediator.isClass())
+            {
+            ClassDefinitionBody body =
+                mediator.getClass().obj().body();
+
+            while (!body.isEmpty())
+                {
+                @match ClassDefinitionTerm(body.getTerm().termWithMetadata().classDefinitionTerm())
+                    -| DataMember(x) ->> { res = res + x; }
+                    -| Static(Member(x)) ->> { res = res + x; }
+                    -| ObjectTerm(Member(x)) ->> { res = res + x; }
+                    -| _ ->> { }
+                    ;
+
+                body = body.getTerm().otherwise();
+                }
+
+            return res;
+            }
+
+        return res;
+        }
+
+    static ImmutableTreeVector<Symbol>
+    getObjectLexicalMembers(const ImplValContainer& value)
+        {
+        if (!value.type().isClass())
+            return emptyTreeVec();
+
+        ClassMediator mediator = *value.type().getClass().classBody().mediator();
+
+        ImmutableTreeVector<Symbol> res;
+
+        for (const auto& nameAndBinding: mediator.lexicalSurroundings().bindings())
+            res = res + nameAndBinding.first;
+
+        return res;
+        }
+
+    static ImmutableTreeMap<Symbol, LexicalBinding>
+    getObjectLexicalBindingMap(const ImplValContainer& value)
+        {
+        if (!value.type().isClass())
+            return emptyTreeMap();
+
+        ClassMediator mediator = *value.type().getClass().classBody().mediator();
+
+        return mediator.lexicalSurroundings().bindings();
+        }
+
+    static Nullable<ImplValContainer> getObjectMetadata(const ImplValContainer& value)
+        {
+        if (!value.type().isClass())
+            return null();
+
+        ClassMediator mediator = *value.type().getClass().classBody().mediator();
+
+        Nullable<CSTValue> result;
+
+        @match ClassMediator(mediator)
+            -| Function(_,_,meta) ->> { result = meta; }
+            -| Object(_,_,meta) ->> { result = meta; }
+            -| Class(_,_,meta) ->> { result = meta; }
+            -| Lambda() ->> { result = ImplValContainer(); }
+            -| _ ->> {}
+            ;
+
+        if (result)
+            return null() << ImplValContainer(result->getReference());
+
+        return null();
+        }
+
+    @type SourceTextAndMeta = 
+        std::string text,
+        std::string path,
+        int64_t lineNumber
+        ;
+
+    static Nullable<SourceTextAndMeta>
+    getObjectDefinitionSourceTextFromMetadata(const ImplValContainer& value)
+        {
+        auto nMeta = PythonBinaryStreamCommon::getObjectMetadata(value);
+        if (!nMeta)
+            return null();
+
+        if (nMeta->type().isTuple())
+            for (long k = 0; k < nMeta->type().getTuple().types().size(); k++)
+                if (nMeta->type().getTuple().names()[k] == Nullable<Symbol>(Symbol("classMetadata")))
+                    {
+                    nMeta = *nMeta->tupleGetItem(k);
+                    break;
+                    }
+
+        bool foundText = false;
+        bool foundPath = false;
+        bool foundLine = false;
+
+        SourceTextAndMeta result;
+
+        for (long k = 0; k < nMeta->type().getTuple().types().size(); k++)
+            if (nMeta->type().getTuple().names()[k] == Nullable<Symbol>(Symbol("sourceText")))
+                {
+                auto val = getObjectMetadata(*nMeta->tupleGetItem(k));
+                
+                if (!val || !val->type().isString())
+                    return null();
+                
+                result.text() = val->cast<String>().stdString();
+                foundText = true;
+                }
+                else
+            if (nMeta->type().getTuple().names()[k] == Nullable<Symbol>(Symbol("sourcePath")))
+                {
+                auto val = nMeta->tupleGetItem(k);
+
+                if (!val || !val->type().isString())
+                    return null();
+                
+                result.path() = val->cast<String>().stdString();
+                foundPath = true;
+                }
+                else
+            if (nMeta->type().getTuple().names()[k] == Nullable<Symbol>(Symbol("sourceLine")))
+                {
+                auto val = nMeta->tupleGetItem(k);
+                
+                if (!val || val->type() != Type::Integer(64, true))
+                    return null();
+
+                result.lineNumber() = val->cast<int64_t>();
+                foundLine = true;
+                }
+            else
+                return null();
+
+        if (foundText && foundPath && foundLine)
+            return null() << result;
+
+        return null();
+        }
+
+    };
+
+}

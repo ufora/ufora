@@ -32,7 +32,7 @@ from ufora.FORA.python.ParseException import ParseException
 
 
 # sys.setrecursionlimit(5000)
-emptyCodeDefinitionPoint = ForaNative.CodeDefinitionPoint.ExternalFromStringList([])
+emptyCodeDefinitionPoint = ForaNative.CodeDefinitionPoint.ExternalFromStringList(["dummy"])
 
 
 class ForaLanguageParserFuzzTester(unittest.TestCase):

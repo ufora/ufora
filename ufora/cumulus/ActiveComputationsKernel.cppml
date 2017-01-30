@@ -15,7 +15,8 @@
 ****************************************************************************/
 #include "ActiveComputationsKernel.hppml"
 #include "CumulusWorkerAddDropEvent.hppml"
-
+#include "../FORA/Serialization/SerializedObject.hpp"
+   
 namespace Cumulus {
 
 void ActiveComputationsKernel::enableVectorPaging()
@@ -498,6 +499,9 @@ void ActiveComputationsKernel::handleComputationStatusOnMachineChanged(const Com
 	if (nStatus)
 		{
 		@match ComputationStatus(*nStatus)
+			-| ComputableWithSubcomputations(computations) ->> {
+				setComputationDependenciesForRemote(change.computation(), computations);
+				}
 			-| BlockedOnComputations(computations) ->> {
 				setComputationDependenciesForRemote(change.computation(), computations);
 				}
@@ -529,7 +533,7 @@ void ActiveComputationsKernel::addComputationResultToComputation(
 										ComputationResultFromMachine inResult
 										)
 	{
-	if (isCurrentlyHandlingActionInBackgroundThread(computation))
+	if (isCurrentlyHandlingActionInBackgroundThread(computation) || isCurrentlyComputing(computation))
 		{
 		scheduleComputationPendingAction(
 			computation,
@@ -537,8 +541,6 @@ void ActiveComputationsKernel::addComputationResultToComputation(
 			);
 		return;
 		}
-
-	lassert(!isCurrentlyComputing(computation));
 
 	lassert(mExternalInterface->hasComputation(computation));
 
@@ -601,7 +603,7 @@ void ActiveComputationsKernel::addInterpreterResultToComputation(
 										ComputationStatistics stats
 										)
 	{
-	if (isCurrentlyHandlingActionInBackgroundThread(computation))
+	if (isCurrentlyHandlingActionInBackgroundThread(computation) || isCurrentlyComputing(computation))
 		{
 		scheduleComputationPendingAction(
 			computation,
@@ -619,8 +621,6 @@ void ActiveComputationsKernel::addInterpreterResultToComputation(
 		LOG_WARN << "Not adding for local computation " << computation;
 		return;
 		}
-
-	lassert(!isCurrentlyComputing(computation));
 
 	lassert(mExternalInterface->hasComputation(computation));
 
@@ -690,23 +690,6 @@ void ActiveComputationsKernel::handleSchedulerToComputationMessage(const Schedul
 		return;
 		}
 
-	@match SchedulerToComputationMessage(message)
-		-| Split(threshold) ->> {
-			if (!mExternalInterface->hasEnoughComputeTimeElapsedToSplit(computation, threshold))
-				{
-				sendComputationToSchedulerMessage(
-					ComputationToSchedulerMessage::OK(
-						computation,
-						message.guid(),
-						message.schedulerMachine()
-						)
-					);
-				return;
-				}
-			}
-		-| _ ->> {}
-		;
-
 	if (isCurrentlyComputing(computation))
 		{
 		mExternalInterface->interruptComputation(computation);
@@ -721,7 +704,7 @@ void ActiveComputationsKernel::handleSchedulerToComputationMessage(const Schedul
 		-| Split(threshold) ->> {
 			auto status = mExternalInterface->currentComputationStatusForId(computation);
 
-			if (status.isComputable() || status.isBlockedOnVectorLoad())
+			if (status.isComputableWithSubcomputations() || status.isBlockedOnResources())
 				{
 				mComputationsCurrentlyHandlingBackgroundActions.insert(computation);
 
@@ -751,16 +734,6 @@ void ActiveComputationsKernel::handleSchedulerToComputationMessage(const Schedul
 				ComputationBackgroundAction::HandleSchedulerMessage(message)
 				);
 			}
-		-| SearchForFuturePageReads() ->> {
-			mComputationsCurrentlyHandlingBackgroundActions.insert(computation);
-
-			mExternalInterface->notifyThreadsWaitingForSplits();
-
-			mExternalInterface->scheduleComputationToHandleBackgroundAction(
-				computation,
-				ComputationBackgroundAction::HandleSchedulerMessage(message)
-				);
-			}
 		-| MarkSelfCircular() ->> {
 			sendComputationToSchedulerMessage(
 				ComputationToSchedulerMessage::OK(
@@ -778,11 +751,7 @@ void ActiveComputationsKernel::handleSchedulerToComputationMessage(const Schedul
 				removeAllPendingAddResultPendingActions(computation);
 				}
 			}
-		-| PassthroughToOtherComputation(otherComputation) ->> {
-			if (computationIsLocalAndUnfinished(computation))
-				passthroughToOtherComputation(computation, otherComputation);
-			}
-
+		
 	checkAndAssertInternalStateIfNecessary();
 
 	cleanupAfterStateChange();
@@ -816,26 +785,27 @@ bool ActiveComputationsKernel::computationIsLocalAndUnfinished(const Computation
 	return !mExternalInterface->currentComputationStatusForId(inComputation).isFinished();
 	}
 
-void ActiveComputationsKernel::markComputationVectorLoadsComplete(ComputationId computation)
+void ActiveComputationsKernel::markComputationResourceLoadsComplete(ComputationId computation)
 	{
 	if (isCurrentlyHandlingActionInBackgroundThread(computation))
 		{
 		scheduleComputationPendingAction(
 			computation,
-			ComputationPendingAction::MarkComputationVectorLoadsComplete()
+			ComputationPendingAction::MarkComputationResourceLoadsComplete()
 			);
 
 		return;
 		}
 
 	mVectorLoadBlockedComputations.dropKey(computation);
+	mComputationsBlockedOnExternalMemory.erase(computation);
 
 	lassert(!isCurrentlyComputing(computation));
 	lassert(!isCurrentlyHandlingActionInBackgroundThread(computation));
 
-	if (mExternalInterface->currentComputationStatusForId(computation).isBlockedOnVectorLoad())
+	if (mExternalInterface->currentComputationStatusForId(computation).isBlockedOnResources())
 		{
-		mExternalInterface->markSliceLoaded(computation);
+		mExternalInterface->markResourcesAvailable(computation);
 
 		handleComputationStatusChange(computation);
 		}
@@ -854,11 +824,12 @@ void ActiveComputationsKernel::markComputationVectorLoadsFailedPermanently(Compu
 		}
 
 	mVectorLoadBlockedComputations.dropKey(computation);
+	mComputationsBlockedOnExternalMemory.erase(computation);
 
 	lassert(!isCurrentlyComputing(computation));
 	lassert(!isCurrentlyHandlingActionInBackgroundThread(computation));
 
-	if (mExternalInterface->currentComputationStatusForId(computation).isBlockedOnVectorLoad())
+	if (mExternalInterface->currentComputationStatusForId(computation).isBlockedOnResources())
 		{
 		mExternalInterface->markSliceLoadFailedPermanently(computation);
 
@@ -974,11 +945,6 @@ void ActiveComputationsKernel::handleInitiateComputationMove(InitiateComputation
 	cleanupAfterStateChange();
 	}
 
-bool ActiveComputationsKernel::isPassthrough(const ComputationId& computation) const
-	{
-	return mExternalInterface->isPassthrough(computation);
-	}
-
 void ActiveComputationsKernel::setComputationParentMachine(const ComputationId& comp, MachineId machine)
 	{
 	mComputationParentMachineId[comp] = machine;
@@ -996,6 +962,7 @@ void ActiveComputationsKernel::handleComputationStatusChange(ComputationId compu
 
 	if (mVectorLoadBlockedComputations.hasKey(computation))
 		mVectorLoadBlockedComputations.dropKey(computation);
+	mComputationsBlockedOnExternalMemory.erase(computation);
 
 	ComputationStatus status = mExternalInterface->currentComputationStatusForId(computation);
 
@@ -1012,8 +979,15 @@ void ActiveComputationsKernel::handleComputationStatusChange(ComputationId compu
 				setComputationDependenciesForLocal(computation, ImmutableTreeSet<ComputationId>());
 				handleComputationFinished(computation);
 				}
-		-|	Computable() ->> {
-				setComputationDependenciesForLocal(computation, ImmutableTreeSet<ComputationId>());
+		-|	ComputableWithSubcomputations(subthreads) ->> {
+				for (auto subthread: subthreads)
+					if (subthread.isRoot())
+						registerRootToRootDependency(computation.rootComputation(), subthread);
+
+				setComputationDependenciesForLocal(computation, subthreads);
+
+				if (mExternalInterface->currentComputationStatusForId(computation).isFinished())
+					handleComputationFinished(computation);
 				}
 		-|	BlockedOnComputations(subthreads) ->> {
 				for (auto subthread: subthreads)
@@ -1025,12 +999,20 @@ void ActiveComputationsKernel::handleComputationStatusChange(ComputationId compu
 				if (mExternalInterface->currentComputationStatusForId(computation).isFinished())
 					handleComputationFinished(computation);
 				}
-		-|	BlockedOnVectorLoad(pages) ->> {
+		-|	BlockedOnResources(pages, bytesOfExternalMemory) ->> {
+				lassert(pages.size() || bytesOfExternalMemory > 0);
+
 				setComputationDependenciesForLocal(computation, ImmutableTreeSet<ComputationId>());
 
 				for (auto page: pages)
 					if (!mExternalInterface->pageIsInRam(page))
 						mVectorLoadBlockedComputations.insert(computation, page);
+
+				if (!pages.size())
+					{
+					lassert(bytesOfExternalMemory > 0);
+					mComputationsBlockedOnExternalMemory[computation] = bytesOfExternalMemory;
+					}
 				}
 		-|	BlockedOnExternalIoTask(taskId) ->> {
 				setComputationDependenciesForLocal(computation, ImmutableTreeSet<ComputationId>());
@@ -1064,8 +1046,13 @@ void ActiveComputationsKernel::handleComputationStatusChange(ComputationId compu
 	if (!status.isBlockedOnExternalIoTask() && mExternalIoTaskBlockedComputations.hasKey(computation))
 		mExternalIoTaskBlockedComputations.dropKey(computation);
 
-	if (!status.isBlockedOnVectorLoad() && mVectorLoadBlockedComputations.hasKey(computation))
-		mVectorLoadBlockedComputations.dropKey(computation);
+	if (!status.isBlockedOnResources())
+		{
+		if (mVectorLoadBlockedComputations.hasKey(computation))
+			mVectorLoadBlockedComputations.dropKey(computation);
+		mComputationsBlockedOnExternalMemory.erase(computation);
+		}
+
 
 	//re-update the computation status, as it may have changed
 	updateComputationLocalStatusMaps_(computation);
@@ -1076,10 +1063,11 @@ void ActiveComputationsKernel::handleComputationStatusChange(ComputationId compu
 
 	updateComputationCheckpointStatusTimestamp(computation);
 
-	if (status.isBlockedOnVectorLoad() && !mVectorLoadBlockedComputations.hasKey(computation))
-		markComputationVectorLoadsComplete(computation);
+	//if we thought it was BlockedOnResources, but we've cleared all the blocks and can continue
+	if (status.isBlockedOnResources() && !computationBlockedByResourceConstraint(computation))
+		markComputationResourceLoadsComplete(computation);
 
-	if (status.isBlockedOnVectorLoad())
+	if (status.isBlockedOnResources())
 		{
 		bool isFailed = false;
 		for (auto page: mVectorLoadBlockedComputations.getValues(computation))
@@ -1436,11 +1424,7 @@ void ActiveComputationsKernel::moveComputationToMachine(
 			}
 		}
 
-	if (!computationIsLocalAndUnfinished(inId) || isPassthrough(inId) ||
-				mExternalInterface->currentComputationStatusForId(inId)
-													.isBlockedOnExternalIoTask()
-			||	mExternalInterface->currentComputationStatusForId(inId)
-													.isBlockedOnComputations())
+	if (!computationIsLocalAndUnfinished(inId) || computationCannotMove(inId))
 		{
 		sendInitiateComputationMoveResponse(inId, false);
 
@@ -1460,7 +1444,6 @@ void ActiveComputationsKernel::moveComputationToMachine(
 	LOG_DEBUG << prettyPrintString(mOwnMachineId) << " Moving computation "
 			<< prettyPrintString(inId) << " to " << prettyPrintString(inOtherMachine);
 
-
 	hash_type moveGuid = mExternalInterface->generateGuid();
 
 	mExternalInterface->scheduleSerializationAndSendOfComputation(
@@ -1477,6 +1460,8 @@ void ActiveComputationsKernel::moveComputationToMachine(
 	if (mVectorLoadBlockedComputations.hasKey(inId))
 		mVectorLoadBlockedComputations.dropKey(inId);
 
+	mComputationsBlockedOnExternalMemory.erase(inId);
+
 	mComputationResultsRequested.dropKey(inId);
 
 	mDependencyGraph.markComputationNonlocal(inId);
@@ -1489,6 +1474,14 @@ void ActiveComputationsKernel::moveComputationToMachine(
 
 	//executing a deferred action is no longer meaningful
 	clearPendingActionsForComputation(inId);
+	}
+
+bool ActiveComputationsKernel::computationCannotMove(ComputationId computation)
+	{
+	@match ComputationStatus(mExternalInterface->currentComputationStatusForId(computation))
+		-| BlockedOnResources() ->> { return false; }
+		-| ComputableWithSubcomputations(c) ->> { return c.size() > 0; }
+		-| _ ->> { return true; }
 	}
 
 void ActiveComputationsKernel::sendInitiateComputationMoveResponse(ComputationId computation, bool success)
@@ -1577,8 +1570,6 @@ void ActiveComputationsKernel::resubmitThreadsForComputation(ComputationId comp)
 
 	ComputationStatus oldStatus = mExternalInterface->currentComputationStatusForId(comp);
 
-	lassert(mExternalInterface->canResubmitBlockingThreads(comp));
-
 	CreatedComputations result = mExternalInterface->resubmitBlockingThreads(comp, mExternalInterface->generateGuid());
 
 		{
@@ -1597,6 +1588,9 @@ void ActiveComputationsKernel::resubmitThreadsForComputation(ComputationId comp)
 		createExternalIoTaskGivenId(comp, idAndTask.second, idAndTask.first);
 
 	handleComputationStatusChange(comp);
+
+	if (result.bigvecsReferenced().size())
+		mExternalInterface->decrementBigVectors(result.bigvecsReferenced());
 	}
 
 void ActiveComputationsKernel::dropComputation(const ComputationId& computation)
@@ -1629,6 +1623,7 @@ void ActiveComputationsKernel::dropComputation(const ComputationId& computation)
 
 	if (mVectorLoadBlockedComputations.hasKey(computation))
 		mVectorLoadBlockedComputations.dropKey(computation);
+	mComputationsBlockedOnExternalMemory.erase(computation);
 
 	broadcastComputationStatus(computation);
 
@@ -1936,7 +1931,7 @@ bool ActiveComputationsKernel::checkInternalState()
 							isValid = false;
 							}
 						}
-				-|	Computable() ->> {
+				-|	ComputableWithSubcomputations(subthreads) ->> {
 						computable++;
 						}
 				-|	BlockedOnComputations(subthreads) ->> {
@@ -1966,7 +1961,7 @@ bool ActiveComputationsKernel::checkInternalState()
 									}
 							}
 						}
-				-|	BlockedOnVectorLoad(slice) ->> {
+				-|	BlockedOnResources(slice) ->> {
 						if (mDependencyGraph.isLocalComputation(id))
 							{
 							if (!mVectorLoadBlockedComputations.hasKey(id))
@@ -2010,7 +2005,7 @@ bool ActiveComputationsKernel::checkInternalState()
 			}
 		else
 			{
-			if (!mExternalInterface->currentComputationStatusForId(it->first).isBlockedOnVectorLoad())
+			if (!mExternalInterface->currentComputationStatusForId(it->first).isBlockedOnResources())
 				{
 				LOG_WARN << "Computation " << prettyPrintString(it->first) << " is marked as "
 					<< "blocked on VectorLoad, but its status is "
@@ -2064,6 +2059,9 @@ bool ActiveComputationsKernel::checkInternalStateRemoteLoadsMatchCurrentDependen
 			-| BlockedOnComputations(computations) ->> {
 				deps = computations;
 				}
+			-| ComputableWithSubcomputations(computations) ->> {
+				deps = computations;
+				}
 			-| _ ->> {
 				}
 
@@ -2081,37 +2079,6 @@ bool ActiveComputationsKernel::checkInternalStateRemoteLoadsMatchCurrentDependen
 		}
 
 	return isValid;
-	}
-
-void ActiveComputationsKernel::passthroughToOtherComputation(
-									ComputationId ourComputation,
-									ComputationId otherComputation
-									)
-	{
-	if (isCurrentlyHandlingActionInBackgroundThread(ourComputation))
-		{
-		scheduleComputationPendingAction(
-			ourComputation,
-			ComputationPendingAction::PassthroughTo(otherComputation)
-			);
-		return;
-		}
-
-	LOG_INFO << prettyPrintString(ourComputation)
-			<< " becoming passthrough to "
-			<< prettyPrintString(otherComputation)
-			<< " with deps of " << mDependencyGraph.getDependencies().getValues(ourComputation)
-			;
-
-	//'ourComputation' should become a passthrough to 'otherComputation'
-	lassert(!isCurrentlyComputing(ourComputation));
-	lassert(mDependencyGraph.isLocalComputation(ourComputation));
-	if (mVectorLoadBlockedComputations.hasKey(ourComputation))
-		mVectorLoadBlockedComputations.dropKey(ourComputation);
-
-	mExternalInterface->becomePassthroughTo(ourComputation, otherComputation);
-
-	handleComputationStatusChange(ourComputation);
 	}
 
 void ActiveComputationsKernel::checkAndAssertInternalStateIfNecessary()
@@ -2370,12 +2337,35 @@ void ActiveComputationsKernel::handleLocalPageRefcountEvent(const Fora::PageRefc
 			mVectorLoadBlockedComputations.dropValue(page);
 
 			for (auto c: computations)
-				if (!mVectorLoadBlockedComputations.hasKey(c))
-					markComputationVectorLoadsComplete(c);
+				if (!computationBlockedByResourceConstraint(c))
+					markComputationResourceLoadsComplete(c);
+			}
+		-| MemoryUsageChanged(usage) ->> {
+			mLastMemoryUsage = usage;
+
+			std::set<ComputationId> toWake;
+			for (auto computationAndRequirement: mComputationsBlockedOnExternalMemory)
+				if (!computationBlockedByResourceConstraint(computationAndRequirement.first))
+					toWake.insert(computationAndRequirement.first);
+
+			for (auto w: toWake)
+				markComputationResourceLoadsComplete(w);
 			}
 		-| _ ->> {}
 
 	cleanupAfterStateChange();
+	}
+
+bool ActiveComputationsKernel::computationBlockedByResourceConstraint(ComputationId computation)
+	{
+	auto it = mComputationsBlockedOnExternalMemory.find(computation);
+	if (it != mComputationsBlockedOnExternalMemory.end() && it->second > mLastMemoryUsage.bytesAvailableForExternalTasks())
+		return true;
+
+	if (mVectorLoadBlockedComputations.hasKey(computation))
+		return true;
+
+	return false;
 	}
 
 void ActiveComputationsKernel::rejectComputationMoveRequest(
@@ -2446,15 +2436,23 @@ void ActiveComputationsKernel::handleComputationMoveRequest(
 		inPtr
 		);
 
-	// We should never be moving passthrough computations around
-	lassert_dump(inRequest.sourceComponent().isLiveCheckpointLoader() ||
-			!mExternalInterface->isPassthrough(inRequest.computation()),
-		"received a passthrough computation from someone other than the LiveCheckpointLoader"
-		);
 	auto status = mExternalInterface->currentComputationStatusForId(inRequest.computation());
 
 	bool anyAreMissing = false;
 	@match ComputationStatus(status)
+		-| ComputableWithSubcomputations(computations) ->> {
+			lassert_dump(
+				!computations.size() || inRequest.sourceComponent().isLiveCheckpointLoader(),
+				"received a Blocked computation from someone other than the LiveCheckpointLoader"
+				);
+			for (auto c: computations)
+				if (c.isRoot() && !mMachineRootComputationMap.exists(c))
+					{
+					lassert(inRequest.sourceComponent().isLiveCheckpointLoader());
+					LOG_INFO << "Missing " << c << " in " << inRequest.computation() << ", so we'll resubmit";
+					anyAreMissing = true;
+					}
+			}
 		-| BlockedOnComputations(computations) ->> {
 			lassert_dump(
 				inRequest.sourceComponent().isLiveCheckpointLoader(),
@@ -2762,6 +2760,9 @@ void ActiveComputationsKernel::stopComputation(ComputationId computation, Create
 	checkAndAssertInternalStateIfNecessary();
 
 	cleanupAfterStateChange();
+
+	if (result.bigvecsReferenced().size())
+		mExternalInterface->decrementBigVectors(result.bigvecsReferenced());
 	}
 
 bool ActiveComputationsKernel::startComputation(ComputationId computation)
@@ -2775,7 +2776,7 @@ bool ActiveComputationsKernel::startComputation(ComputationId computation)
 	if (isCurrentlyComputing(computation))
 		return false;
 
-	if (!mExternalInterface->currentComputationStatusForId(computation).isComputable())
+	if (!mExternalInterface->currentComputationStatusForId(computation).isComputableWithSubcomputations())
 		return false;
 
 	mCurrentlyComputing.insert(computation);
@@ -2801,31 +2802,6 @@ bool ActiveComputationsKernel::startComputation(ComputationId computation)
 	cleanupAfterStateChange();
 
 	return true;
-	}
-
-void ActiveComputationsKernel::searchForFuturePageReadsCompleted(
-										ComputationId computation,
-										hash_type guid,
-										MachineId schedulerMachine,
-										ImmutableTreeVector<Fora::PageId> newPages
-										)
-	{
-	mComputationsCurrentlyHandlingBackgroundActions.erase(computation);
-
-	sendComputationToSchedulerMessage(
-		ComputationToSchedulerMessage::FuturePageReads(
-			computation,
-			guid,
-			schedulerMachine,
-			newPages
-			)
-		);
-
-	fireOffPendingActions(computation);
-
-	mExternalInterface->notifyThreadsWaitingForSplits();
-
-	cleanupAfterStateChange();
 	}
 
 void ActiveComputationsKernel::resetPageDataAndBroadcastCompleted(
@@ -2977,8 +2953,8 @@ void ActiveComputationsKernel::executePendingActionForComputation(
 		-| MarkComputationVectorLoadsFailedPermanently() ->> {
 			markComputationVectorLoadsFailedPermanently(inId);
 			}
-		-| MarkComputationVectorLoadsComplete() ->> {
-			markComputationVectorLoadsComplete(inId);
+		-| MarkComputationResourceLoadsComplete() ->> {
+			markComputationResourceLoadsComplete(inId);
 			}
 		-| MarkComputationExternalIoTaskComplete(completed) ->> {
 			markComputationExternalIoTaskComplete(inId, completed);
@@ -2991,9 +2967,6 @@ void ActiveComputationsKernel::executePendingActionForComputation(
 			}
 		-| DropComputation() ->> {
 			dropComputation(inId);
-			}
-		-| PassthroughTo(otherComputation) ->> {
-			passthroughToOtherComputation(inId, otherComputation);
 			}
 		-| HandleRequestComputationResultFromMachineWithToken(request, token) ->> {
 			handleRequestComputationResultFromMachineWithToken(request, token);

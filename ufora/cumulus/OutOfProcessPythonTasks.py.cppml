@@ -1,0 +1,210 @@
+/***************************************************************************
+   Copyright 2015 Ufora Inc.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+****************************************************************************/
+#include "OutOfProcessPythonTasks.hppml"
+
+#include <boost/python.hpp>
+
+#include "../native/Registrar.hpp"
+#include "../core/threading/Queue.hpp"
+#include "../core/python/CPPMLWrapper.hpp"
+#include "../core/python/CPPMLToSimple.hpp"
+#include "../core/python/ScopedPyThreads.hpp"
+#include "../core/serialization/OFileDescriptorProtocol.hpp"
+#include "../core/serialization/IFileDescriptorProtocol.hpp"
+#include "../FORA/python/PurePython/PythonParseResult.hppml"
+#include "../core/PolymorphicSharedPtrFuncFromMemberFunc.hpp"
+
+using namespace Fora;
+using namespace Cumulus;
+
+//an class to intermediate between a python thread that can call the
+//python parser and the C++ consumers of the OutOfProcessPythonTasks class.
+//the problem is that we want to invoke the python interpreter from within
+//some threads that may not have been invoked from python, and we don't want to 
+//go through the hassle of trying to correctly initialize python threads
+class PythonAstParserAdapter : public PolymorphicSharedPtrBase<PythonAstParserAdapter> {
+public:
+    PythonAstParserAdapter(boost::python::object parser) : 
+            mParser(parser),
+            mIsTornDown(false)
+        {
+        }
+
+    PythonParseResult parse(std::string input)
+        {
+        boost::shared_ptr<Queue<Nullable<PythonParseResult> > > result(new Queue<Nullable<PythonParseResult> >());
+
+            {
+            boost::mutex::scoped_lock lock(mMutex);
+
+            lassert(!mIsTornDown);
+
+            mInputsAndOutputs.write(make_pair(null() << input, result));
+            }
+
+        Nullable<PythonParseResult> finalResult = result->get();
+
+        lassert_dump(finalResult, "we're already torn down");
+
+        return *finalResult;
+        }
+
+    void threadLoopInPython()
+        {
+        ScopedPyThreads releaseTheGIL;
+
+        while (true)
+            {
+            pair<Nullable<std::string>, boost::shared_ptr<Queue<Nullable<PythonParseResult> > > > toProcess;
+            toProcess = mInputsAndOutputs.get();
+
+            //check if we've been torn down
+            if (!toProcess.first)
+                return;
+
+            toProcess.second->write(null() << process(*toProcess.first));
+            }
+        }
+
+    void teardown()
+        {
+        boost::mutex::scoped_lock lock(mMutex);
+
+        mIsTornDown = true;
+
+        //flush the queue
+        while (auto res = mInputsAndOutputs.getNonblock())
+            {
+            res->second->write(Nullable<PythonParseResult>());
+            }
+
+        //wake the main event loop up
+        mInputsAndOutputs.write(
+            make_pair(Nullable<std::string>(), boost::shared_ptr<Queue<Nullable<PythonParseResult> > >())
+            );
+        }
+
+private:
+    PythonParseResult process(std::string s)
+        {
+        ScopedPyThreadsReacquire reacquireTheGil;
+    
+        try{
+            boost::python::object result = mParser(s);
+            
+            boost::python::extract<PythonAstModule> checkModule(result);
+            if (checkModule.check())
+                return PythonParseResult::Result(checkModule());
+
+            boost::python::extract<PythonParseError> checkErr(result);
+            if (checkErr.check())
+                return PythonParseResult::Error(checkErr());
+
+            LOG_ERROR << "makePyAstParserFromPyObject got an unexpected python result.";
+
+            return PythonParseResult::Error(PythonParseError::TypeError());
+            }
+        catch(...) {
+            LOG_ERROR << "makePyAstParserFromPyObject got an unexpected exception.";
+            
+            return PythonParseResult::Error(PythonParseError::TypeError());
+            }
+        }
+
+    boost::mutex mMutex;
+
+    bool mIsTornDown;
+
+    Queue<pair<Nullable<std::string>, boost::shared_ptr<Queue<Nullable<PythonParseResult> > > > > mInputsAndOutputs;
+
+    boost::python::object mParser;
+};
+
+class OutOfProcessPythonTasksWrapper :
+    public native::module::Exporter<OutOfProcessPythonTasksWrapper> {
+public:
+    std::string getModuleName(void)
+        {
+        return "Cumulus";
+        }
+
+    static PolymorphicSharedPtr<OutOfProcessPythonTasks>* construct(
+                    boost::python::object pythonToPyforaSingletonNamesPyDict,
+                    ImplValContainer pyforaBuiltins,
+                    ImplValContainer foraBuiltins,
+                    PolymorphicSharedPtr<PythonAstParserAdapter> converter,
+                    std::string pathToSocket
+                    )
+        {
+        ImmutableTreeMap<string, string> pythonToPyforaSingletonNames;
+
+        Ufora::python::toCPP(pythonToPyforaSingletonNamesPyDict, pythonToPyforaSingletonNames);
+
+        return new PolymorphicSharedPtr<OutOfProcessPythonTasks>(
+            new OutOfProcessPythonTasks(
+                pythonToPyforaSingletonNames, 
+                pyforaBuiltins, 
+                foraBuiltins, 
+                [=](std::string in) { return converter->parse(in); },
+                pathToSocket
+                )
+            );
+        }
+
+    static PolymorphicSharedPtr<PythonAstParserAdapter>* constructModuleAstConverter(
+                    boost::python::object pyAstConverter
+                    )
+        {
+        return new PolymorphicSharedPtr<PythonAstParserAdapter>(new PythonAstParserAdapter(pyAstConverter));
+        }
+
+    void exportPythonWrapper()
+        {
+        using namespace boost::python;
+
+        class_<PolymorphicSharedPtr<Cumulus::OutOfProcessPythonTasks>>(
+                "OutOfProcessPythonTasks", no_init)
+            .def("__init__", make_constructor(construct))
+            ;
+
+        class_<PolymorphicSharedPtr<PythonAstParserAdapter> >(
+                "PythonAstParserAdapter", no_init)
+            .def("__init__", make_constructor(constructModuleAstConverter))
+            .def("teardown",
+                    macro_polymorphicSharedPtrFuncFromMemberFunc(
+                        PythonAstParserAdapter::teardown
+                        )
+                    )
+            .def("threadLoopInPython",
+                    macro_polymorphicSharedPtrFuncFromMemberFunc(
+                        PythonAstParserAdapter::threadLoopInPython
+                        )
+                    );
+        }
+};
+
+
+//explicitly instantiating the registration element causes the linker to need
+//this file
+template<>
+char native::module::Exporter<OutOfProcessPythonTasksWrapper>::mEnforceRegistration =
+    native::module::ExportRegistrar<
+        OutOfProcessPythonTasksWrapper>::registerWrapper();
+
+
+
+
+

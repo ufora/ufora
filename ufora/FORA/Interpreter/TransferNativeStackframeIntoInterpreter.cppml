@@ -34,8 +34,8 @@
 #include "../Core/ExecutionContextScope.hppml"
 #include "EvalFrame.hpp"
 #include "CallFrame.hpp"
-#include "../Core/MemBlock.hpp"
-#include "../Core/MemBlockAllocator.hpp"
+#include "../Core/StackFrame.hpp"
+#include "../Core/StackFrameAllocator.hpp"
 #include "../TypedFora/ABI/NativeLayoutType.hppml"
 #include "../TypedFora/ABI/VectorLoadRequest.hppml"
 #include "../Core/TupleCategory.hppml"
@@ -60,7 +60,7 @@ using namespace TypedFora::Abi;
 namespace Fora {
 namespace Interpreter {
 
-std::string dumpMemBlock(MemBlock* block)
+std::string dumpMemBlock(StackFrame* block)
 	{
 	std::ostringstream s;
 
@@ -83,7 +83,8 @@ std::string dumpMemBlock(MemBlock* block)
 //given a computation that resumes somewhere within a NativeStackFrame, extract it and release
 //the native frame
 RippedDownNativeStackframe ripDownNativeStackFrame(
-									NativeRuntimeContinuationBase continuation
+									NativeRuntimeContinuationBase continuation,
+									StackFrameAllocator& allocator
 									)
 	{
 	ExecutionContext* context = ExecutionContext::currentExecutionContext();
@@ -92,7 +93,10 @@ RippedDownNativeStackframe ripDownNativeStackFrame(
 
 	ValueDeepcopierState state;
 
-	CreatePausedComputationStackFrameVisitor visitor(context, state, false, true);
+	CreatePausedComputationStackFrameVisitor visitor(
+		[](ImplValContainer i) { return i; }, 
+		true
+		);
 
 	TypedFora::Abi::StackFrameVisitor::visitStackFrame(
 		continuation,
@@ -107,10 +111,7 @@ RippedDownNativeStackframe ripDownNativeStackFrame(
 		nextFrameContinuations = curStackframe.getAllContinuations();
 		}
 
-	DestroyingStackFrameVisitor destroyer(
-		context->getStackAllocator(),
-		true
-		);
+	DestroyingStackFrameVisitor destroyer(allocator, true);
 
 	TypedFora::Abi::StackFrameVisitor::visitStackFrame(
 		continuation,
@@ -131,7 +132,7 @@ NativeRuntimeContinuationValue<1> instantiatePausedComputation(
 			ImmutableTreeVector<TypedFora::MetadataInstruction> frameMetadata,
 			Nullable<pair<ImplValContainer, bool> > pendingResult,
 			Nullable<uint64_t> evalFrameUniqueId,
-			EvalFrame* inCurEvalFramePtr
+			StackFrameAllocator& allocator
 			)
 	{
 	lassert(frames.size());
@@ -145,14 +146,12 @@ NativeRuntimeContinuationValue<1> instantiatePausedComputation(
 		EvalFrame* evalFramePtr = EvalFrame::allocate(
 			frame.graph(),
 			frame.label(),
-			context->getStackAllocator(),
+			allocator,
 			evalFrameUniqueId && k == 0 ?
 				*evalFrameUniqueId
-			:	context->getImpl()->allocateNewUniqueEvalFrameID(),
+			:	EvalFrame::allocateNewUniqueEvalFrameID(),
 			null() << frameMetadata[k]
 			);
-
-		inCurEvalFramePtr = evalFramePtr;
 
 		std::vector<ImplVal> values;
 
@@ -173,7 +172,7 @@ NativeRuntimeContinuationValue<1> instantiatePausedComputation(
 				Runtime::getRuntime().getTypedForaCompiler()->wrapCPPCallback(
 					&InterpreterFrame::interpreter,
 					evalFramePtr,
-					context->getStackAllocator().getMemBlockPtr()
+					allocator.getMemBlockPtr()
 					) +
 				NativeRuntimeContinuationSlot(
 					!pendingResult ? cont_internal :
@@ -194,7 +193,7 @@ NativeRuntimeContinuationValue<1> instantiatePausedComputation(
 				Runtime::getRuntime().getTypedForaCompiler()->wrapCPPCallback(
 					&InterpreterFrame::interpreter,
 					evalFramePtr,
-					context->getStackAllocator().getMemBlockPtr()
+					allocator.getMemBlockPtr()
 					) +
 				NativeRuntimeContinuationSlot(
 					cont_cont_left,
@@ -208,12 +207,14 @@ NativeRuntimeContinuationValue<1> instantiatePausedComputation(
 			continuations = newConts;
 			}
 		}
+
 	lassert(false);
 	}
 
 NativeRuntimeContinuationValue<1>
 				convertNativeContinuationToInterpreterResumption(
-						const RippedDownNativeStackframe& rippedDownStack
+						const RippedDownNativeStackframe& rippedDownStack,
+						StackFrameAllocator& allocator
 						)
 	{
 	//we're going to create an interpreter frame, but we need to get a pair of ImplVal continuations
@@ -225,8 +226,8 @@ NativeRuntimeContinuationValue<1>
 
 	continuations = allocateInterpreterContinuations(
 							rippedDownStack.continuations(),
-							context->getStackAllocator(),
-							evalFrameUniqueId
+							evalFrameUniqueId,
+							allocator
 							);
 
 	NativeRuntimeContinuationValue<1> resumeContinuation = instantiatePausedComputation(
@@ -235,7 +236,7 @@ NativeRuntimeContinuationValue<1>
 		rippedDownStack.computationFrameMetadata(),
 		rippedDownStack.pendingResult(),
 		evalFrameUniqueId,
-		nullptr
+		allocator
 		);
 
 	if (!rippedDownStack.pendingResult())
@@ -246,7 +247,7 @@ NativeRuntimeContinuationValue<1>
 
 
 NativeRuntimeContinuationValue<1> transferNativeStackframeIntoInterpreter(
-									MemBlock** memory,
+									StackFrame** memory,
 									uword_t continuationIndex,
 									void* data
 									)
@@ -258,31 +259,33 @@ NativeRuntimeContinuationValue<1> transferNativeStackframeIntoInterpreter(
 	ExecutionContext* context = ExecutionContext::currentExecutionContext();
 
 	//grab the continuation and free it
-	context->getStackAllocator().free(data);
+	(*memory)->allocator()->free(data);
 
 	if (context->getConfiguration()->allowInterpreterTracing())
 		context->getInterpreterHistory()
 			.onTransferToInterpreterFromNativeCode(continuation);
 
-	RippedDownNativeStackframe rippedDownStack = ripDownNativeStackFrame(continuation);
+	RippedDownNativeStackframe rippedDownStack = 
+		ripDownNativeStackFrame(continuation, *(*memory)->allocator());
 
 	lassert(rippedDownStack.computationFrames().size());
 
-	return convertNativeContinuationToInterpreterResumption(rippedDownStack);
+	return convertNativeContinuationToInterpreterResumption(
+		rippedDownStack,
+		*(*memory)->allocator()
+		);
 	}
 
 
 
 NativeRuntimeContinuationValue<2>
 adaptContinuationsToInterpreterContinuations(
-		const NativeRuntimeContinuationValueVector& conts
+		const NativeRuntimeContinuationValueVector& conts,
+		StackFrameAllocator& allocator
 		)
 	{
 	NativeRuntimeContinuationValueVector strippedConts =
-		removeAdapterContinuations(
-			conts,
-			ExecutionContext::currentExecutionContext()->getStackAllocator()
-			);
+		removeAdapterContinuations(conts, allocator);
 
 	//if this continuation is a native one, we want to rip it down and re-instantiate it.
 	//otherwise, we just want to adapt it.
@@ -296,15 +299,22 @@ adaptContinuationsToInterpreterContinuations(
 		return NativeRuntimeContinuationValue<2>(strippedConts);
 		}
 
-	RippedDownNativeStackframe rippedDownStack = ripDownNativeStackFrame(strippedConts.base());
+	RippedDownNativeStackframe rippedDownStack = 
+		ripDownNativeStackFrame(strippedConts.base(), allocator);
 
 	//this can happen if we're adapting to a frame where native code transfered to some other
 	//native stackframe
 	if (!rippedDownStack.computationFrames().size())
-		return adaptContinuationsToInterpreterContinuations(rippedDownStack.continuations());
+		return adaptContinuationsToInterpreterContinuations(
+			rippedDownStack.continuations(),
+			allocator
+			);
 
 	NativeRuntimeContinuationValue<1> resumption =
-		convertNativeContinuationToInterpreterResumption(rippedDownStack);
+		convertNativeContinuationToInterpreterResumption(
+			rippedDownStack,
+			allocator
+			);
 
 	lassert_dump(
 		resumption.slots()[0].blockID() == cont_internal,
@@ -327,7 +337,7 @@ adaptContinuationsToInterpreterContinuations(
 NativeRuntimeContinuationValueVector
 removeAdapterContinuations(
 			NativeRuntimeContinuationValueVector nextFrameContinuations,
-			MemBlockAllocator& stack
+			StackFrameAllocator& allocator
 			)
 	{
 	auto compiler = Runtime::getRuntime().getTypedForaCompiler();
@@ -367,10 +377,10 @@ removeAdapterContinuations(
 
 			f->~ResultSignatureAdapterFrame();
 
-			stack.free(tempFrame);
-			stack.free(f);
+			allocator.free(tempFrame);
+			allocator.free(f);
 
-			return removeAdapterContinuations(parentContinuations, stack);
+			return removeAdapterContinuations(parentContinuations, allocator);
 			}
 			else
 		if (wrappedCPPPointer == (void*)&InterpreterUniqueIdHolderFrame::teardownAndFollowContinuation)
@@ -382,10 +392,10 @@ removeAdapterContinuations(
 
 			f->~InterpreterUniqueIdHolderFrame();
 
-			stack.free(tempFrame);
-			stack.free(f);
+			allocator.free(tempFrame);
+			allocator.free(f);
 
-			return removeAdapterContinuations(parentContinuations, stack);
+			return removeAdapterContinuations(parentContinuations, allocator);
 			}
 		else
 			{
@@ -406,8 +416,8 @@ removeAdapterContinuations(
 NativeRuntimeContinuationValue<2>
 allocateInterpreterContinuations(
 			NativeRuntimeContinuationValueVector nextFrameContinuations,
-			MemBlockAllocator& stack,
-			Nullable<uint64_t>& ioEvalFrameUniqueId
+			Nullable<uint64_t>& ioEvalFrameUniqueId,
+			StackFrameAllocator& allocator
 			)
 	{
 	auto compiler = Runtime::getRuntime().getTypedForaCompiler();
@@ -434,7 +444,7 @@ allocateInterpreterContinuations(
 			TypedFora::Abi::adaptReturnContinuation(
 				typedCont,
 				TypedFora::interpreterResultSignature(),
-				stack.getMemBlockPtr(),
+				allocator.getMemBlockPtr(),
 				*compiler
 				);
 
@@ -473,10 +483,10 @@ allocateInterpreterContinuations(
 
 			f->~ResultSignatureAdapterFrame();
 
-			stack.free(tempFrame);
-			stack.free(f);
+			allocator.free(tempFrame);
+			allocator.free(f);
 
-			return allocateInterpreterContinuations(parentContinuations, stack, ioEvalFrameUniqueId);
+			return allocateInterpreterContinuations(parentContinuations, ioEvalFrameUniqueId, allocator);
 			}
 			else
 		if (wrappedCPPPointer == (void*)&InterpreterUniqueIdHolderFrame::teardownAndFollowContinuation)
@@ -490,10 +500,10 @@ allocateInterpreterContinuations(
 
 			f->~InterpreterUniqueIdHolderFrame();
 
-			stack.free(tempFrame);
-			stack.free(f);
+			allocator.free(tempFrame);
+			allocator.free(f);
 
-			return allocateInterpreterContinuations(parentContinuations, stack, ioEvalFrameUniqueId);
+			return allocateInterpreterContinuations(parentContinuations, ioEvalFrameUniqueId, allocator);
 			}
 		else
 			{

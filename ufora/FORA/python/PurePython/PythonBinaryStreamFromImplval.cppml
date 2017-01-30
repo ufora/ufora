@@ -1,0 +1,830 @@
+/***************************************************************************
+    Copyright 2016 Ufora Inc.
+
+    Licensed under the Apache License, Version 2.0 (the "License");
+    you may not use this file except in compliance with the License.
+    You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+    Unless required by applicable law or agreed to in writing, software
+    distributed under the License is distributed on an "AS IS" BASIS,
+    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    See the License for the specific language governing permissions and
+    limitations under the License.
+****************************************************************************/
+
+#include "PythonBinaryStreamFromImplval.hppml"
+#include "../../../core/Logging.hpp"
+#include "../../../core/cppml/ExtractAllObjectsMatchingPredicate.hppml"
+#include "../../Language/ClassMediatorBindings.hppml"
+#include "../../Language/RebindFreeMemberAccesses.hppml"
+#include "../../Language/RebindFree.hppml"
+#include "../../Core/ClassMediator.hppml"
+#include "../../Core/MemoryPool.hpp"
+#include "../../Core/TupleCategory.hppml"
+#include "../../TypedFora/ABI/ImplValVisitor.hppml"
+#include "../../TypedFora/ABI/ContainsNonemptyVectorsVisitor.hppml"
+#include "PythonConstantType.hppml"
+
+
+using namespace TypedFora::Abi;
+
+namespace Fora {
+
+PythonBinaryStreamFromImplval::PythonBinaryStreamFromImplval(
+            PolymorphicSharedPtr<VectorDataManager> inVDM,
+            const ImplValContainer& inPyforaBuiltins,
+            ImmutableTreeMap<std::string, std::string> pythonSingletonNameToPyforaName
+            ) :
+        mVDM(inVDM),
+        mPyforaBuiltins(inPyforaBuiltins),
+        mNextObjId(0)
+    {
+    mConstantConverter.reset(
+        new PythonConstantConverter(
+            emptyTreeMap() + 
+                PythonConstantType::String() + *PythonBinaryStreamCommon::getMember(mPyforaBuiltins, "PyString") + 
+                PythonConstantType::Int() + *PythonBinaryStreamCommon::getMember(mPyforaBuiltins, "PyInt") + 
+                PythonConstantType::Float() + *PythonBinaryStreamCommon::getMember(mPyforaBuiltins, "PyFloat") + 
+                PythonConstantType::None() + *PythonBinaryStreamCommon::getMember(mPyforaBuiltins, "PyNone") + 
+                PythonConstantType::Boolean() + *PythonBinaryStreamCommon::getMember(mPyforaBuiltins, "PyBool"),
+            MemoryPool::getFreeStorePool()
+            )
+        );
+    mListConverter.reset(
+        new PythonListConverter(
+            *PythonBinaryStreamCommon::getMember(mPyforaBuiltins, "PyList"),
+            MemoryPool::getFreeStorePool()
+            )
+        );
+    mDictConverter.reset(
+        new PythonDictConverter(
+            *PythonBinaryStreamCommon::getMember(mPyforaBuiltins, "PyDict")
+            )
+        );
+    mTupleConverter.reset(
+        new PythonTupleConverter(
+            *PythonBinaryStreamCommon::getMember(mPyforaBuiltins, "PyTuple")
+            )
+        );
+    mSingletonAndExceptionConverter.reset(
+        new PyforaSingletonAndExceptionConverter(
+            mPyforaBuiltins,
+            pythonSingletonNameToPyforaName
+            )
+        );
+
+    mPyforaBoundMethodClass = *PythonBinaryStreamCommon::getMember(mPyforaBuiltins, "PyBoundMethod");
+    }
+
+void PythonBinaryStreamFromImplval::writeTerminator(OBinaryStream& stream)
+    {
+    stream << (int64_t)-1;
+    }
+
+
+void writeDtypeToTypeInstance(OBinaryStream& stream, PythonBinaryStreamCommon::DtypePrimitive prim)
+    {
+    @match PythonBinaryStreamCommon::DtypePrimitive(prim)
+        -| Int(i) ->> {
+            stream << PythonBinaryStreamCommon::CODE_INT;
+            stream << i;
+            }
+        -| Str(s) ->> {
+            stream << PythonBinaryStreamCommon::CODE_STR;
+            stream << s;
+            }
+        -| Tuple(t) ->> {
+            stream << PythonBinaryStreamCommon::CODE_TUPLE;
+            stream << (int32_t)t.size();
+            for (auto e: t)
+                writeDtypeToTypeInstance(stream, e);
+            }
+    }
+
+void PythonBinaryStreamFromImplval::writeSingleton(
+        OBinaryStream& stream,
+        const std::string& singletonName,
+        int64_t objId)
+    {
+    stream << objId;
+    stream << PythonBinaryStreamCommon::CODE_NAMED_SINGLETON;
+    stream << singletonName;
+    }
+
+void PythonBinaryStreamFromImplval::writeException(
+        OBinaryStream& stream,
+        const ImplValContainer& exceptionArgs,
+        const std::string& exceptionName,
+        bool isPyAbort,
+        int64_t objId)
+    {
+    int64_t argsId = write(stream, exceptionArgs);
+
+    stream << objId;
+
+    if (isPyAbort)
+        stream << PythonBinaryStreamCommon::CODE_PY_ABORT_EXCEPTION;
+    else
+        stream << PythonBinaryStreamCommon::CODE_BUILTIN_EXCEPTION_INSTANCE;
+        
+    stream << exceptionName;
+    stream << argsId;
+    }
+
+void PythonBinaryStreamFromImplval::writeTuple(
+        OBinaryStream& stream,
+        const ImmutableTreeVector<ImplValContainer>& tupleContents,
+        int64_t objId)
+    {
+    std::vector<int64_t> contentsIds;
+
+    for (const auto& elt: tupleContents)
+        contentsIds.push_back(write(stream, elt));
+
+    stream << objId;
+    stream << PythonBinaryStreamCommon::CODE_TUPLE;
+    stream << (int64_t)contentsIds.size();
+    for (const auto& id: contentsIds)
+        stream << id;
+    }
+
+void PythonBinaryStreamFromImplval::writeDict(
+        OBinaryStream& stream,
+        const std::pair<ImmutableTreeVector<CSTValue>, ImmutableTreeVector<ImplValContainer>>& dictContents,
+        int64_t objId)
+    {
+    std::vector<int64_t> keyIds;
+    std::vector<int64_t> valueIds;
+
+    for (const auto& elt: dictContents.first)
+        keyIds.push_back(write(stream, ImplValContainer(elt)));
+    for (const auto& elt: dictContents.second)
+        valueIds.push_back(write(stream, elt));
+
+    stream << objId;
+    stream << PythonBinaryStreamCommon::CODE_DICT;
+    stream << (int64_t)keyIds.size();
+    for (const auto& id: keyIds)
+        stream << id;
+    stream << (int64_t)valueIds.size();
+    for (const auto& id: valueIds)
+        stream << id;
+    }
+
+void PythonBinaryStreamFromImplval::writeListGeneric(
+        OBinaryStream& stream,
+        VectorRecord& vec,
+        int64_t objId)
+    {
+    std::vector<int64_t> objectIds;
+
+    bool allLoaded = vec.visitAnyValuesPresentInVdm(
+        &*mVDM,
+        [&](ForaValueArray* array, IntegerSequence subsequence) {
+            for (long k = 0; k < subsequence.size();k++)
+                objectIds.push_back(
+                    write(stream,
+                          (*array)[subsequence.offsetForIndex(k)]
+                         )
+                    );
+            },
+        IntegerSequence(vec.size())
+        );
+
+    lassert(allLoaded);
+
+    stream << objId;
+    stream << PythonBinaryStreamCommon::CODE_LIST;
+    stream << (int64_t)objectIds.size();
+    for (const auto& i: objectIds)
+        stream << i;
+    }
+
+//  Returns true if write was successful, false if not
+bool PythonBinaryStreamFromImplval::tryWriteHomogeneousListOfDirectlySeralizable(
+        OBinaryStream& stream,
+        VectorRecord& vec,
+        int64_t objId)
+    {
+    if (vec.jor().size() != 1 or
+        !vec.jor()[0].type() or
+        !vec.jor()[0].type()->isDirectlySerializable())
+        {
+        return false;
+        }
+
+    ImplValContainer firstLoadedValue;
+
+    bool allLoaded = vec.visitAnyValuesPresentInVdm(
+        &*mVDM,
+        [&](ForaValueArray* array, IntegerSequence subsequence) {
+            //its OK to copy this value out without using a deepcopier because its
+            //directly serializable (meaning it has no pointers in it)
+            firstLoadedValue = (*array)[subsequence.offsetForIndex(0)];
+            },
+        IntegerSequence(1)
+        );
+
+    lassert(allLoaded);
+
+    //this is homogenous data that we can just pack directly into tuples of floats, ints, etc.
+    //check that this type is either the primitive type or a nested tuple of primitives
+
+    Nullable<PythonBinaryStreamCommon::DtypePrimitive> prim =
+        dtypeForImplval(firstLoadedValue);
+
+    if (prim)
+        {
+        stream << objId;
+        stream << PythonBinaryStreamCommon::CODE_PACKED_HOMOGENOUS_DATA;
+        writeDtypeToTypeInstance(stream, *prim);
+
+        int64_t finalDataSize = vec.size() * firstLoadedValue.type().size();
+
+        //2gb. This is not a good way to do this. We need to ensure ahead of time that data
+        //moving across the boundary is appropriately sized.
+        lassert(finalDataSize < 2000000000);
+                
+        stream << (int32_t)finalDataSize;
+
+        bool allLoaded = vec.visitAnyValuesPresentInVdm(
+            &*mVDM, [&](ForaValueArray* array, IntegerSequence subsequence) {
+                if (array->isHomogenousPodArray() && subsequence.stride() == 1)
+                    {
+                    stream.write(
+                        firstLoadedValue.type().size() * subsequence.size(), 
+                        array->offsetFor(subsequence.offsetForIndex(0))
+                        );
+                    }
+                else
+                    {
+                    int64_t sz = firstLoadedValue.type().size();
+
+                    for (long k = 0; k < subsequence.size();k++)
+                        stream.write(sz, array->offsetFor(subsequence.offsetForIndex(k)));
+                    }
+                },
+            IntegerSequence(vec.size())
+            );
+
+        lassert(allLoaded);
+
+        return true;
+        }
+
+    return false;
+    }
+
+void PythonBinaryStreamFromImplval::writeEmptyList(
+        OBinaryStream& stream,
+        int64_t objId)
+    {
+    stream << objId;
+    stream << PythonBinaryStreamCommon::CODE_LIST;
+    stream << (int64_t) 0;
+    }
+
+void PythonBinaryStreamFromImplval::writeList(
+        OBinaryStream& stream,
+        const ImplValContainer& listContents,
+        int64_t objId)
+    {
+    lassert(listContents.type().isVector());
+
+    VectorRecord vec = listContents.cast<VectorRecord>();
+
+    if (vec.size() == 0)
+        {
+        writeEmptyList(stream, objId);
+        return;
+        }
+
+    bool successfullyWrote;
+
+    successfullyWrote =
+        tryWriteHomogeneousListOfDirectlySeralizable(stream, vec, objId);
+    if (successfullyWrote) {
+        return;
+        }
+
+    successfullyWrote = tryWriteVectorOfPrimitives(stream, vec, objId);
+    if (successfullyWrote) {
+        return;
+        }
+
+    writeListGeneric(stream, vec, objId);
+    }
+
+
+bool PythonBinaryStreamFromImplval::isPrimitive(const JudgmentOnValue& jov) const
+    {
+    return jov == JOV::OfType(*mConstantConverter->noneType()) or
+        jov == JOV::OfType(*mConstantConverter->intType()) or
+        jov == JOV::OfType(*mConstantConverter->floatType()) or
+        jov == JOV::OfType(*mConstantConverter->stringType()) or
+        jov == JOV::OfType(*mConstantConverter->boolType());
+    }
+
+
+bool PythonBinaryStreamFromImplval::allPrimitives(const JudgmentOnResult& jor) const
+    {
+    for (uword_t ix = 0; ix < jor.size(); ++ix) {
+        if (not isPrimitive(jor[ix])) {
+            return false;
+            }
+        }
+    return true;
+    }
+
+
+//  Returns true if write was successful, false if not
+bool PythonBinaryStreamFromImplval::tryWriteVectorOfPrimitives(
+        OBinaryStream& stream,
+        VectorRecord& vec,
+        int64_t objId)
+    {
+    if (not allPrimitives(vec.jor())) {
+        return false;
+        }
+
+    stream << objId;
+    stream << PythonBinaryStreamCommon::CODE_LIST_OF_PRIMITIVES;
+    stream << (int64_t) vec.size();
+
+    bool allLoaded = vec.visitAnyValuesPresentInVdm(
+        &*mVDM,
+        [&](ForaValueArray* array, IntegerSequence subsequence) {
+            for (long k = 0; k < subsequence.size();k++)
+                {
+                ImplVal value = array->getItemRaw(subsequence.offsetForIndex(k));
+
+                Nullable<ImplVal> primitive =
+                    mConstantConverter->unwrapToPrimitiveRaw(value);
+
+                lassert(primitive.isValue());
+
+                _writePrimitive(
+                    stream,
+                    *primitive
+                    );
+                }
+            },
+        IntegerSequence(vec.size())
+        );
+
+    lassert(allLoaded);
+
+    return true;
+    }
+
+Nullable<PythonBinaryStreamCommon::DtypePrimitive>
+PythonBinaryStreamFromImplval::dtypeForImplval(const ImplValContainer& arg) const
+    {
+    typedef PythonBinaryStreamCommon::DtypePrimitive DtypePrimitive;
+
+    Nullable<ImplVal> prim =
+        mConstantConverter->unwrapToPrimitiveRaw(arg.getReference());
+    if (prim)
+        {
+        if (prim->type() == Type::Float(64))
+            return null() << DtypePrimitive::Str("<f8");
+        if (prim->type() == Type::Integer(64, true))
+            return null() << DtypePrimitive::Str("<i8");
+        if (prim->type() == Type::Integer(1, false))
+            return null() << DtypePrimitive::Str("|b1");
+        }
+
+    auto tup = mTupleConverter->invertTuple(arg);
+    if (tup)
+        {
+        ImmutableTreeVector<DtypePrimitive> prims;
+        for (const auto& elt: *tup)
+            {
+            auto res = dtypeForImplval(elt);
+            if (!res)
+                return null();
+            prims = prims + *res;
+            }
+
+        return null() << DtypePrimitive::Tuple(prims);
+        }
+
+    return null();
+    }
+
+void PythonBinaryStreamFromImplval::writeClass(
+        OBinaryStream& stream,
+        const ImplValContainer& value,
+        int64_t objId
+        )
+    {
+    @match Type(value.type())
+        -| Class(elts, (mediator, resumption)) ->> {
+            if (mediator->isObject())
+                {
+                Nullable<ImplValContainer> cls = PythonBinaryStreamCommon::simulateApply(
+                    emptyTreeVec() + 
+                    value + 
+                    ImplValContainer(CSTValue(Symbol("Class")))
+                    );
+
+                if (cls && *cls == mPyforaBoundMethodClass)
+                    {
+                    Nullable<std::pair<ImplVal, Nullable<Symbol>>> name =
+                        ImplValContainerUtilities::objectGetMemberRaw(
+                            value,
+                            Symbol("@name")
+                            );
+                    Nullable<pair<ImplValContainer, Nullable<Symbol>>> instance =
+                        ImplValContainerUtilities::objectGetMember(
+                            value,
+                            Symbol("@self")
+                            );
+
+                    lassert(name && !name->second);
+                    lassert(instance && !instance->second);
+
+                    ImplVal nameIV = name->first;
+                    lassert(nameIV.type().isSymbol());
+
+                    int64_t instanceId = write(stream, instance->first);
+
+                    stream << objId;
+                    stream << PythonBinaryStreamCommon::CODE_INSTANCE_METHOD;
+                    stream << instanceId;
+                    stream << nameIV.cast<Symbol>().toString().substr(1);
+
+                    return;
+                    }
+
+                if (cls)
+                    {
+                    auto contents = ImplValContainerUtilities::objectGetMember(value, Symbol("@m"));
+                    lassert(contents && !contents->second);
+
+                    ImplValContainer tup = contents->first;
+                    lassert(tup.type().isTuple());
+
+                    map<std::string, int64_t> memberIds;
+
+                    int64_t classId = write(stream, *cls);
+
+                    for (long k = 0; k < tup.type().getTuple().types().size(); k++)
+                        {
+                        Nullable<Symbol> name = tup.type().getTuple().names()[k];
+                        ImplValContainer elt = *tup.tupleGetItem(k);
+
+                        static Symbol uninitializedSymbol("PyforaUninitializedVariable");
+
+                        if (!elt.type().isSymbol() || elt.cast<Symbol>() != uninitializedSymbol)
+                            memberIds[name->toString()] = write(stream, elt);
+                        }
+
+                    stream << objId;
+                    stream << PythonBinaryStreamCommon::CODE_CLASS_INSTANCE;
+                    stream << classId;
+                    stream << memberIds;
+
+                    return;
+                    }
+                else
+                    {
+                    map<std::string, int64_t> memberIds;
+
+                    writeClassOrFunctionMembers(stream, value, memberIds);
+
+                    auto sourceTextAndLine = *PythonBinaryStreamCommon::getObjectDefinitionSourceTextFromMetadata(value);
+
+                    int64_t sourceFileId = writeFile(stream, sourceTextAndLine.path(), sourceTextAndLine.text());
+
+                    stream << objId;
+                    stream << PythonBinaryStreamCommon::CODE_FUNCTION;
+                    stream << sourceFileId;
+                    stream << (int32_t)sourceTextAndLine.lineNumber();
+                    stream << memberIds;
+
+                    return;
+                    }
+                }
+            else
+                if (mediator->isClass())
+                    {
+                    map<std::string, int64_t> memberIds;
+
+                    writeClassOrFunctionMembers(stream, value, memberIds);
+
+                    auto sourceTextAndLine = *PythonBinaryStreamCommon::getObjectDefinitionSourceTextFromMetadata(value);
+
+                    int64_t sourceFileId = writeFile(stream, sourceTextAndLine.path(), sourceTextAndLine.text());
+
+                    stream << objId;
+                    stream << PythonBinaryStreamCommon::CODE_CLASS;
+                    stream << sourceFileId;
+                    stream << (int32_t)sourceTextAndLine.lineNumber();
+                    stream << memberIds;
+                    stream << (int64_t)0;
+                    return;
+                    }
+            }
+    }
+
+void PythonBinaryStreamFromImplval::writePrimitive(
+        OBinaryStream& stream,
+        const ImplVal& primitive,
+        int64_t objId
+        )
+    {
+    stream << objId;
+    _writePrimitive(stream, primitive);
+    }
+
+
+void PythonBinaryStreamFromImplval::_writePrimitive(
+        OBinaryStream& stream,
+        const ImplVal& primitive
+        )
+    {
+    @match Type(primitive.type())
+        -| String() ->> {
+            stream << PythonBinaryStreamCommon::CODE_STR;
+
+            writeString(stream, primitive.cast<String>());
+            }
+        -| Integer(sz, isSigned) ->> {
+            if (sz == 64 && isSigned)
+                {
+                stream << PythonBinaryStreamCommon::CODE_INT;
+                stream << primitive.cast<int64_t>();
+                }
+            else
+                if (sz == 1 && !isSigned)
+                    {
+                    stream << PythonBinaryStreamCommon::CODE_BOOL;
+                    stream << primitive.cast<bool>();
+                    }
+            }
+        -| Float(bits) ->> {
+            if (bits == 64)
+                {
+                stream << PythonBinaryStreamCommon::CODE_FLOAT;
+                stream << primitive.cast<double>();
+                }
+            }
+        -| Nothing() ->> {
+            stream << PythonBinaryStreamCommon::CODE_NONE;
+            }
+        -| Vector() ->> {
+            stream << PythonBinaryStreamCommon::CODE_STR;
+
+            VectorRecord vec = primitive.cast<VectorRecord>();
+            if (vec.size() && vec.isEmptyOrVectorOfUint8())
+                {
+                stream << (int32_t)vec.size();
+
+                int64_t bytesWritten = 0;
+
+                //this is a string
+                bool allLoaded = vec.visitAnyValuesPresentInVdm(
+                    &*mVDM, [&](ForaValueArray* array, IntegerSequence subsequence) {
+                        lassert(array->isHomogenousPodArray() && array->homogenousStride() == 1);
+                        uint8_t* data = array->offsetFor(0);
+
+                        if (subsequence.stride() != 1)
+                            {
+                            for (long k = 0; k < subsequence.size();k++)
+                                stream << data[subsequence.offsetForIndex(k)];
+                            }
+                        else
+                            stream.write(subsequence.size(), data + subsequence.offset());
+
+                        bytesWritten += subsequence.size();
+                        }, 
+                    IntegerSequence(vec.size())
+                    );
+
+                if (allLoaded)
+                    {
+                    lassert(bytesWritten == vec.size());
+                    }
+                else
+                    {
+                    lassert(bytesWritten != vec.size());
+                    }
+
+                lassert_dump(allLoaded, "we should be keeping track of pages we needed to read from!");
+                }
+            else
+                {
+                lassert(vec.size() == 0);
+                stream << (int32_t)0;
+                }
+            }
+        -| _ ->> {
+            lassert_dump(
+                false,
+                "invalid constant of type " << prettyPrintString(primitive.type())
+                );
+            }
+    }
+
+void PythonBinaryStreamFromImplval::writeUnconvertible(
+        OBinaryStream& stream,
+        const ImplValContainer& value,
+        int64_t objectId
+        )
+    {
+    stream << objectId;
+    stream << PythonBinaryStreamCommon::CODE_UNCONVERTIBLE;
+    ImplVal modulePath = TupleCategory::getItem(value.getReference(), 0);
+    if (modulePath.type().isTuple())
+        {
+        stream << (bool)true;
+        stream << (int32_t)modulePath.type().getTuple().types().size();
+        for (long k = 0; k < modulePath.type().getTuple().types().size(); k++)
+            {
+            ImplVal pathElt = TupleCategory::getItem(modulePath, k);
+
+            lassert(pathElt.type().isString());
+
+            writeString(stream, pathElt.cast<String>());
+            }
+        }
+    else
+        {
+        lassert(modulePath.type().isNothing());
+        stream << (bool)false;
+        }
+    }
+
+void PythonBinaryStreamFromImplval::writeNameError(
+        OBinaryStream& stream,
+        const ImplValContainer& value,
+        int64_t objectId
+        )
+    {
+    stream << objectId;
+    stream << PythonBinaryStreamCommon::CODE_UNRESOLVED_SYMBOL;
+    ImplVal payload = TupleCategory::getItem(value.getReference(), 0);
+
+    lassert(payload.type().isTuple());
+    lassert(payload.type().getTuple().types().size() == 3);
+    
+    ImplVal varname = TupleCategory::getItem(payload, 0);
+    lassert(varname.type().isString());
+    writeString(stream, varname.cast<String>());
+
+    ImplVal lineno = TupleCategory::getItem(payload, 1);
+    lassert(lineno.type().isInteger());
+    stream << lineno.cast<int64_t>();
+
+    ImplVal col_offset = TupleCategory::getItem(payload, 2);
+    lassert(col_offset.type().isInteger());
+    stream << col_offset.cast<int64_t>();
+    }
+
+int64_t PythonBinaryStreamFromImplval::write(OBinaryStream& stream,
+                                             const ImplValContainer& value)
+    {
+    auto hash = value.hash();
+    auto it = mIdMapping.find(hash);
+
+    if (it != mIdMapping.end())
+        return it->second;
+
+    int64_t objId = allocateId();
+    mIdMapping[hash] = objId;
+
+    if (PythonBinaryStreamCommon::isUnconvertibleValueTuple(value))
+        {
+        writeUnconvertible(stream, value, objId);
+        return objId;
+        }
+
+    if (PythonBinaryStreamCommon::isNameErrorTuple(value))
+        {
+        writeNameError(stream, value, objId);
+        return objId;
+        }
+
+    Nullable<ImplVal> primitive = mConstantConverter->unwrapToPrimitiveRaw(value.getReference());
+
+    if (value.type().isString())
+        primitive = value.getReference();
+        
+    if (primitive)
+        {
+        writePrimitive(stream, *primitive, objId);
+        return objId;
+        }
+    auto singletonName = mSingletonAndExceptionConverter
+        ->convertInstanceToSingletonName(value);
+    if (singletonName)
+        {
+        writeSingleton(stream, *singletonName, objId);
+        return objId;
+        }
+
+    ImplValContainer exceptionArgs;
+    bool isPyAbort;
+    auto exceptionName = mSingletonAndExceptionConverter
+        ->convertExceptionInstance(value, exceptionArgs, isPyAbort);
+    if (exceptionName)
+        {
+        writeException(stream, exceptionArgs, *exceptionName, isPyAbort, objId);
+        return objId;
+        }
+
+    auto tupleContents = mTupleConverter->invertTuple(value);
+    if (tupleContents)
+        {
+        writeTuple(stream, *tupleContents, objId);
+        return objId;
+        }
+    
+    auto dictContents = mDictConverter->invertDict(value);
+    if (dictContents)
+        {
+        writeDict(stream, *dictContents, objId);
+        return objId;
+        }
+
+    auto listContents = mListConverter->invertList(value);
+    if (listContents)
+        {
+        writeList(stream, *listContents, objId);
+        return objId;
+        }
+
+    if (value.type().isClass())
+        {
+        writeClass(stream, value, objId);
+        return objId;
+        }
+
+    lassert_dump(false, "didn't know what to do with " << prettyPrintString(value));
+    }
+
+void PythonBinaryStreamFromImplval::writeClassOrFunctionMembers(
+        OBinaryStream& stream,
+        const ImplValContainer& value,
+        map<string, int64_t>& outMemberIds
+        )
+    {
+    //this is a class
+    ImmutableTreeMap<Symbol, LexicalBinding> bindings =
+        PythonBinaryStreamCommon::getObjectLexicalBindingMap(value);
+    
+    for (const auto& symbolAndBinding: bindings)
+        {
+        bool isDefinitelySelf = false;
+        @match LexicalBinding(symbolAndBinding.second)
+            -| Member(unbindSeq, subMember) ->> {
+                if (unbindSeq.size() == 0)
+                    isDefinitelySelf = true;
+                }
+            -| _ ->> {}
+            ;
+
+        if (!isDefinitelySelf)
+            {
+            static Symbol uninitializedSymbol("PyforaUninitializedVariable");
+                            
+            auto member = ImplValContainerUtilities::objectGetMember(
+                value,
+                symbolAndBinding.first
+                );
+            if (member &&
+                !member->second &&
+                (!member->first.type().isSymbol() || member->first.cast<Symbol>() != uninitializedSymbol))
+                outMemberIds[symbolAndBinding.first.toString()] = write(stream, member->first);
+            }
+        }
+    }
+
+int64_t PythonBinaryStreamFromImplval::writeFile(
+        OBinaryStream& stream,
+        const std::string& path,
+        const std::string& text
+        )
+    {
+    auto it = mFileToIdMapping.find(make_pair(path, text));
+    if (it != mFileToIdMapping.end())
+        return it->second;
+
+    int64_t objId = allocateId();
+    stream << objId << PythonBinaryStreamCommon::CODE_FILE << path << text;
+
+    mFileToIdMapping[make_pair(path, text)] = objId;
+
+    return objId;
+    }
+
+int64_t PythonBinaryStreamFromImplval::allocateId()
+    {
+    return mNextObjId++;
+    }
+
+
+}

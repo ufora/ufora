@@ -242,12 +242,8 @@ public:
                 for (auto p: mCurrentStatistics.pagesCurrentlyBeingUsed())
                     mPages.touchPageForSelf(p);
 
-                if (mCurrentStatistics.futurePageReads().size() < 10)
-                    for (auto p: mCurrentStatistics.futurePageReads())
-                        mPages.touchPageForSelf(p);
-
                 @match ComputationStatus(mStatus)
-                    -| BlockedOnVectorLoad(pages) ->> {
+                    -| BlockedOnResources(pages) ->> {
                         for (auto p: pages)
                             mPages.touchPageForSelf(p);
                         }
@@ -281,13 +277,6 @@ public:
         postStateChange_();
         }
 
-    void handlePageUsedInFuture(Fora::PageId page)
-        {
-        mPages.touchPageForSelf(page);
-
-        postStateChange_();
-        }
-
     void broadcastState()
         {
         std::set<Fora::PageId> newPagesSinceLastBroadcast;
@@ -302,6 +291,7 @@ public:
             mPages.totalBytes(),
             mTotalBytesEverReferenced,
             totalThreadsBelow(),
+            totalBytesOfExternalMemoryBlocking(),
             mTimesReset,
             totalTimeElapsed(),
             isFinishedAndChildrenFinished(),
@@ -340,10 +330,6 @@ public:
         for (auto p: newStats.pagesCurrentlyBeingUsed())
             mPages.touchPageForSelf(p);
 
-        if (newStats.futurePageReads().size() < 10)
-            for (auto p: newStats.futurePageReads())
-                mPages.touchPageForSelf(p);
-
         mOwnTimeElapsed = newStats.estimatedTotalRuntime();
 
         if (newStatus.isFinished())
@@ -363,7 +349,18 @@ public:
                     mDependedOnChildren.insert(grp);
                     }
                 }
-            -| BlockedOnVectorLoad(pages) ->> {
+            -| ComputableWithSubcomputations(subcomps) ->> {
+                for (auto c: subcomps)
+                    {
+                    ThreadGroup grp = ThreadGroup::groupFor(c);
+
+                    if (mFinishedChildren.find(grp) == mFinishedChildren.end())
+                        mUnfinishedChildren.insert(grp);
+
+                    mDependedOnChildren.insert(grp);
+                    }
+                }
+            -| BlockedOnResources(pages) ->> {
                 for (auto p: pages)
                     mPages.touchPageForSelf(p);
                 }
@@ -391,12 +388,9 @@ public:
                     touch(p);
                     mPages.touchPageForSelf(p);
                     }
-                -| Load(pages) ->> {
-                    for (auto p: pages)
-                        {
-                        touch(p);
-                        mPages.touchPageForSelf(p);
-                        }
+                -| PageTouched(p) ->> {
+                    touch(p);
+                    mPages.touchPageForSelf(p);
                     }
 
         postStateChange_();
@@ -422,7 +416,7 @@ public:
 
     bool wantsBroadcast() const
         {
-        const static double kMinTimeElapsedToBroadcast = 1.0;
+        const static double kMinTimeElapsedToBroadcast = .25;
 
         double timeAtLast = 0;
         if (mStatusAtLastBroadcast)
@@ -455,6 +449,21 @@ public:
                     threads <= (threadsAtLastBroadcast - 1) * 3/4 ||
                     threads == 0 ||
                     threadsAtLastBroadcast == 0
+                    )
+                )
+            return true;
+
+        //increase when the number of external bytes requires goes up or if it drops substantially
+        int64_t externalBytes = totalBytesOfExternalMemoryBlocking();
+        int64_t externalBytesAtLastBroadcast = 0;
+        if (mStatusAtLastBroadcast)
+            externalBytesAtLastBroadcast = mStatusAtLastBroadcast->totalBytesOfExternalMemoryBlocking();
+
+        if (externalBytes != externalBytesAtLastBroadcast && (
+                    externalBytes > externalBytesAtLastBroadcast * 1.1 ||
+                    externalBytes <= (externalBytesAtLastBroadcast - 1) * 3/4 ||
+                    externalBytes == 0 ||
+                    externalBytesAtLastBroadcast == 0
                     )
                 )
             return true;
@@ -538,10 +547,14 @@ public:
 
             mPages.dropChild(group);
             mTotalThreadsBelowPerChild.erase(group);
+            mTotalBytesOfExternalMemoryBlockingPerChild.erase(group);
             mActiveChildren.erase(group);
             }
         else
+            {
             mTotalThreadsBelowPerChild[group] = update.totalLeafThreadsBelow();
+            mTotalBytesOfExternalMemoryBlockingPerChild[group] = update.totalBytesOfExternalMemoryBlocking();
+            }
 
         postStateChange_();
         }
@@ -556,9 +569,23 @@ public:
 
         //if we're a leaf, we want to return 1. Otherwise, the sum of our children.
         return std::max<int64_t>(
-            (mStatus.isComputable() || mStatus.isBlockedOnVectorLoad()) ? 1 : 0,
+            (mStatus.isComputableWithSubcomputations() || mStatus.isBlockedOnResources()) ? 1 : 0,
             res
             );
+        }
+
+    int64_t totalBytesOfExternalMemoryBlocking() const
+        {
+        int64_t below = 0;
+
+        if (mStatus.isBlockedOnResources())
+            below += mStatus.getBlockedOnResources().bytesOfExternalMemory();
+
+        for (auto childAndBytes: mTotalBytesOfExternalMemoryBlockingPerChild)
+            if (mActiveChildren.find(childAndBytes.first) == mActiveChildren.end())
+                below += childAndBytes.second;
+
+        return below;
         }
 
     int64_t totalBytes() const
@@ -603,6 +630,8 @@ private:
     map<ThreadGroup, double> mChildTimes;
 
     map<ThreadGroup, int64_t> mTotalThreadsBelowPerChild;
+
+    map<ThreadGroup, int64_t> mTotalBytesOfExternalMemoryBlockingPerChild;
 
     std::set<ThreadGroup> mFinishedChildren;
 

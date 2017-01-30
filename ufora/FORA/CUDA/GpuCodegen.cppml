@@ -1,0 +1,112 @@
+#include "GpuCodegen.hppml"
+
+#include "../Reasoner/SimpleForwardReasoner.hppml"
+#include "../Runtime.hppml"
+#include "../TypedFora/Converter.hppml"
+#include "../TypedFora/TypedFora.hppml"
+#include "../TypedFora/TypedForaUtil.hppml"
+#include "../Native/NativeCFGTransforms/ConvertForGPUExecution.hppml"
+#include "../Native/NativeCFGTransforms/Transforms.hppml"
+#include "NativeCFGToPTX.hppml"
+
+pair<NativeCFG, ImmutableTreeVector<Type> > computeGpuKernelFunction(JOV funJOV, JOV vecElementJov)
+	{
+	ImmutableTreeVector<JudgmentOnValue> signatureJOVs =
+		emptyTreeVec() +
+			funJOV +
+			JudgmentOnValue::Constant(CSTValue(Symbol::Call())) +
+			vecElementJov
+		;
+	LOG_DEBUG << "signature JOVs: " << prettyPrintString(signatureJOVs);
+
+	PolymorphicSharedPtr<Fora::SimpleForwardReasoner> reasoner(
+		new Fora::SimpleForwardReasoner(
+			Runtime::getRuntime().getTypedForaCompiler(),
+            Runtime::getRuntime().getInstructionGraph(),
+            Runtime::getRuntime().getAxioms()
+            )
+		);
+
+	auto frame = reasoner->reasonAboutApply(JOVT::Unnamed(signatureJOVs));
+
+	if (frame->exits().resultPart().size() < 1 )
+		{
+		ostringstream msg;
+		msg << "Code returns zero types ("
+				<< frame->exits().resultPart().size() << "):"
+				<< prettyPrintString(frame->exits().resultPart());
+		throw UnableToConvertToPTX(msg.str());
+		}
+
+	// Nullable<pair<TypedFora::BlockID, std::string> >
+	auto blockIdAndCode = reasoner->compileEntrypointForApply(JOVT::Unnamed(signatureJOVs));
+
+	lassert(blockIdAndCode->first == TypedFora::BlockID::entry());
+
+	if (!blockIdAndCode)
+		throw UnableToConvertToPTX(
+			"Reasoning failed to converge."
+			);
+
+	//if the joa() has multiple exit points that are compatible,
+	//we need to wrap them up into a single typed value
+	bool needsReturnTypeModification = false;
+
+	TypedFora::Callable callable =
+			Runtime::getRuntime().getTypedForaCompiler()->getDefinition(blockIdAndCode->second);
+
+	LOG_DEBUG << "Relaxed result signatures : " << prettyPrintString(callable.resultSignature().relaxed());
+
+	TypedFora::Converter converter;
+
+	LOG_DEBUG << "building new callable with relaxed JOVs";
+	callable = adaptSignatureOfCallable(
+					callable,
+					callable.callSignatureAsJovt(blockIdAndCode->first),
+					callable.callSignatureAsJovt(blockIdAndCode->first),
+					callable.resultSignature().relaxed(),
+					false
+					);
+
+	NativeCFG cfg = converter.convertCallable(callable);
+
+	cfg = NativeCFGTransforms::convertForGpuExecution(cfg, frame->exits().resultPart().size());
+
+	while (cfg.externalBranches().size())
+		{
+		string nameOfSubbranch = cfg.externalBranches()[0];
+		if (Runtime::getRuntime().getTypedForaCompiler()->
+				getMutuallyRecursiveFunctions(nameOfSubbranch).size())
+			{
+			throw UnableToConvertToPTX("contains recursion");
+			}
+		NativeCFG cfgToInline =
+				converter.convertCallable(
+						Runtime::getRuntime().getTypedForaCompiler()
+							->getDefinition(nameOfSubbranch));
+		cfg = NativeCFGTransforms::inlineCFG(cfg,
+			NativeCFGTransforms::convertForGpuExecution(
+				cfgToInline,
+				cfgToInline.returnTypes().size()
+				),
+			nameOfSubbranch
+			);
+		}
+
+	//a lot simpler when all variables are unique
+	cfg = NativeCFGTransforms::optimize(cfg, Runtime::getRuntime().getConfig());
+	cfg = NativeCFGTransforms::renameVariables(cfg);
+
+	ImmutableTreeVector<Type> outputTypes;
+
+	for (auto& jov : frame->exits().resultPart().vals())
+		{
+		Nullable<Type> t = jov.type();
+
+		lassert(t);
+
+		outputTypes = outputTypes + *t;
+		}
+
+	return make_pair(cfg, outputTypes);
+	}

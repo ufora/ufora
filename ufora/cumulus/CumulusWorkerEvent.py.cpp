@@ -17,10 +17,11 @@
 
 #include <stdint.h>
 #include <boost/python.hpp>
-#include "../FORA/python/FORAPythonUtil.hppml"
+#include "../core/python/ValueLikeCPPMLWrapper.hppml"
 #include "../native/Registrar.hpp"
 #include "../core/python/CPPMLWrapper.hpp"
 #include "../core/containers/ImmutableTreeVector.py.hpp"
+#include "../FORA/Serialization/SerializedObjectFlattener.hpp"
 
 using namespace Cumulus;
 
@@ -32,18 +33,40 @@ public:
 			return "Cumulus";
 			}
 
+		template<class T>
+		static std::string simpleSerializer(const T& in)
+			{
+			ScopedPyThreads threads;
+
+			return SerializedObjectFlattener::serializeEntireObjectGraph(in)->toString();
+			}
+
+		template<class T>
+		static void simpleDeserializer(T& out, std::string inByteBlock)
+			{
+			ScopedPyThreads threads;
+
+			SerializedObjectInflater::deserializeEntireObjectGraph(
+				PolymorphicSharedPtr<NoncontiguousByteBlock>(
+					new NoncontiguousByteBlock(std::string(inByteBlock))
+					), 
+				out
+				);
+			}
+
+
 		void exportPythonWrapper()
 			{
 			using namespace boost::python;
 
 			object cls =
-				FORAPythonUtil::exposeValueLikeCppmlType<CumulusWorkerEvent>()
+				ValueLikeCPPMLWrapper::exposeValueLikeCppmlType<CumulusWorkerEvent>()
 					.class_()
 				;
 
 			PythonWrapper<ImmutableTreeVector<CumulusWorkerEvent> >::exportPythonInterface("CumulusWorkerEvent")
-				.def("__getstate__", &FORAPythonUtil::serializeEntireObjectGraph<ImmutableTreeVector<CumulusWorkerEvent> >)
-				.def("__setstate__", &FORAPythonUtil::deserializeEntireObjectGraph<ImmutableTreeVector<CumulusWorkerEvent> >)
+				.def("__getstate__", simpleSerializer<ImmutableTreeVector<CumulusWorkerEvent> >)
+				.def("__setstate__", simpleDeserializer<ImmutableTreeVector<CumulusWorkerEvent> >)
 				.enable_pickling()
 				;
 

@@ -21,7 +21,7 @@
 #include "../../native/Registrar.hpp"
 #include "../../core/python/CPPMLWrapper.hpp"
 #include "../../core/python/ScopedPyThreads.hpp"
-#include "../python/FORAPythonUtil.hppml"
+#include "../../core/python/ValueLikeCPPMLWrapper.hppml"
 #include "../../core/containers/ImmutableTreeVector.py.hpp"
 #include "../Core/ClassMediator.hppml"
 #include "../Native/NativeCode.hppml"
@@ -73,26 +73,26 @@ public:
 			PythonWrapper<ImmutableTreeVector<TypedFora::Type> >
 				::exportPythonInterface("TypedFora::Type");
 
-			FORAPythonUtil::exposeValueLikeCppmlType<TypedFora::RefcountStyle>(false);
-			FORAPythonUtil::exposeValueLikeCppmlType<TypedFora::CallTarget>(false);
-			FORAPythonUtil::exposeValueLikeCppmlType<TypedFora::TransferTarget>(false);
-			FORAPythonUtil::exposeValueLikeCppmlType<TypedFora::Callable>(false);
-			FORAPythonUtil::exposeValueLikeCppmlType<TypedFora::Expression>(false)
+			ValueLikeCPPMLWrapper::exposeValueLikeCppmlType<TypedFora::RefcountStyle>();
+			ValueLikeCPPMLWrapper::exposeValueLikeCppmlType<TypedFora::CallTarget>();
+			ValueLikeCPPMLWrapper::exposeValueLikeCppmlType<TypedFora::TransferTarget>();
+			ValueLikeCPPMLWrapper::exposeValueLikeCppmlType<TypedFora::Callable>();
+			ValueLikeCPPMLWrapper::exposeValueLikeCppmlType<TypedFora::Expression>()
 				.class_()
 				.def("type", &expressionType)
 				.def("GetItem", &createGetItem)
 				.def("GetSlice", &createGetSlice)
 				.def("MakeTuple", &createMakeTuple)
 				;
-			FORAPythonUtil::exposeValueLikeCppmlType<TypedFora::ContinuationFrame>(false);
-			FORAPythonUtil::exposeValueLikeCppmlType<TypedFora::Type>(false);
-			FORAPythonUtil::exposeValueLikeCppmlType<TypedFora::Variable>(false)
+			ValueLikeCPPMLWrapper::exposeValueLikeCppmlType<TypedFora::ContinuationFrame>();
+			ValueLikeCPPMLWrapper::exposeValueLikeCppmlType<TypedFora::Type>();
+			ValueLikeCPPMLWrapper::exposeValueLikeCppmlType<TypedFora::Variable>()
 				.class_()
 				.def("Temp", TypedFora::Variable::Temp)
 				.staticmethod("Temp")
 				;
 
-			FORAPythonUtil::exposeValueLikeCppmlType<TypedFora::InlineNativeOperationArg>(false);
+			ValueLikeCPPMLWrapper::exposeValueLikeCppmlType<TypedFora::InlineNativeOperationArg>();
 			}
 };
 

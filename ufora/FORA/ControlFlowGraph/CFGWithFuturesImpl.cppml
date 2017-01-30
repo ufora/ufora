@@ -16,12 +16,13 @@
 #include "CFGWithFuturesImpl.hppml"
 
 #include "SimulationState.hppml"
-
+#include "../Serialization/ForaValueSerializationStream.hppml"
 #include "../Core/ComputationResult.hppml"
 #include "../Core/ImplValContainerUtilities.hppml"
 #include "../Core/TupleCategory.hppml"
 #include "../Language/ApplySignature.hppml"
 #include "../../core/Logging.hpp"
+#include "../../core/cppml/FunctionTransformer.hppml"
 
 using Fora::Interpreter::ComputationResult;
 using Fora::Interpreter::PausedComputationFrame;
@@ -62,7 +63,8 @@ Nullable<ImplValContainer> futureToImplVal(
                     return null();
                     }
                 -|  GarbageCollected() ->> {
-                    return null() << ImplValContainer();
+                    lassert_dump(false, "slot " << index << " is GC node. no value");
+                    return null();
                     }
                 ;
             }
@@ -179,14 +181,12 @@ ComputationResult computationResultFor(
     if (!inIsException)
         {
         return ComputationResult::Result(
-            inValue,
-            ImplValContainer()
+            inValue
             );
         }
 
     return ComputationResult::Exception(
-        inValue,
-        ImplValContainer()
+        inValue
         );
     }
 
@@ -509,6 +509,7 @@ std::string CFGWithFuturesImpl::toString(bool inShowGraph) const
 
     oss << "CFGWithFuturesImpl:\n"
         << mSimulationStatePtr->toString()
+        << "\nbailEarly = " << prettyPrintString(mBailEarlyState)
         << "\n";
 
     return oss.str();
@@ -545,6 +546,13 @@ PolymorphicSharedPtr<CFGWithFuturesImpl> CFGWithFuturesImpl::createCfgWithFuture
 
     return PolymorphicSharedPtr<CFGWithFuturesImpl>(
         new CFGWithFuturesImpl(*nextSimulationHead)
+        );
+    }
+
+PolymorphicSharedPtr<CFGWithFuturesImpl> CFGWithFuturesImpl::createEmpty()
+    {
+    return PolymorphicSharedPtr<CFGWithFuturesImpl>(
+        new CFGWithFuturesImpl(SimulationHead())
         );
     }
 
@@ -586,6 +594,8 @@ bool CFGWithFuturesImpl::continueSimulation()
     {
     if (mustBailEarly())
         return false;
+
+    mHashCache = null();
 
     Nullable<FutureValue> currentResult;
     Nullable<TupleExpandInfo> tupleExpandInfo;
@@ -747,11 +757,13 @@ bool CFGWithFuturesImpl::hasResolvedToSimpleState() const
 
 void CFGWithFuturesImpl::disallowRepeatNodes()
     {
+    mHashCache = null();
     mMaxRepeatNodesAllowed = 1;
     }
 
 void CFGWithFuturesImpl::setMaxRepeatNodesAllowed(uint64_t count)
     {
+    mHashCache = null();
     mMaxRepeatNodesAllowed = count;
     }
 
@@ -795,6 +807,8 @@ void CFGWithFuturesImpl::slotCompleted(
         uint64_t inSlotIndex, const ComputationResult& inResult
         )
     {
+    mHashCache = null();
+
     FutureSlot slot = mSimulationStatePtr->getSlot(inSlotIndex);
 
     lassert(slot.isFuture());
@@ -803,9 +817,9 @@ void CFGWithFuturesImpl::slotCompleted(
         -|  Failure(errorState) ->> {
             lassert_dump(false, "don't know how to handle an Failure here ...");
             }
-        -|  Exception(exception, computationLog) ->> {
+        -|  Exception(exception) ->> {
             mSimulationStatePtr->slotCompleted(
-                inSlotIndex, exception, computationLog,
+                inSlotIndex, exception,
                 true
                 );
 
@@ -815,9 +829,9 @@ void CFGWithFuturesImpl::slotCompleted(
                 true
                 );
             }
-        -|  Result(result, computationLog) ->> {
+        -|  Result(result) ->> {
             mSimulationStatePtr->slotCompleted(
-                inSlotIndex, result, computationLog,
+                inSlotIndex, result,
                 false
                 );
 
@@ -913,6 +927,11 @@ const std::vector<FutureSlot>& CFGWithFuturesImpl::getSlots() const
     return mSimulationStatePtr->getSlots();
     }
 
+long CFGWithFuturesImpl::countOfUnfinishedSlots() const
+    {
+    return mSimulationStatePtr->countOfUnfinishedSlots();
+    }
+
 const std::set<uint64_t>& CFGWithFuturesImpl::indicesOfSubmittableFutures() const
     {
     return mSimulationStatePtr->indicesOfSubmittableFutures();
@@ -931,7 +950,7 @@ CFGWithFuturesImpl::getFinalResultAtSlot(
         const ImmutableTreeVector<FutureValue>& inNodeArgs
         ) const
     {
-    lassert(inSlot.isCurrent());
+    lassert_dump(inSlot.isCurrent(), prettyPrintString(inSlot) << " in state\n" << mSimulationStatePtr->toString());
 
     return getFinalResultAtNode(
         graph()[inSlot.label()].body(),
@@ -1160,3 +1179,74 @@ CFGWithFuturesImpl::asSubmittable(uint64_t inSlotIndex) const
     return null() << tr;
     }
 
+
+hash_type CFGWithFuturesImpl::hash() const
+    {
+    if (!mHashCache)
+        {
+        mHashCache = 
+            hashValue(mSimulationHead) +
+            hashValue(mBailEarlyState) + 
+            hashValue(mMaxRepeatNodesAllowed) + 
+            hashValue(mVisitedApplyAndCacheNodesCounts) + 
+            mSimulationStatePtr->hash()
+            ;
+        }
+    
+    return *mHashCache;
+    }
+
+void CFGWithFuturesImpl::serialize(Fora::ForaValueSerializationStream& stream) const
+    {
+    stream.serialize(mSimulationHead);
+    stream.serialize(mBailEarlyState);   
+    stream.serialize(mMaxRepeatNodesAllowed);
+    stream.serialize(mVisitedApplyAndCacheNodesCounts);
+    stream.serialize(mHashCache);
+
+    mSimulationStatePtr->serialize(stream);
+    }
+
+void CFGWithFuturesImpl::deserialize(Fora::ForaValueDeserializationStream& stream)
+    {
+    stream.deserialize(mSimulationHead);
+    stream.deserialize(mBailEarlyState);   
+    stream.deserialize(mMaxRepeatNodesAllowed);
+    stream.deserialize(mVisitedApplyAndCacheNodesCounts);
+    stream.deserialize(mHashCache);
+
+    mSimulationStatePtr->deserialize(stream);
+    }
+
+PolymorphicSharedPtr<CFGWithFuturesImpl> CFGWithFuturesImpl::deepcopy(
+                boost::function1<ImplValContainer, ImplValContainer> duplicator
+                )
+    {
+    PolymorphicSharedPtr<CFGWithFuturesImpl> result = 
+        CFGWithFuturesImpl::createEmpty();
+
+    result->mBailEarlyState = applyFunctionToObjectGraph(duplicator, mBailEarlyState);
+    result->mMaxRepeatNodesAllowed = mMaxRepeatNodesAllowed;
+    result->mVisitedApplyAndCacheNodesCounts = mVisitedApplyAndCacheNodesCounts;
+    result->mSimulationHead.values() = applyFunctionToObjectGraph(duplicator, mSimulationHead.values());
+    result->mSimulationStatePtr = mSimulationStatePtr->deepcopy(duplicator);
+    result->mHashCache = mHashCache;
+
+    return result;
+    }
+
+void CFGWithFuturesImpl::visitValues(boost::function1<void, ImplValContainer&> visitor)
+    {
+    mSimulationStatePtr->visitValues(visitor);
+
+    boost::function1<ImplValContainer, ImplValContainer> modifyInPlace(
+        [&](const ImplValContainer& in) { 
+            ImplValContainer copy = in;
+            visitor(copy);
+            return copy;
+            }
+        );
+
+    mSimulationHead.values() = applyFunctionToObjectGraph(modifyInPlace, mSimulationHead.values());
+    mBailEarlyState = applyFunctionToObjectGraph(modifyInPlace, mBailEarlyState);
+    }

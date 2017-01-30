@@ -13,7 +13,7 @@
 #   limitations under the License.
 
 import pyfora.TypeDescription as TypeDescription
-import base64
+
 
 class ObjectRegistry(object):
     def __init__(self):
@@ -30,12 +30,13 @@ class ObjectRegistry(object):
         return objectId
 
     def definePrimitive(self, objectId, primitive):
-        if isinstance(primitive, str):
-            primitive = base64.b64encode(primitive)
         self.objectIdToObjectDefinition[objectId] = primitive
 
     def defineTuple(self, objectId, memberIds):
         self.objectIdToObjectDefinition[objectId] = TypeDescription.Tuple(memberIds)
+
+    def definePackedHomogenousData(self, objectId, homogenousData):
+        self.objectIdToObjectDefinition[objectId] = homogenousData
 
     def defineList(self, objectId, memberIds):
         self.objectIdToObjectDefinition[objectId] = TypeDescription.List(memberIds)
@@ -89,9 +90,19 @@ class ObjectRegistry(object):
                 baseClassIds=baseClassIds
                 )
 
-    def defineUnconvertible(self, objectId):
+    def isUnconvertible(self, objectId):
+        return objectId in self.objectIdToObjectDefinition and \
+            isinstance(self.objectIdToObjectDefinition[objectId], TypeDescription.Unconvertible)
+
+    def defineUnconvertible(self, objectId, modulePath):
+        assert objectId not in self.objectIdToObjectDefinition
+
         self.objectIdToObjectDefinition[objectId] = \
-            TypeDescription.Unconvertible()
+            TypeDescription.Unconvertible(modulePath)
+
+    def defineUnresolvedVarWithPosition(self, objectId, varname, lineno, col_offset):
+        self.objectIdToObjectDefinition[objectId] = \
+            TypeDescription.UnresolvedVarWithPosition(varname, lineno, col_offset)
 
     def _processFreeVariableMemberAccessChainResolution(
             self,
@@ -115,6 +126,13 @@ class ObjectRegistry(object):
                 instanceId=instanceId,
                 methodName=methodName
                 )
+    
+    def defineStacktrace(self, objectId, stacktraceAsJson):
+        self.objectIdToObjectDefinition[objectId] = \
+            TypeDescription.StackTraceAsJson(stacktraceAsJson)
+
+    def definePyAbortException(self, objectId, typename, argsId):
+        self.objectIdToObjectDefinition[objectId] = TypeDescription.PyAbortException(typename, argsId)
 
     def defineWithBlock(self,
                         objectId,
@@ -148,7 +166,10 @@ class ObjectRegistry(object):
                 isinstance(objectDefinition,
                            (TypeDescription.File, TypeDescription.RemotePythonObject,
                             TypeDescription.NamedSingleton, list,
-                            TypeDescription.Unconvertible)):
+                            TypeDescription.Unconvertible,
+                            TypeDescription.PackedHomogenousData,
+                            TypeDescription.UnresolvedVarWithPosition
+                            )):
             return []
         elif isinstance(objectDefinition, (TypeDescription.BuiltinExceptionInstance)):
             return [objectDefinition.argsId]

@@ -35,6 +35,42 @@ class PureImplementationMappings(object):
         self.pythonTypeToMapping = {}
         self.pyforaTypeToMapping = {}
         self.pythonInstanceIdsToMappingAndId = {}
+        self.opacity_by_module_name = {}
+
+    def isOpaqueModule(self, module):
+        """Is this module a system module none of whose pieces has a valid mapping?
+
+        If so, then we can treat the entire module as unmappable and we don't need
+        to recurse into its interior when mapping its values.
+        """
+        name = module.__name__
+        if name in self.opacity_by_module_name:
+            return self.opacity_by_module_name[name]
+
+        self.opacity_by_module_name[name] = self._isOpaqueModuleUncached(module)
+
+        return self.opacity_by_module_name[name]
+
+    def _isOpaqueModuleUncached(self, module):
+        self.load_pure_modules()
+
+        if module.__name__ in self.already_loaded:
+            #this module has pure elements.
+            return False
+
+        if "." in module.__name__ and module.__name__.split(".")[0] in self.already_loaded:
+            #this module has pure elements.
+            return False
+
+        if not hasattr(module, '__file__'):
+            #this is a builtin module, like 'sys'
+            return True
+
+        if not module.__file__.startswith(sys.prefix):
+            #this is user code
+            return False
+
+        return True
 
     def addMapping(self, mapping):
         self.mappings.append(mapping)
@@ -55,6 +91,9 @@ class PureImplementationMappings(object):
     def canInvert(self, instance):
         return typeOfInstance(instance) in self.pyforaTypeToMapping
 
+    def canInvertInstancesOf(self, classMapping):
+        return classMapping in self.pyforaTypeToMapping
+
     def mappableInstanceToPure(self, instance):
         if id(instance) in self.pythonInstanceIdsToMappingAndId:
             mapper = self.pythonInstanceIdsToMappingAndId[id(instance)][0]
@@ -64,6 +103,7 @@ class PureImplementationMappings(object):
 
     def pureInstanceToMappable(self, instance):
         mapper = self.pyforaTypeToMapping[typeOfInstance(instance)]
+
         return mapper.mapPyforaInstanceToPythonInstance(instance)
 
 

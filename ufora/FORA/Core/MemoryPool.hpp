@@ -16,8 +16,14 @@
 #pragma once
 
 #include "../../core/Common.hppml"
-#include "../../core/threading/Trigger.hppml"
-#include "../../core/PolymorphicSharedPtr.hpp"
+
+namespace Ufora{
+namespace threading{
+
+class Trigger;
+
+}
+}
 
 namespace Fora {
 
@@ -48,6 +54,7 @@ public:
 		Pagelet,
 		BigVectorHandle,
 		DataTask,
+		ExternalProcess,
 		FreeStore
 	};
 

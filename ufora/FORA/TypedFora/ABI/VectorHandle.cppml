@@ -350,7 +350,8 @@ Fora::PageletTreePtr moveUnpagedValuesIntoPageletTree(
 													MemoryPool* owningMemoryPool,
 													ForaValueArray* array,
 													long low,
-													long high
+													long high,
+													int64_t bytesInParentArray = -1
 													)
 	{
 	if (low >= high)
@@ -358,29 +359,36 @@ Fora::PageletTreePtr moveUnpagedValuesIntoPageletTree(
 
 	boost::shared_ptr<Fora::Pagelet> pagelet(new Pagelet(inVDM->getMemoryManager()));
 
-	pagelet->append(array, low, high);
+	pagelet->append(array, low, high, true);
 
 	pagelet->freeze();
 
+	auto bytecount = pagelet->totalBytesAllocatedFromOSIncludingHeldPagelets();
+
 	//if the pagelet is too large and we're able to split the range in half,
 	//do so and return a more finely-grained pagelet tree
-	if (pagelet->totalBytesAllocatedFromOSIncludingHeldPagelets() >
-			inVDM->maxPageSizeInBytes() / 2 && low + 1 < high)
+	if (bytecount > inVDM->maxPageSizeInBytes() / 2 && low + 1 < high)
 		{
-		//it's too big - subdivide it
-		pagelet.reset();
+		//don't split if 
+		if (bytecount > inVDM->maxPageSizeInBytes() || 
+				bytesInParentArray == -1 ||
+				bytecount < bytesInParentArray * .75)
+			{
+			//it's too big - subdivide it
+			pagelet.reset();
 
-		Fora::PageletTreePtr p1 =
-			moveUnpagedValuesIntoPageletTree(inVDM, owningMemoryPool, array, low, (high+low)/2);
+			Fora::PageletTreePtr p1 = 
+				moveUnpagedValuesIntoPageletTree(inVDM, owningMemoryPool, array, low, (high+low)/2, bytecount);
 
-		Fora::PageletTreePtr p2 =
-			moveUnpagedValuesIntoPageletTree(inVDM, owningMemoryPool, array, (high+low)/2, high);
+			Fora::PageletTreePtr p2 = 
+				moveUnpagedValuesIntoPageletTree(inVDM, owningMemoryPool, array, (high+low)/2, high, bytecount);
 
-		return Fora::PageletTree::concatenateAndBalance(
-			owningMemoryPool,
-			p1,
-			p2
-			);
+			return Fora::PageletTree::concatenateAndBalance(
+				owningMemoryPool,
+				p1,
+				p2
+				);
+			}
 		}
 
 	//if the pagelet is fragmented, pull it together
@@ -1081,33 +1089,31 @@ pair<PageletTreePtr, ForaValueArray*> VectorHandle::collapsePageletTreeAndUnpage
 		}
 	}
 
-bool VectorHandle::visitAnyLoadedValues(
-		VectorDataManager* inVDM,
-		boost::function2<void, ForaValueArray*, IntegerSequence> visitor,
+bool VectorHandle::visitAnyVectorHandleComponents(
+		boost::function2<bool, Fora::BigVectorId, IntegerSequence> pagedDataVisitor,
+		boost::function2<bool, ForaValueArray*, IntegerSequence> pageletAndUnpagedValuesVisitor,
 		IntegerSequence subsequence
 		)
 	{
 	if (!size())
-		return false;
+		return true;
 
 	IntegerSequence pagedValueSequence(pagedValueCount());
 	IntegerSequence pageletTreeValueSequence(pageletTreeValueCount(), pagedValueCount());
 	IntegerSequence unpagedValueSequence(unpagedValueCount(), pagedAndPageletTreeValueCount());
 
-	bool visitedAll = true;
+	bool allVisitorsReturnedTrue = true;
 
 	auto visitPaged = [&]() {
 		if (subsequence.intersect(pagedValueSequence).size())
 			{
-			if (!inVDM->visitAnyLoadedDataForVector(
+			if (!pagedDataVisitor(
 					pagedValuesIdentity(),
-					subsequence.intersect(pagedValueSequence),
-					visitor
+					subsequence.intersect(pagedValueSequence)
 					))
-				visitedAll = false;
+				allVisitorsReturnedTrue = false;
 			}
 		};
-
 
 	auto visitPagelet = [&]() {
 		if (subsequence.intersect(pageletTreeValueSequence).size())
@@ -1123,7 +1129,8 @@ bool VectorHandle::visitAnyLoadedValues(
 					IntegerSequence seq = subsequence.offset(-offset - pagedValueCount()).intersect(IntegerSequence(range));
 
 					if (seq.size())
-						visitor(pagelet->getValues(), seq);
+						if (!pageletAndUnpagedValuesVisitor(pagelet->getValues(), seq))
+							allVisitorsReturnedTrue = false;
 					},
 				subsequence.stride() < 0
 				);
@@ -1133,10 +1140,11 @@ bool VectorHandle::visitAnyLoadedValues(
 	auto visitUnpaged = [&]() {
 		if (subsequence.intersect(unpagedValueSequence).size())
 			{
-			visitor(
-				unpagedValues(),
-				subsequence.intersect(unpagedValueSequence).offset(-pagedAndPageletTreeValueCount())
-				);
+			if (!pageletAndUnpagedValuesVisitor(
+					unpagedValues(),
+					subsequence.intersect(unpagedValueSequence).offset(-pagedAndPageletTreeValueCount())
+					))
+				allVisitorsReturnedTrue = false;
 			}
 		};
 
@@ -1153,7 +1161,31 @@ bool VectorHandle::visitAnyLoadedValues(
 		visitPaged();
 		}
 
-	return visitedAll;
+	return allVisitorsReturnedTrue;
+	}
+
+bool VectorHandle::visitAnyValuesPresentInVdm(
+		VectorDataManager* inVDM,
+		boost::function2<void, ForaValueArray*, IntegerSequence> visitor,
+		IntegerSequence subsequence
+		)
+	{
+	return visitAnyVectorHandleComponents(
+		[&](Fora::BigVectorId bigvecIdentity, IntegerSequence sequence) {
+			if (!inVDM->visitAnyLoadedDataForVector(
+					bigvecIdentity,
+					sequence,
+					visitor
+					))
+				return false;
+			return true;
+			},
+		[&](ForaValueArray* array, IntegerSequence seq) {
+			visitor(array, seq);
+			return true;
+			},
+		subsequence
+		);
 	}
 
 VectorHandle::LoadCheckResult VectorHandle::attemptToLoadValues(

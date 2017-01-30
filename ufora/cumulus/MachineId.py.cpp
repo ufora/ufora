@@ -17,7 +17,7 @@
 
 #include <stdint.h>
 #include <boost/python.hpp>
-#include "../FORA/python/FORAPythonUtil.hppml"
+#include "../core/python/ValueLikeCPPMLWrapper.hppml"
 #include "../native/Registrar.hpp"
 #include "../core/python/CPPMLWrapper.hpp"
 
@@ -31,12 +31,31 @@ public:
 			return "Cumulus";
 			}
 
+
+		template<class T>
+		static std::string simpleSerializer(const T& in)
+			{
+			ScopedPyThreads threads;
+
+			return ::serialize<T>(in);
+			}
+
+		template<class T>
+		static void simpleDeserializer(T& out, std::string inByteBlock)
+			{
+			ScopedPyThreads threads;
+
+			out = ::deserialize<T>(inByteBlock);
+			}
+
 		void exportPythonWrapper()
 			{
 			using namespace boost::python;
 
 			boost::python::object cls =
-				FORAPythonUtil::exposeValueLikeCppmlTypeSimpleSerializers<MachineId>().class_()
+				ValueLikeCPPMLWrapper::exposeValueLikeCppmlType<MachineId>().class_()
+					.def("__getstate__", simpleSerializer<MachineId>)
+					.def("__setstate__", simpleDeserializer<MachineId>)
 				;
 
 			def("MachineId", cls);

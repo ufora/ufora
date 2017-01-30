@@ -60,6 +60,7 @@ RUN cd /tmp/Python-2.7.9 && \
 
 
 # Required python modules
+RUN pip install cython
 RUN pip install --allow-unverified pyodbc\
     requests \
     boto \
@@ -91,12 +92,23 @@ RUN ln -s /usr/bin/clang++-3.5 /usr/bin/clang++
 RUN mkdir /var/core
 
 #install CUDA
-RUN wget http://developer.download.nvidia.com/compute/cuda/repos/ubuntu1404/x86_64/cuda-repo-ubuntu1404_7.5-18_amd64.deb
+RUN wget http://developer.download.nvidia.com/compute/cuda/repos/ubuntu1604/x86_64/cuda-repo-ubuntu1604_8.0.44-1_amd64.deb
 
-RUN dpkg -i cuda-repo-ubuntu1404_7.5-18_amd64.deb
+RUN dpkg -i cuda-repo-ubuntu1604_8.0.44-1_amd64.deb
 
-RUN apt-get update
+RUN apt-get update \
+    && \
+    DEBIAN_FRONTEND=noninteractive \
+    apt-get install  --no-upgrade --no-install-recommends --yes \
+        nvidia-367=367.48-0ubuntu1     \
+        nvidia-367-dev=367.48-0ubuntu1 \
+        nvidia-opencl-icd-367=367.48-0ubuntu1 \
+        cuda-core-8-0=8.0.44-1         \
+        cuda-cudart-8-0=8.0.44-1       \
+        cuda-cudart-dev-8-0=8.0.44-1   \
+        cuda-driver-dev-8-0=8.0.44-1   \
+        cuda-drivers=367.48-1          \
+        cuda-nvrtc-8-0=8.0.44-1        \
+        libcuda1-367=367.48-0ubuntu1
 
-RUN apt-get install -y --no-install-recommends --force-yes cuda-nvrtc-7-5 \
-    cuda-cudart-7-5 cuda-drivers=352.79-1 libcuda1-352=352.79-0ubuntu1 cuda-core-7-5 cuda-driver-dev-7-5
-
+ENV SHELL bash

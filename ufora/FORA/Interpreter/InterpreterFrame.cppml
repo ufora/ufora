@@ -30,6 +30,7 @@
 #include "InstructionGraph.hppml"
 #include "../Core/ExecutionContext.hppml"
 #include "../Core/ExecutionContextImpl.hppml"
+#include "../Core/StackFrameAllocator.hpp"
 #include "../Core/RefcountPool.hppml"
 #include "Instruction.hppml"
 #include "Continuation.hppml"
@@ -38,7 +39,7 @@
 #include "../Core/ExecutionContextScope.hppml"
 #include "EvalFrame.hpp"
 #include "CallFrame.hpp"
-#include "../Core/MemBlock.hpp"
+#include "../Core/StackFrame.hpp"
 #include "../TypedFora/ABI/NativeLayoutType.hppml"
 #include "../TypedFora/ABI/VectorLoadRequest.hppml"
 #include "../TypedFora/JitCompiler/CompilerThreadCount.hppml"
@@ -62,7 +63,7 @@ using namespace Fora::Interpreter;
 
 InterpreterFrame::InterpreterFrame(
 		ExecutionContext& executionContext,
-		MemBlock** memBlock,
+		StackFrame** memBlock,
 		uword_t continuation,
 		EvalFrame* evalFramePtr
 		) :
@@ -113,7 +114,7 @@ void InterpreterFrame::resumeContinuation(
 
 			mContinuation = value.slots()[0].blockID();
 
-			mExecutionContext.getStackAllocator().free(frame);
+			stackFrameAllocator()->free(frame);
 
 			if (mExecutionContextConfig.allowInterpreterTracing())
 				mInterpreterHistory.onReturnedToInterpreter(
@@ -149,7 +150,7 @@ void InterpreterFrame::followContinuation(bool resultIsActive, Continuation& con
 		NativeRuntimeContinuationValue<1> ncv =
 			mEvalFramePtr->callFrame.conts[continuation.returnIsException() ? 1 : 0];
 
-		EvalFrame::free(mEvalFramePtr, mExecutionContext.getStackAllocator());
+		EvalFrame::free(mEvalFramePtr, *stackFrameAllocator());
 
 		resumeContinuation(ncv, &res, sizeof(ImplVal));
 		}
@@ -180,7 +181,7 @@ bool InterpreterFrame::checkInterruptFlag()
 			mTypedForaCompiler->wrapCPPCallback(
 				&InterpreterFrame::interpreter,
 				mEvalFramePtr,
-				mExecutionContext.getStackAllocator().getMemBlockPtr()
+				mMemBlock
 				) +
 			NativeRuntimeContinuationSlot(
 				mContinuation,
@@ -355,7 +356,7 @@ void InterpreterFrame::step()
 								mTypedForaCompiler->wrapCPPCallback(
 									&InterpreterFrame::interpreter,
 									mEvalFramePtr,
-									mExecutionContext.getStackAllocator().getMemBlockPtr()
+									mMemBlock
 									) +
 								NativeRuntimeContinuationSlot(cont_cont_left, &mEvalFramePtr->resultValue) +
 								NativeRuntimeContinuationSlot(cont_cont_right, &mEvalFramePtr->resultValue)
@@ -515,7 +516,7 @@ void InterpreterFrame::applyAxiom(const ApplyArgs& args, SingleAxiomCache* axiom
 
 	//Call the axiom directly.
 	CallFrame* newCallFramePtr =
-		(CallFrame*)mExecutionContext.getStackAllocator().allocate(
+		(CallFrame*)stackFrameAllocator()->allocate(
 			sizeof(CallFrame) + axiomCache->entryDataSize()
 			);
 
@@ -578,14 +579,14 @@ void InterpreterFrame::applyAxiom(const ApplyArgs& args, SingleAxiomCache* axiom
 		//was interrupted
 
 		//first free the original 'slots'
-		mExecutionContext.getStackAllocator().free(interruptData.first.stackframePtr());
+		stackFrameAllocator()->free(interruptData.first.stackframePtr());
 
 		//then allocate a resumption
 		NativeRuntimeContinuationValue<1> cont =
 			mTypedForaCompiler->wrapCPPCallback(
 				&InterpreterFrame::interpreter,
 				mEvalFramePtr,
-				mExecutionContext.getStackAllocator().getMemBlockPtr()
+				mMemBlock
 				) +
 			NativeRuntimeContinuationSlot(
 				mContinuation,
@@ -617,7 +618,7 @@ NativeRuntimeUntypedContinuation InterpreterFrame::createUntypedContinuation()
 		mTypedForaCompiler->wrapCPPCallback(
 			InterpreterFrame::interpreter,
 			mEvalFramePtr,
-			mExecutionContext.getStackAllocator().getMemBlockPtr()
+			mMemBlock
 			) +
 		NativeRuntimeContinuationSlot(
 			cont_cont_left,
@@ -639,8 +640,8 @@ void InterpreterFrame::applyJump(InstructionPtr targetInstruction, const ApplySi
 		EvalFrame::allocate(
 			targetInstruction->getGraph(),
 			targetInstruction->getLabel(),
-			mExecutionContext.getStackAllocator(),
-			mExecutionContext.getImpl()->allocateNewUniqueEvalFrameID(),
+			*stackFrameAllocator(),
+			EvalFrame::allocateNewUniqueEvalFrameID(),
 			null()
 			);
 
@@ -650,7 +651,7 @@ void InterpreterFrame::applyJump(InstructionPtr targetInstruction, const ApplySi
 		mTypedForaCompiler->wrapCPPCallback(
 			&InterpreterFrame::interpreter,
 			mEvalFramePtr,
-			mExecutionContext.getStackAllocator().getMemBlockPtr()
+			mMemBlock
 			) +
 		NativeRuntimeContinuationSlot(
 			cont_cont_left,
@@ -713,14 +714,14 @@ bool InterpreterFrame::attemptToBranchToNativeCode()
 		mEvalFramePtr->callFrame.callbacks
 		);
 
-	EvalFrame::free(mEvalFramePtr, mExecutionContext.getStackAllocator());
+	EvalFrame::free(mEvalFramePtr, *stackFrameAllocator());
 
 	NativeRuntimeCallTarget callTarget =
 		mTypedForaCompiler->
 			generateStackframeAndCallTargetTransferImplvalsWithOwnership(
 				*targetJumpPtr,
 				TypedFora::TypedContinuation(untypedContinuation),
-				mExecutionContext.getStackAllocator().getMemBlockPtr(),
+				mMemBlock,
 				evalFrameArgPtr,
 				frameUniqueId,
 				mExecutionContext.getRefcountPool()
@@ -750,8 +751,13 @@ InstructionPtr InterpreterFrame::currentInstruction(void) const
 	return mEvalFramePtr->instructionPtr;
 	}
 
+StackFrameAllocator* InterpreterFrame::stackFrameAllocator()
+	{
+	return (*mMemBlock)->allocator();
+	}
+
 NativeRuntimeContinuationValue<1> InterpreterFrame::interpreter(
-									MemBlock** memory,
+									StackFrame** memory,
 									uword_t continuation,
 									void* data
 									)
@@ -761,8 +767,6 @@ NativeRuntimeContinuationValue<1> InterpreterFrame::interpreter(
 
 	//track the fact that we're in the interpreter
 	ExecutionContextScope ecScope(*executionContextPtr, ExecutionContextScope::interpreter);
-
-	lassert(memory == executionContextPtr->getStackAllocator().getMemBlockPtr());
 
 	if (continuation == cont_internal ||
 		continuation == cont_cont_left ||

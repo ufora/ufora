@@ -37,6 +37,7 @@ import ufora.distributed.SharedState.SharedStateService as SharedStateService
 import ufora.distributed.SharedState.Connections.InMemoryChannelFactory as InMemorySharedStateChannelFactory
 import ufora.distributed.SharedState.Connections.ViewFactory as ViewFactory
 import ufora.cumulus.distributed.PythonIoTaskService as PythonIoTaskService
+import ufora.cumulus.OutOfProcessPythonTasks as OutOfProcessPythonTasks
 import ufora.distributed.Storage.S3ObjectStore as S3ObjectStore
 
 
@@ -80,7 +81,9 @@ def createWorker_(machineId,
                   memoryLimitMb,
                   cacheFunction,
                   pageSizeOverride,
-                  disableEventHandler):
+                  disableEventHandler,
+                  maxBytesPerOutOfProcessPythonTask
+                  ):
     if callbackSchedulerToUse is None:
         callbackSchedulerToUse = CallbackScheduler.singletonForTesting()
 
@@ -104,6 +107,11 @@ def createWorker_(machineId,
             callbackSchedulerToUse
             )
         )
+
+    if maxBytesPerOutOfProcessPythonTask is not None:
+        defaults = vdm.getDefaultOutOfProcessPythonTaskPolicy()
+        defaults.bytesOfExternalMemoryRequired = maxBytesPerOutOfProcessPythonTask
+        vdm.setDefaultOutOfProcessPythonTaskPolicy(defaults)
 
     cache = cacheFunction()
 
@@ -218,7 +226,8 @@ class InMemoryCumulusSimulation(object):
                 channelThroughputMBPerSecond=None,
                 pageSizeOverride=None,
                 disableEventHandler=False,
-                machineIdHashSeed=None
+                machineIdHashSeed=None,
+                maxBytesPerOutOfProcessPythonTask=None
                 ):
         self.useInMemoryCache = useInMemoryCache
         self.machineIdHashSeed = machineIdHashSeed
@@ -242,6 +251,7 @@ class InMemoryCumulusSimulation(object):
         self.objectStore = objectStore
         if self.objectStore is None:
             s3 = s3Service()
+
             if isinstance(s3, InMemoryS3Interface.InMemoryS3Interface):
                 objectStoreBucket = "object_store_bucket"
                 s3.setKeyValue(objectStoreBucket, 'dummyKey', 'dummyValue')
@@ -266,9 +276,10 @@ class InMemoryCumulusSimulation(object):
         self.machineIdsEverAllocated = 0
         self.clientsAndVdms = []
         self.loadingServices = []
+        self.outOfProcessTaskServices = []
         self.clientTeardownGates = []
         self.workerTeardownGates = []
-
+        self.maxBytesPerOutOfProcessPythonTask = maxBytesPerOutOfProcessPythonTask
 
         for ix in range(workerCount):
             self.addWorker()
@@ -301,7 +312,8 @@ class InMemoryCumulusSimulation(object):
                 callbackSchedulerToUse = self.callbackScheduler,
                 cacheFunction = self.cacheFunction,
                 pageSizeOverride = self.pageSizeOverride,
-                disableEventHandler = self.disableEventHandler
+                disableEventHandler = self.disableEventHandler,
+                maxBytesPerOutOfProcessPythonTask = self.maxBytesPerOutOfProcessPythonTask
                 )
             )
 
@@ -341,6 +353,14 @@ class InMemoryCumulusSimulation(object):
         loadingService.startService()
 
         self.loadingServices.append(loadingService)
+
+        outOfProcessPythonTasks = \
+            OutOfProcessPythonTasks.OutOfProcessPythonTasks(
+                outOfProcess=s3InterfaceFactory.isCompatibleWithOutOfProcessDownloadPool
+                )
+
+        workerVdm.initializeOutOfProcessPythonTasks(outOfProcessPythonTasks.nativeTasks)
+        self.outOfProcessTaskServices.append(outOfProcessPythonTasks)
 
         self.workerTeardownGates.append(workerVdm.getVdmmTeardownGate())
 
@@ -401,6 +421,9 @@ class InMemoryCumulusSimulation(object):
         for service in self.loadingServices:
             service.teardown()
 
+        for service in self.outOfProcessTaskServices:
+            service.teardown()
+
         for worker,vdm,eventHandler in self.workersVdmsAndEventHandlers:
             worker.teardown()
 
@@ -428,6 +451,7 @@ class InMemoryCumulusSimulation(object):
 
         teardownGate = self.workerTeardownGates[index]
         self.loadingServices[index].teardown()
+        self.outOfProcessTaskServices[index].teardown()
 
         if self.channelThroughputMBPerSecond:
             self.rateLimitedChannelGroupsForEachListener.pop(index)
@@ -437,6 +461,7 @@ class InMemoryCumulusSimulation(object):
         self.workerTeardownGates.pop(index)
 
         self.loadingServices.pop(index)
+        self.outOfProcessTaskServices.pop(index)
 
         self.workersVdmsAndEventHandlers.pop(index)
 
@@ -456,6 +481,7 @@ class InMemoryCumulusSimulation(object):
         self.workersVdmsAndEventHandlers = None
         self.clientsAndVdms = None
         self.loadingServices = None
+        self.outOfProcessTaskServices = None
         self.listener = None
 
         for gate in self.workerTeardownGates + self.clientTeardownGates:
@@ -605,7 +631,13 @@ class InMemoryCumulusSimulation(object):
         return self.submitComputationOnClient(0, expressionText, **freeVariables)
 
     def submitComputationOnClient(self, clientIndex, expressionText, **freeVariables):
-        if isinstance(expressionText, CumulusNative.ComputationDefinition):
+        if isinstance(expressionText, ForaNative.ImplValContainer):
+            computationDefinition = CumulusNative.ComputationDefinition.Root(
+                CumulusNative.ImmutableTreeVectorOfComputationDefinitionTerm(
+                    [CumulusNative.ComputationDefinitionTerm.Value(x, None) for x in expressionText.getTuple()]
+                    )
+                )
+        elif isinstance(expressionText, CumulusNative.ComputationDefinition):
             computationDefinition = expressionText
         else:
             varNames = list(freeVariables.keys())

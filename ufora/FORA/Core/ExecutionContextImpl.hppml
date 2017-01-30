@@ -16,21 +16,24 @@
 #pragma once
 
 #include "ExecutionContext.hppml"
-#include "ExecutionContextPageLoadSequence.hppml"
-#include "ExecutionContextThreadState.hppml"
+#include "ExecutionContextScope.hppml"
 #include "ExecutionContextBigVectorReferences.hppml"
 #include "ExecutionContextExecutionState.hppml"
+#include "TimeElapsed.hppml"
 #include "../Interpreter/InterpreterObserver.hppml"
 #include "../Interpreter/InterpreterThreadObserver.hppml"
 #include "../VectorDataManager/BigVectorSlice.hppml"
 #include "../../core/EventBroadcaster.hpp"
 #include "../../core/threading/CallbackScheduler.hppml"
-#include "../ControlFlowGraph/ControlFlowGraphSplitter.hppml"
 #include "../TypedFora/ABI/HomogenousDoubleVectorStashAllocator.hppml"
 #include <sstream>
 
 namespace Fora {
 namespace Interpreter {
+
+class PausedComputationTreeStats;
+class ExecutionContextThreadStateTree;
+class ExecutionContextThreadState;
 
 //Represents a single interpreter thread with its own stack.
 //only one computation can run on a given interpreter at once, although
@@ -40,7 +43,6 @@ class ExecutionContextImpl : public PolymorphicSharedPtrBase<ExecutionContextImp
 public:
 	ExecutionContextImpl(
 		PolymorphicSharedPtr<VectorDataManager> inVectorDataManager,
-		uword_t inStackIncrement,
 		uint64_t memoryQuota,
 		ExecutionContext* inActualExecutionContextPtr
 		);
@@ -60,11 +62,17 @@ public:
 	//trigger an interrupt
 	void interrupt();
 
+	void triggerInternalInterruptAtTime(double timestamp);
+
+	void disableScheduledInternalInterruptTrigger();
+
 	bool shouldInterrupt();
 
 	bool isGcScheduled();
 
 	bool isGcPending();
+
+	bool isInterruptTriggerSet();
 
 	void blockedOnMemoryAllocation();
 
@@ -76,18 +84,24 @@ public:
 
 	void setOnPageCreated(boost::function1<void, Fora::PageId> function);
 
-	void setOnCurrentActivePageGroupChanged(boost::function2<void, ImmutableTreeSet<Fora::PageId>, double> function);
+	void extractPagesTouched(std::set<Fora::PageId>& outPages);
+	
+	void pageTouched(Fora::PageId inPage);
 
-	Nullable<ControlFlowGraphSplitter::SplitPausedComputation>
-							splitComputation(bool disableVectorPagingIfSplit = false);
+	bool splitComputation(
+						boost::function<hash_type (PausedComputationTree)> inCreateSplit, 
+						double minSecondsElapsed
+						);
 
-	PolymorphicSharedPtr<FuturesSplitResult> splitWithFutures();
+	bool splitCachecallFrames(
+						boost::function<hash_type (PausedComputationTree)> inCreateSplit
+						);
 
-	void logAMessage(const ImplValContainer& inMessage);
-
-	void logSomeMessages(const ImplValContainer& inMessage);
-
-	ImplValContainer getComputationLog() const;
+	bool absorbSplitResult(
+			hash_type computationHash,
+			const ComputationResult& result,
+			TimeElapsed totalTimeElapsed
+			);
 
 	NativeRuntimeCallbacks& getRuntimeCallbacks();
 
@@ -97,34 +111,32 @@ public:
 
 	sword_t remainingCycleCount();
 
-	//return how many bytes of stack space we have allocated
-	uword_t totalStackMemoryUsed(void);
-
 	//get the current ExecutionContext containing
-	static ExecutionContext*	currentExecutionContext(void);
+	static ExecutionContext*	currentExecutionContext();
 
-	static VectorDataManager&	currentVDM(void);
+	static VectorDataManager&	currentVDM();
 
 	void visitStackFramesAndValues(TypedFora::Abi::StackFrameVisitor& visitor);
 
 	VectorDataManager& getVDM();
 
 	//is the context in the internal state
-	bool isEmpty(void) const;
+	bool isEmpty() const;
 
-	bool isInterrupted(void) const;			//do we have an interrupted computation?
+	bool isInterrupted() const;			//do we have an interrupted computation?
 
-	bool isVectorLoad(void) const;			//are we trying to load a vector
+	bool isVectorLoad() const;			//are we trying to load a vector
 
-	bool isCacheRequest(void) const;		//are we waiting on a cache check?
+	bool isCacheRequest() const;		//are we waiting on a cache check?
 
-	Fora::BigVectorSlice getVectorLoad(void) const;		//what vector are we trying to load?
+	Fora::BigVectorSlice getVectorLoad() const;		//what vector are we trying to load?
 
 	//interrupt the computation as soon as possible and execute a VDM check
 	void scheduleVdmCheck();
 
-	//called by the
 	void checkGcStatusWithVdm_();
+
+	void updateLastEventMemoryLevels_();
 
 	EventBroadcaster<double> mOnCheckGcStatusWithVdm;
 
@@ -141,18 +153,22 @@ public:
 	void resetMemoryPoolPageSize();
 
 	//did the computation result in a finished value?
-	bool isFinished(void)  const;
+	bool isFinished()  const;
 
 	//is the context in the 'error' state?
-	bool isError(void)  const;
+	bool isError()  const;
 
 	//if it's a cache request, get the tuple of requests
-	ImplValContainer getCacheRequest(void);
+	ImplValContainer getCacheRequest();
 
 	//get the finished result out (if isFinished)
-	ComputationResult getFinishedResult(void);
+	ComputationResult getFinishedResult();
 
 	void setFinishedResult(const ComputationResult& inResult);
+
+	void lockAndExecute(boost::function<void ()> func);
+
+	void lockAndSetFinishedResult(boost::function<Fora::Interpreter::ComputationResult ()> func);
 
 	bool pageLargeVectorHandles();
 
@@ -187,22 +203,18 @@ public:
 
 	ImplValContainer exportImplval_(ImplVal value, ValueDeepcopierState& ioState);
 
-	PausedComputation extractPausedComputation();
+	PausedComputationTreeStats getStats() const;
 
-	PausedComputation extractPausedComputation(ValueDeepcopierState& ioState, bool exportImplvals);
+	PausedComputationTree extractPausedComputation();
 
-	void resumePausedComputation(const PausedComputation& computation);
+	PausedComputationTree extractPausedComputation(ValueDeepcopierState& ioState, bool exportImplvals);
+
+	void resumePausedComputation(const PausedComputationTree& computation);
 
 	void resumePausedComputation(	ValueDeepcopierState& state,
-									const PausedComputation& computation,
+									const PausedComputationTree& computation,
 									bool importImplvals
 									);
-
-	void resumePausedComputationAsCacheRequest(
-											const PausedComputation& computation,
-											const ImplValContainer& cacheRequestTuple,
-											bool requireImport
-											);
 
 	bool copyValuesOutOfVectorPages();
 
@@ -217,18 +229,9 @@ public:
 
 	bool pageLargeVectorHandles(uword_t inBytecountThreshold);
 
-	void extractPageableVectors(
-				uword_t inBytecountThreshold,
-				std::set<TypedFora::Abi::VectorHandle*> &outHandles,
-				const Fora::Interpreter::PausedComputation& computation
-				);
-
 	void pageLargeVectorHandles(const std::set<TypedFora::Abi::VectorHandle*> &handles);
 
 	hash_type newVectorHash();
-
-	//puts state in 'Empty' and then attempts to evaluate the values
-	void evaluate(const ImplValContainer& args);
 
 	void placeInEvaluationStateWithoutRenamingMutableVectors(const ImplValContainer& args);
 
@@ -243,10 +246,10 @@ public:
 					);
 
 	//resume the computation from an interrupted state
-	void resumeComputation();
+	void compute();
 
 	//resumes the computation from a cachecall state
-	void resumeComputation(const ComputationResult& val);
+	void addCachecallResult(const ComputationResult& val);
 
 	//put the ExecutionContext back into the 'empty' state
 	void teardown(bool assertEmpty = false);
@@ -263,21 +266,15 @@ public:
 
 	void bigVectorArrayHandleMapped(TypedFora::Abi::VectorHandle* mapped);
 
-	double getTimeSpentInInterpreter() const;
-
-	double getTimeSpentInCompiledCode() const;
-
-	double getTimeSpentGarbageCollecting() const;
+	TimeElapsed getTotalTimeElapsed() const;
 
 	void enableVectorDecrements();
 
 	void disableVectorDecrements();
 
-	void defragmentMemoryUsage();
-
 	void defragmentMemoryUsage_();
 
-	RefcountPool* getRefcountPool(void);
+	RefcountPool* getRefcountPool();
 
 	void setRefcountPool_(RefcountPool* inPool);
 
@@ -286,9 +283,11 @@ public:
 
 	bool resetInterruptStateIfOnlyTriggeredInternally();
 
-	MemoryPool* getMemoryPool(void);
+	bool resetInterruptStateIfOnlyTriggeredInternallyAndNoGcPending();
 
-	boost::shared_ptr<ExecutionContextMemoryPool> getExecutionContextMemoryPool(void);
+	MemoryPool* getMemoryPool();
+
+	boost::shared_ptr<ExecutionContextMemoryPool> getExecutionContextMemoryPool();
 
 	std::string extractCurrentTextStacktrace(long maxTextStackBytes = 10 * 1024);
 
@@ -350,10 +349,6 @@ public:
 
 	void memoryAllocationFailed(size_t desiredBytes, size_t allocatedBytes);
 
-	void kickAllStackframesIntoInterpreter_();
-
-	MemBlockAllocator& getStackAllocator(void);
-
 	//helper function to jump into the native continuation 'value'
 	//with "bytes" bytes of data in 'data', which get copied into the
 	//target of the continuation.
@@ -362,12 +357,6 @@ public:
 				void* data,
 				uword_t bytes
 				);
-
-	//primary entrypoint for jumping into native code.  Asserts that the ExecutionContext
-	//isn't running any other code, sets all necessary stack contexts, and branches
-	//into the native code.
-	void callNativeRuntimeCallTarget(const NativeRuntimeCallTarget& inContinuation);
-
 
 	//call the interpreter, entering at 'inBlockID' with stack frame inCallFrame. Returns
 	//a continuation.
@@ -389,45 +378,27 @@ public:
 						ValueDeepcopierState& ioState
 						);
 
-	NativeRuntimeContinuationValueVector
-	instantiatePausedComputation(
-				const PausedComputation& computation,
-				ValueDeepcopierState& ioState
-				);
-
 	void evaluate_(const ImplVal& args);
 
-	void ensureMemBlockExists(void);
+	void ensureMemBlockExists();
 
-	void teardownMemBlockIfExists(void);
+	void teardownMemBlockIfExists();
 
 	void setExpectedSteps(const std::vector<std::tuple<hash_type, double, std::string>>& expected);
 
-	uint64_t allocateNewUniqueEvalFrameID();
+	std::string stateAsString();
 
-	friend class InterpreterFrame;
-	friend class EvalFrame; //in order to acces `allocMemBlock`
-							//TODO QUESTION tom: consider making this function public?
-	friend class EvalFrameArgList; //in order to acces `allocMemBlock`
-	friend class ExecutionContextScope;
+	TimeElapsed mTimeElapsed;
 
-	MemBlockAllocator mStackAllocator;
-
-	double mTimeSpentInInterpreter;
-
-	double mTimeSpentGarbageCollecting;
-
-	double mTimeSpentInCompiledCode;
+	std::set<Fora::PageId> mPagesTouched;
 
 	ExecutionContextScope* mCurrentExecutionContextScope;
-
-	uword_t mStackIncrement;
 
 	boost::shared_ptr<ExecutionContextConfiguration> mConfig;
 
 	PolymorphicSharedPtr<VectorDataManager> mVectorDataManager;
 
-	ExecutionContextThreadState mThreadState;
+	PolymorphicSharedPtr<ExecutionContextThreadStateTree> mThreadState;
 
 	TypedFora::Abi::HomogenousDoubleVectorStashAllocator mDoubleVectorStashAllocator;
 
@@ -441,7 +412,9 @@ public:
 
 	ExecutionContext* mActualContextPtr;
 
-	boost::function1<void, const Fora::InterpreterTraceTerm&> mInterpreterTraceHandler;
+	ExecutionContextThreadState* mCurrentlyExecutingThread;
+
+	InterpreterScratchSpace mInterpreterScratchSpace;
 
 	boost::shared_ptr<InterpreterThreadObserver> mInterpreterHistory;
 
@@ -459,8 +432,6 @@ public:
 
 	boost::function1<void, Fora::PageId> mOnPageCreated;
 
-	boost::function2<void, ImmutableTreeSet<Fora::PageId>, double> mOnCurrentActivePageGroupChanged;
-
 	bool mVectorPagingDisabled;
 
 	Nullable<hash_type> mCurrentVectorHash;
@@ -469,9 +440,9 @@ public:
 
 	std::set<TypedFora::Abi::VectorHandle*> mMappedBigVectorHandles;
 
-	void observeLoadOfVectorPages(const ImmutableTreeSet<Fora::PageId>& pages);
+	NativeRuntimeCallbacks mRuntimeCallbacks;
 
-	ExecutionContextPageLoadSequence mPageLoadSequence;
+	void observeLoadOfVectorPages(const ImmutableTreeSet<Fora::PageId>& pages);
 
 	void reportPageReferenced(Fora::PageId pageId);
 

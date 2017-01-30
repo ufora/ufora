@@ -37,6 +37,7 @@ using Fora::SharedObjectLibraryFromSource::LibraryType;
 //forward declaration of this function, which is used locally
 NativeExpression adaptArgumentForExternalFunction(
 					NativeExpressionBuilder& builder,
+					NativeVariable callbacksVar,
 					const NativeExpression& inSourceExpr,
 					const JOV& inSourceJOV,
 					const LibraryType& inTargetType,
@@ -46,6 +47,7 @@ NativeExpression adaptArgumentForExternalFunction(
 
 NativeExpression adaptArgumentForExternalFunction(
 					NativeExpressionBuilder& builder,
+					NativeVariable callbacksVar,
 					const NativeExpression& inSourceExpr,
 					const JOV& inSourceJOV,
 					const LibraryType& inTargetType
@@ -55,6 +57,7 @@ NativeExpression adaptArgumentForExternalFunction(
 
 	return adaptArgumentForExternalFunction(
 		builder,
+		callbacksVar,
 		inSourceExpr,
 		inSourceJOV,
 		inTargetType,
@@ -351,6 +354,7 @@ const char* extractStringPtr(String s)
 
 void preloadVectorArgument(
 					NativeExpressionBuilder& builder,
+					NativeVariable callbacksVar,
 					const NativeExpression& inSourceExpr,
 					const JOV& inSourceJOV,
 					const LibraryType& inTargetType
@@ -361,22 +365,24 @@ void preloadVectorArgument(
 
 	TypedNativeExpression<TypedFora::Abi::VectorRecord> vecExpr(inSourceExpr);
 
-	builder.add(vecExpr.loadCheckAll().getExpression());
+	builder.add(vecExpr.loadCheckAll(callbacksVar).getExpression());
 	}
 
 void preloadArgument(
 					NativeExpressionBuilder& builder,
+					NativeVariable callbacksVar,
 					const NativeExpression& inSourceExpr,
 					const JOV& inSourceJOV,
 					const LibraryType& inTargetType
 					)
 	{
 	if (inSourceJOV.type() && inSourceJOV.type()->isVector())
-		preloadVectorArgument(builder, inSourceExpr, inSourceJOV, inTargetType);
+		preloadVectorArgument(builder, callbacksVar, inSourceExpr, inSourceJOV, inTargetType);
 	}
 
 NativeExpression adaptVectorArgument(
 					NativeExpressionBuilder& builder,
+					NativeVariable callbacksVar,
 					const NativeExpression& inSourceExpr,
 					const JOV& inSourceJOV,
 					const LibraryType& inTargetType
@@ -430,7 +436,7 @@ NativeExpression adaptVectorArgument(
 			}
 
 		TypedNativeExpression<TypedFora::Abi::VectorRecord> pooledVec =
-			builder.add(vecExpr.contiguousAndLoadedVectorRecordNonincremented());
+			builder.add(vecExpr.contiguousAndLoadedVectorRecordNonincremented(callbacksVar));
 
 		NativeExpression offsetExpr =
 			TypedFora::Abi::ForaValueArrayCodegen::offsetForExpression(
@@ -462,6 +468,7 @@ NativeExpression adaptMutableVectorArgument(
 
 NativeExpression adaptTupleArgument(
 					NativeExpressionBuilder& builder,
+					NativeVariable callbacksVar,
 					const NativeExpression& inSourceExpr,
 					const JOV& inSourceJOV,
 					const LibraryType& inTargetType,
@@ -489,6 +496,7 @@ NativeExpression adaptTupleArgument(
 					targetPtr.elemPtr(k).store(
 						adaptArgumentForExternalFunction(
 							builder,
+							callbacksVar,
 							inSourceExpr[k],
 							jovt.jovs()[k],
 							pt
@@ -518,6 +526,7 @@ NativeExpression adaptTupleArgument(
 
 NativeExpression adaptArgumentForExternalFunction(
 					NativeExpressionBuilder& builder,
+					NativeVariable callbacksVar,
 					const NativeExpression& inSourceExpr,
 					const JOV& inSourceJOV,
 					const LibraryType& inTargetType,
@@ -526,7 +535,7 @@ NativeExpression adaptArgumentForExternalFunction(
 					)
 	{
 	if (inSourceJOV.type() && inSourceJOV.type()->isVector())
-		return adaptVectorArgument(builder, inSourceExpr, inSourceJOV, inTargetType);
+		return adaptVectorArgument(builder, callbacksVar, inSourceExpr, inSourceJOV, inTargetType);
 
 	if (inSourceJOV.isMutableVector())
 		return adaptMutableVectorArgument(builder, inSourceExpr, inSourceJOV, inTargetType);
@@ -546,6 +555,7 @@ NativeExpression adaptArgumentForExternalFunction(
 	if (inSourceJOV.isTuple())
 		return adaptTupleArgument(
 			builder,
+			callbacksVar,
 			inSourceExpr,
 			inSourceJOV,
 			inTargetType,
@@ -571,6 +581,8 @@ Callable getCallableForExternalFunction(
 			return getFORTRANCallTarget(visibleName, libcallName, argSignature, returnType);
 			}
 		-| CompiledFunction(lib, name) ->> {
+			NativeVariable callbacksVar = NativeVariable::Temp(NativeTypeFor<NativeRuntimeCallbacks>::get().ptr());
+
 			void* funcPtr = compiler.functionPointerForLibraryFunctionFromSource(lib, name);
 
 			Fora::SharedObjectLibraryFromSource::FunctionSignature funcSig =
@@ -614,11 +626,12 @@ Callable getCallableForExternalFunction(
 			ImmutableTreeVector<NativeExpression> returnArgs;
 
 			for (long k = 0; k < axiomVars.size(); k++)
-				preloadArgument(builder, axiomVars[k], callSignature.jovs()[k], funcSig.argTypes()[k]);
+				preloadArgument(builder, callbacksVar, axiomVars[k], callSignature.jovs()[k], funcSig.argTypes()[k]);
 
 			for (long k = 0; k < axiomVars.size(); k++)
 				args = args + adaptArgumentForExternalFunction(
 					builder,
+					callbacksVar,
 					axiomVars[k],
 					callSignature.jovs()[k],
 					funcSig.argTypes()[k],
@@ -645,12 +658,11 @@ Callable getCallableForExternalFunction(
 				finalResult = NativeExpression::CreateComposite(libcallExpr + returnArgs);
 
 			NativeCFG toInline(
-				NativeVariable::Temp(NativeTypeFor<NativeRuntimeCallbacks>::get().ptr()) +
-					axiomVars.vars(),
+				callbacksVar + axiomVars.vars(),
 				builder(NativeExpression::Return(0, finalResult))
 				);
 
-			toInline = NativeCFGTransforms::renameVariables(toInline, 0);
+			toInline = NativeCFGTransforms::renameVariablesStably(toInline);
 
 			return
 				TypedFora::graphFromNativeCfgPassingOwned(

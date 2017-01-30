@@ -351,6 +351,8 @@ void ActiveComputationsImpl::initializeFromAddDropState(
 	{
 	boost::recursive_mutex::scoped_lock lock(mMutex);
 
+	LOG_INFO << mKernel.mOwnMachineId << "Initializing add-drop state with " << inStates.size() << " states.";
+
 	for (auto idAndState: inStates)
 		for (auto bv: idAndState.second->getReferencedBigVectors())
 			lassert(state.bigvecLayouts().contains(bv));
@@ -485,6 +487,8 @@ void ActiveComputationsImpl::initializeFromAddDropState(
 			toResubmit.insert(compId);
 		}
 
+	LOG_INFO << mKernel.mOwnMachineId << " asking " << toResubmit.size() << " to resubmit subcomps.";
+	
 	for (auto comp: toResubmit)
 		{
 		if (mEventHandler)
@@ -751,8 +755,6 @@ void ActiveComputationsImpl::handleComputationBackgroundActionInBackgroundThread
 					CreatedComputations computationsCreated =
 						computationState->tryToSplit(mExternalInterface->generateGuidWithoutRecording());
 
-					computationState->markSplitAttempt();
-
 					map<ComputationId, ComputationStatePtr> computationStatesCreated;
 
 					for (auto compAndDef: computationsCreated.computations())
@@ -793,38 +795,9 @@ void ActiveComputationsImpl::handleComputationBackgroundActionInBackgroundThread
 
 						mKernel.splitCompleted(computation, didSplit, guid, schedulerMachine, computationStatesCreated);
 						}
-					}
-				-| SearchForFuturePageReads(maxTimeToSpend) ->> {
-					ImmutableTreeVector<Fora::PageId> newPages;
 
-					try {
-						newPages = computationState->continueToSearchForFuturePages(maxTimeToSpend);
-						}
-					catch(std::logic_error& e)
-						{
-						LOG_ERROR << "Exception in continueToSearchForFuturePages:\n"
-							<< e.what();
-						}
-					catch(...)
-						{
-						LOG_ERROR << "Unknown exception in continueToSearchForFuturePages";
-						}
-
-					boost::recursive_mutex::scoped_lock lock(mMutex);
-
-					if (mEventHandler)
-						{
-						mEventHandler(
-							ActiveComputationsEvent::BackgroundSearchForFuturePagesCompleted(
-								computation,
-								guid,
-								schedulerMachine,
-								newPages
-								)
-							);
-						}
-
-					mKernel.searchForFuturePageReadsCompleted(computation, guid, schedulerMachine, newPages);
+					for (auto bv: computationsCreated.bigvecsReferenced())
+						mVDM->getPageRefcountTracker()->bigVectorDecreffed(bv);
 					}
 				-| ResetPageDataAndBroadcast() ->> {
 					computationState->unloadAllVectorHandles();
@@ -885,6 +858,9 @@ void ActiveComputationsImpl::serializeAndCheckpointComputation(
 		-| BlockedOnComputations(c) ->> {
 			children = c;
 			}
+		-| ComputableWithSubcomputations(c) ->> {
+			children = c;
+			}
 		-| _ ->> {}
 
 	PolymorphicSharedPtr<SerializedObject> serialized = computationState->serialize();
@@ -931,8 +907,8 @@ void ActiveComputationsImpl::serializeAndCheckpointComputation(
 								serialized,
 								computationState->currentComputationStatistics()
 									.totalBytesInMemoryFromOS(),
-								computationState->currentComputationStatistics().timeSpentInInterpreter() +
-										computationState->currentComputationStatistics().timeSpentInCompiler(),
+								computationState->currentComputationStatistics().timeElapsed().timeSpentInInterpreter() +
+										computationState->currentComputationStatistics().timeElapsed().timeSpentInCompiledCode(),
 								computationState->currentComputationStatus().isFinished()
 								)
 							)

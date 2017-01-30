@@ -16,7 +16,7 @@ import unittest
 
 import ufora.native.FORA as ForaNative
 
-emptyCodeDefinitionPoint = ForaNative.CodeDefinitionPoint.ExternalFromStringList([])
+emptyCodeDefinitionPoint = ForaNative.CodeDefinitionPoint.ExternalFromStringList(["dummy"])
 
 class FunctionTest(unittest.TestCase):
     def parseStringToFunction(self, expr):

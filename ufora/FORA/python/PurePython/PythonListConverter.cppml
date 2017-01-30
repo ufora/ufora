@@ -17,7 +17,6 @@
 
 #include "PythonAst.hppml"
 #include "../../Language/Function.hppml"
-#include "../../Language/FunctionStage1Simulation.hppml"
 #include "../../Core/ImplValContainerUtilities.hppml"
 #include "../../Core/MemoryPool.hpp"
 #include "../../VectorDataManager/VectorDataManager.hppml"
@@ -27,35 +26,45 @@
 #include "../../TypedFora/ABI/VectorRecord.hpp"
 #include "../../../core/math/RandomHashGenerator.hpp"
 
-namespace {
 
-ImplValContainer vectorFromForaValueArray(TypedFora::Abi::ForaValueArray * foraValueArray)
+namespace Fora {
+
+PythonListConverter::PythonListConverter(
+        const ImplValContainer& pyListClassImplVal,
+        MemoryPool* pool
+        ) : mPyListClass(pyListClassImplVal), mTargetMemoryPool(pool)
+    {
+    lassert(pyListClassImplVal.isCST());
+
+    ImplValContainer emptyVector = 
+        createListRaw(emptyTreeVec(), PolymorphicSharedPtr<VectorDataManager>());
+
+    mEmptyInstance = ImplValContainerUtilities::simulateClassInstantiation(
+        mPyListClass,
+        emptyVector
+        );
+    
+    mListType = mEmptyInstance.type();
+    }
+
+
+ImplValContainer PythonListConverter::vectorFromForaValueArray(
+        TypedFora::Abi::ForaValueArray * foraValueArray
+        )
     {
     TypedFora::Abi::VectorRecord vec(
-        MemoryPool::getFreeStorePool()->construct<TypedFora::Abi::VectorHandle>(
+        foraValueArray->getOwningMemoryPool()->construct<TypedFora::Abi::VectorHandle>(
             Fora::BigVectorId(),
             Fora::PageletTreePtr(),
             foraValueArray,
-            MemoryPool::getFreeStorePool(),
-            foraValueArray->hashValues()
+            foraValueArray->getOwningMemoryPool(),
+            RandomHashGenerator::singleton().generateRandomHash()
             )
         );
 
     return ImplValContainerUtilities::createVector(vec);
     }
 
-}
-
-namespace Fora {
-
-PythonListConverter::PythonListConverter(
-        const ImplValContainer& pyListClassImplVal
-        ) : mPyListClass(pyListClassImplVal)
-    {
-    lassert(pyListClassImplVal.isCST());
-
-    mEmptyInstance = createList(emptyTreeVec(), PolymorphicSharedPtr<VectorDataManager>());
-    }
 
 Expression PythonListConverter::convertPyList(
         const Fora::PythonAstExpr_ListType& listExpr,
@@ -69,6 +78,7 @@ Expression PythonListConverter::convertPyList(
 
     return instantiatePyListExpr(rawForaListExpr);
     }
+
 
 Expression PythonListConverter::concatSingleEltVectorExpr(
         const Expression& lhs,
@@ -85,6 +95,7 @@ Expression PythonListConverter::concatSingleEltVectorExpr(
             ApplyArgument::Normal(eltInVector)
         );
     }
+
 
 Expression PythonListConverter::instantiatePyListExpr(
         const Expression& memberExpr
@@ -112,13 +123,14 @@ Expression PythonListConverter::instantiatePyListExpr(
         );
     }
 
+
 ImplValContainer PythonListConverter::createListRaw(
         const ImmutableTreeVector<ImplValContainer>& listElements,
         PolymorphicSharedPtr<VectorDataManager> vdm
         ) const
     {
     TypedFora::Abi::ForaValueArray* foraValueArray =
-        TypedFora::Abi::ForaValueArray::Empty(MemoryPool::getFreeStorePool());
+        TypedFora::Abi::ForaValueArray::Empty(mTargetMemoryPool);
 
     for (const auto& ivc: listElements)
         foraValueArray->append(ivc);
@@ -126,28 +138,13 @@ ImplValContainer PythonListConverter::createListRaw(
     return vectorFromForaValueArray(foraValueArray);
     }
 
-ImplValContainer PythonListConverter::createListFromVector(ImplValContainer& vec) const
+
+ImplValContainer 
+PythonListConverter::createListFromVector(const ImplValContainer& vec) const
     {
-    FunctionStage1::Simulation simulation(10);
-
-    ImmutableTreeVector<ImplValContainer> applyArgs;
-
-    applyArgs = applyArgs + ImplValContainer(mPyListClass);
-
-    applyArgs = applyArgs +
-        ImplValContainerUtilities::createSymbol(
-            Symbol("CreateInstance")
-            );
-
-    applyArgs = applyArgs + vec;
-
-    FunctionStage1::ExpressionEvaluationResult res =
-        simulation.evaluateApply(applyArgs);
-
-    lassert(res.isResult());
-
-    return res.getResult().val();
+    return ImplValContainer(ImplVal(*mListType, vec.data()));
     }
+
 
 ImplValContainer PythonListConverter::createList(
         const ImmutableTreeVector<ImplValContainer>& listElements,
@@ -155,6 +152,29 @@ ImplValContainer PythonListConverter::createList(
         ) const
     {
     ImplValContainer vec = createListRaw(listElements, vdm);
+
+    return createListFromVector(vec);
+    }
+
+
+ImplValContainer PythonListConverter::createListOfPrimitives(
+        const ImmutableTreeVector<std::pair<ImplValContainer, Type>>& valuesAndTypes,
+        PolymorphicSharedPtr<VectorDataManager> vdm
+        ) const
+    {
+    TypedFora::Abi::ForaValueArray* foraValueArray =
+        TypedFora::Abi::ForaValueArray::Empty(MemoryPool::getFreeStorePool());
+
+    for (const auto& valueAndType: valuesAndTypes) {
+        foraValueArray->append(
+            valueAndType.second.typeAsJov(),
+            (uint8_t*)(valueAndType.first.data()),
+            1,
+            valueAndType.second.size()
+            );            
+        }
+
+    ImplValContainer vec = vectorFromForaValueArray(foraValueArray);
     return createListFromVector(vec);
     }
 
@@ -165,7 +185,8 @@ ImplValContainer PythonListConverter::createListOfPrimitives(
         const Type& elementType) const
     {
     TypedFora::Abi::ForaValueArray* foraValueArray =
-        TypedFora::Abi::ForaValueArray::Empty(MemoryPool::getFreeStorePool());
+        TypedFora::Abi::ForaValueArray::Empty(mTargetMemoryPool);
+
     foraValueArray->append(
             elementType.typeAsJov(),
             const_cast<uint8_t*>(pElements),

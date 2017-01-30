@@ -20,7 +20,7 @@
 
 class OProtocol : public PolymorphicSharedPtrBase<OProtocol> {
 public:
-	virtual void write(uword_t inByteCount, void *inData) = 0;
+	virtual void write(uword_t inByteCount, const void* inData) = 0;
 	virtual uword_t position(void) = 0;
 };
 

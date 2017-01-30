@@ -87,15 +87,11 @@ public:
 	@type VectorDepthVisitor = const JudgmentMerger* merger, int maxDepthSeen {
 	public:
 		template<class T>
-		void processDown(const T& in,
-						 bool& outKeepProcessing
-						 )
+		void processDown(const T& in)
 			{
 			}
 
-		void processDown(const JudgmentOnValueVector& in,
-						 bool& outKeepProcessing
-						 )
+		void processDown(const JudgmentOnValueVector& in)
 			{
 			for (auto jov: in.elementsJOR().vals())
 				maxDepthSeen() = std::max<long>(maxDepthSeen(), 1 + merger()->vectorDepth(jov));
@@ -124,15 +120,11 @@ public:
 	{
 	public:
 		template<class T>
-		void processDown(const T& in,
-						 bool& outKeepProcessing
-						 )
+		void processDown(const T& in)
 			{
 			}
 
-		void processDown(const JudgmentOnValueAtom& in,
-						 bool& outKeepProcessing
-						 )
+		void processDown(const JudgmentOnValueAtom& in)
 			{
 			@match JudgmentOnValueAtom(in)
 				-| Unknown() ->> {
@@ -144,25 +136,19 @@ public:
 				-| _ ->> {}
 			}
 
-		void processDown(const JudgmentOnValue& in,
-						 bool& outKeepProcessing
-						 )
+		void processDown(const JudgmentOnValue& in)
 			{
 			if (in.isUnknown() || in.isUnknownCSTKnown())
 				unknownJudgmentsSeen()++;
 			}
 
-		void processDown(const JudgmentOnValueTupleExtras& in,
-						 bool& outKeepProcessing
-						 )
+		void processDown(const JudgmentOnValueTupleExtras& in)
 			{
 			if (in.isExtras())
 				unknownJudgmentsSeen()++;
 			}
 
-		void processDown(const JudgmentOnValueClass& in,
-						 bool& outKeepProcessing
-						 )
+		void processDown(const JudgmentOnValueClass& in)
 			{
 			if (in.isClass())
 				{
@@ -514,10 +500,37 @@ ReasonerFrame::ReasonerFrame(const ReasonerFrameId& frameId, SimpleForwardReason
 						mDisableRecalculation = true;
 						}
 				}
+			-| Cached(_, normalCont, exceptionCont) ->> {
+				@match ControlFlowContinuation(normalCont)
+					-| Node(targetLabel, args) ->> {
+						for (auto resJOV: entrypoint.applyJOA()->resultPart().vals())
+							{
+							ImmutableTreeVector<JOV> jovsToMerge = getJudgment(args, entrypoint.jovs(), null() << resJOV, null() << nodeBody);
+
+							addRoot(NodeRoot(ControlFlowGraphLabel(targetLabel), jovsToMerge));
+							}
+						}
+					-| Return(arg, isException) ->> {
+						for (auto resJOV: entrypoint.applyJOA()->resultPart().vals())
+							{
+							JOV resultJOV = getJudgment(arg, entrypoint.jovs(), null() << resJOV, null() << nodeBody);
+
+							mExits = mExits | (
+								isException ? 
+									JudgmentOnAction::Throws(resultJOV) : 
+									JudgmentOnAction::Value(resultJOV)
+								);
+							}
+						mDisableRecalculation = true;
+						}
+				}
 			-| _ ->> {
 				lassert_dump(
 					false,
-					"If an entrypoint has an applyJOA, it should have been created from an apply node."
+					"If an entrypoint has an applyJOA, it should have been created from an apply node. This node is "
+						<< prettyPrintString(nodeBody)
+						<< "\nwhich is " << prettyPrintString(entrypoint.label()) << " in "
+						<< prettyPrintString(entrypoint.graph())
 					);
 				}
 		}
@@ -1021,6 +1034,7 @@ void ReasonerFrame::propagateNode(
 				mHasExceptions = true;
 			}
 		-| Cached() ->> {
+			mHasExceptions = true;
 			return;
 			}
 		-| Branch(Constant(c), ifTrue, ifFalse) ->> {

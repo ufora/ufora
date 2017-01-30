@@ -1,0 +1,198 @@
+/***************************************************************************
+    Copyright 2016 Ufora Inc.
+
+    Licensed under the Apache License, Version 2.0 (the "License");
+    you may not use this file except in compliance with the License.
+    You may obtain a copy of the License at
+
+        http://www.apache.org/licenses/LICENSE-2.0
+
+    Unless required by applicable law or agreed to in writing, software
+    distributed under the License is distributed on an "AS IS" BASIS,
+    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    See the License for the specific language governing permissions and
+    limitations under the License.
+****************************************************************************/
+
+#include "WrappedNativeCFG.hppml"
+#include "UnableToConvertToPTX.hppml"
+    
+// wrap CFG of f with CFG that:
+// 1) loads data from the vector d = in_vec[i],
+// 2) calls f(d) -> r
+// 3) stores out_vec[i] = r
+WrappedNativeCFG WrappedNativeCFG::wrapCFG(
+		const NativeCFG& inCFG,
+		const NativeType& offsetType,
+		const NativeType& indexType
+		)
+	{
+	bool mayThrowException = false;
+	auto returnTypesCount = inCFG.returnTypes().size();
+	uword_t firstReturnTypeIndex = 0;
+	if (inCFG.returnTypes()[0] == NativeType::Nothing())
+		{
+		firstReturnTypeIndex++;
+		returnTypesCount--;
+		mayThrowException = true;
+		}
+	bool hasResultIndex = (mayThrowException || returnTypesCount > 1) ? true : false;
+	LOG_DEBUG << "hasResultIndex = " << hasResultIndex;
+	// at least one and at most two of the inputs should be not "Nothing",
+	// the last is the input data
+	Nullable<uint32_t> inputIndex, closureIndex;
+	uint32_t inCFGArgsSize = inCFG[NativeBlockID::entry()].args().size();
+	for (long k = 0; k < inCFGArgsSize; k++)
+		if (!inCFG[NativeBlockID::entry()].args()[k].type().isNothing())
+			{
+			if (inputIndex)
+				{
+				if (closureIndex)
+					{
+					throw UnableToConvertToPTX(
+						"function has multiple arguments"
+						);
+					}
+				else
+					{
+					closureIndex = inputIndex;
+					inputIndex = k;
+					}
+				}
+			else
+				inputIndex = k;
+			}
+	if (!inputIndex)
+		throw UnableToConvertToPTX("CFG had no inputs");
+
+	NativeType	inputType =
+		inCFG[NativeBlockID::entry()].args()[*inputIndex].type();
+
+	NativeType	closureType = (closureIndex) ?
+				inCFG[NativeBlockID::entry()].args()[*closureIndex].type() :
+				NativeType::Nothing();
+	NativeVariable closureVar = NativeVariable::Temp(closureType);
+	NativeVariable closurePtr = NativeVariable::Temp(closureType.ptr());
+
+	NativeVariable inputVar = NativeVariable::Temp(inputType);
+	NativeVariable inputPtr = NativeVariable::Temp(inputType.ptr());
+	NativeVariable offsetVar = NativeVariable::Temp(offsetType);
+	NativeVariable indexPtr = NativeVariable::Temp(indexType.ptr());
+
+	ImmutableTreeVector<NativeExpression> args = emptyTreeVec();
+	for (long k = 0; k < inCFGArgsSize; k++)
+		{
+		if (k == *inputIndex)
+			args = args + inputVar.expr();
+		else if (closureIndex && k == *closureIndex)
+			args = args + closureVar.expr();
+		else
+			args = args + inCFG[NativeBlockID::entry()].args()[k].expr();
+		}
+
+	ImmutableTreeVector<NativeContinuation> conts =	emptyTreeVec();
+	if (mayThrowException)
+		{
+		conts = conts +
+				NativeContinuation(
+						NativeVariable::Temp(inCFG.returnTypes()[0]),
+						NativeExpression::Return(0, NativeConstant::Nothing().expr()));
+		}
+	ImmutableTreeVector<NativeVariable> outputPointers = emptyTreeVec();
+	long idx = 0;
+	for (long k = firstReturnTypeIndex; k < firstReturnTypeIndex+returnTypesCount; ++k)
+		{
+		auto& outputType = inCFG.returnTypes()[k];
+		LOG_DEBUG << "outputType[" << k << "] = " << prettyPrintString(outputType);
+		NativeVariable outputVar = NativeVariable::Temp(outputType);
+		NativeVariable outputPtr = NativeVariable::Temp(outputType.ptr());
+		outputPointers = outputPointers + outputPtr;
+		NativeExpression storeVecExpr =
+				NativeExpression::Store(
+						NativeExpression::BinaryOp(
+								NativeBinaryOpcode::Add(),
+								outputPtr.expr(),
+								offsetVar.expr()
+								),
+						outputVar.expr()
+						);
+		if (hasResultIndex)
+			{
+			NativeExpression storeIdxExpr =
+					NativeExpression::Store(
+							NativeExpression::BinaryOp(
+									NativeBinaryOpcode::Add(),
+									indexPtr.expr(),
+									offsetVar.expr()
+									),
+							NativeExpression::ConstantUInt8(idx)
+							);
+			conts = conts +
+					NativeContinuation(
+							outputVar,
+							NativeExpression::DiscardFirst(storeVecExpr, storeIdxExpr)
+							);
+			}
+		else
+			conts = conts + NativeContinuation(outputVar, storeVecExpr);
+		++idx;
+		}
+
+
+	NativeExpression nexp =
+		NativeExpression::DiscardFirst(
+			NativeExpression::Let(
+				inputVar,
+				NativeExpression::Load(
+						NativeExpression::BinaryOp(
+								NativeBinaryOpcode::Add(),
+								inputPtr.expr(),
+								offsetVar.expr()
+								)
+						, false
+						),
+				NativeExpression::Call(
+						NativeCallTarget::Inline(inCFG, NativeBlockID::entry()),
+						conts,
+						args,
+						emptyTreeVec() /*+ NativeContinuationMetadata meta*/
+						)
+			),
+			NativeExpression::Return(0, NativeConstant::Nothing().expr())
+		);
+
+	auto wrappedCFGArgs = inCFG[NativeBlockID::entry()].args()
+						+ offsetVar + inputPtr + outputPointers;
+	if (closureIndex)
+		{
+		nexp =
+				NativeExpression::Let(
+					closureVar,
+					NativeExpression::Load(closurePtr.expr(), false),
+					nexp
+					);
+		wrappedCFGArgs = wrappedCFGArgs + closurePtr;
+		}
+
+	if (hasResultIndex)
+		wrappedCFGArgs = wrappedCFGArgs + indexPtr;
+
+	NativeCFG wrappedCFG =
+			NativeCFG(
+					emptyTreeVec(),
+					wrappedCFGArgs,
+					nexp,
+					"wrappedCUDANativeCFG"
+					);
+	
+	return	WrappedNativeCFG(
+		wrappedCFG,
+		inputType,
+		closureType,
+		closureIndex ? true : false,
+		hasResultIndex,
+		firstReturnTypeIndex,
+		returnTypesCount
+		);
+	}
+

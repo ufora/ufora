@@ -51,8 +51,6 @@ public:
 
 			Ufora::python::CPPMLWrapper<T> T_;
 						T_.class_()
-							.def("__getstate__", &serialize<T> )
-							.def("__setstate__", &setStateDeserialize<T> )
 							.def("__str__", &prettyPrintString<T> )
 							.def("__cmp__", &cppmlCmpPy<T> )
 							.enable_pickling()

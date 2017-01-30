@@ -167,3 +167,19 @@ class InvalidPyforaOperation(Exception):
     # this class NOT be a PyforaError
     '''Raised when a running computation performs an operation that cannot be faithfully executed with ``pyfora``.'''
 
+class PyforaNameError(Exception):
+    """
+    when a python symbol would raise a NameError, we represent
+    that in our common binary representation of python/fora as a 
+    certain tuple. When that binary form gets turned into fora for 
+    evaluation, that tuple basically turns into a throw expression
+    which raises a NameError. When we turn that binary form into 
+    Python again, for example for out-of-process Python using a
+    PythonObjectRehydrator, symbols which were originally unresolved
+    in normal python now have values -- instances of this class.
+    When rehdrating functions, we hold a dictionary of variable lookups
+    of their free variables (see PythonObjectRehydratorHelpers.instantiateFunction).
+    We filter out values which are of this special class, so that NameErrors
+    will once again be raised.
+    """
+    pass

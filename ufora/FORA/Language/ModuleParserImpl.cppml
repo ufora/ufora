@@ -19,7 +19,6 @@
 #include "Parser.hppml"
 #include "ParserExpressions.hppml"
 #include "ScopeNaming.hppml"
-#include "ExpressionLocationTagging.hppml"
 #include "FunctionValidation.hppml"
 #include "FunctionUtil.hppml"
 #include "ClassMediatorBindings.hppml"
@@ -58,10 +57,7 @@ ModuleParseResult ModuleParserImpl::tag(const ModuleParseResult& result)
 				name,
 				memberMeta,
 				ExpressionOrParseError::Result(
-					ExpressionLocationTagging::setCodeLocation(
-						e,
-						location
-						)
+					::CPPML::replaceCommonData(e, null() << location)
 					),
 				location,
 				parseMeta
@@ -206,7 +202,7 @@ ModuleParseResult ModuleParserImpl::parse(
 					catch(FunctionParseError& err)
 						{
 						//take the error that's got a larger lower range as the 'real' error
-						if (err.range().start().rawOffset() > objectCreateErr.range().start().rawOffset())
+						if (err.range().start().line() > objectCreateErr.range().start().line())
 							return ModuleParseResult::Member(
 								Symbol(name),
 								CSTValue(),
@@ -247,7 +243,7 @@ namespace {
 
 Nullable<FunctionParseError> extractStatementTerms(
 		const ModuleParser::StatementTermsAndErrors & termsAndErrors,
-		std::vector<std::pair<StatementTerm, CodeLocation>> & outTerms)
+		std::vector<std::pair<StatementTerm, Nullable<CodeLocation>>> & outTerms)
 	{
 	for (const auto& term: termsAndErrors)
 		if (term.isLeft())
@@ -365,7 +361,8 @@ ImmutableTreeMap<Symbol, ModuleParseResult>
 
 	ParserExpressions p(true, cdp, fullName);
 
-	std::vector<pair<StatementTerm, CodeLocation>> terms;
+	std::vector<pair<StatementTerm, Nullable<CodeLocation>>> terms;
+	
 	auto error = extractStatementTerms(
 		p.unpackNodeToStatementTermsOrParseErrors(textAsSimpleParse),
 		terms
@@ -414,7 +411,7 @@ ImmutableTreeMap<Symbol, ModuleParseResult>
 				//display
 				Expression::While(Expression::Constant(CSTValue(false)), Expression())
 				),
-			CodeLocation(),
+			null(),
 			allSymbols,
 			boundChildren,
 			boundSymbolMap,
@@ -493,7 +490,7 @@ ImmutableTreeMap<Symbol, ModuleParseResult>
 
 Nullable<Symbol> ModuleParserImpl::bindScriptTerms(
 			const std::string& nameOfModule,
-			const std::vector<std::pair<StatementTerm, CodeLocation>>& terms,
+			const std::vector<std::pair<StatementTerm, Nullable<CodeLocation>>>& terms,
 			ImmutableTreeSet<Symbol>& ioAllSymbolsUsed,
 			ImmutableTreeMap<Symbol, ModuleParseResult>& ioModuleMembers,
 			std::map<Symbol, Expression>& ioBoundSymbolMap,
@@ -568,7 +565,7 @@ Nullable<Symbol> ModuleParserImpl::bindFinalScriptValueTerm(
 
 	Nullable<Symbol> symbolToEvaluateTo = bindScriptTerm(
 		StatementTerm::Expr(expressionForFinalScriptValue),
-		CodeLocation(),
+		null(),
 		ioAllSymbolsUsed,
 		ioModuleMembers,
 		ioBoundSymbolMap,
@@ -587,7 +584,7 @@ Nullable<Symbol> ModuleParserImpl::bindFinalScriptValueTerm(
 
 Nullable<Symbol> ModuleParserImpl::bindScriptTerm(
 			const StatementTerm& term,
-			const CodeLocation& location,
+			const Nullable<CodeLocation>& location,
 			//set of all symbols. Used to prevent collisions
 			ImmutableTreeSet<Symbol>& ioAllSymbolsUsed,
 			//module members used in the script module
@@ -619,10 +616,7 @@ Nullable<Symbol> ModuleParserImpl::bindScriptTerm(
 
 		Symbol nameForThisExpression = allocateFreeVariable(
 			ioAllSymbolsUsed,
-			hashToString(
-				ExpressionLocationTagging::withoutCodeLocationMetadata(toExport)
-					.hash()
-				)
+			hashToString(toExport.hash())
 			);
 		//now push this expression onto the module stack
 		ioModuleMembers = ioModuleMembers + nameForThisExpression +
@@ -630,7 +624,7 @@ Nullable<Symbol> ModuleParserImpl::bindScriptTerm(
 				nameForThisExpression,
 				CSTValue(),
 				ExpressionOrParseError::Result(toExport),
-				location,
+				location ? *location : CodeLocation(),
 				ModuleParseMetadata::None()
 				);
 		return nameForThisExpression;

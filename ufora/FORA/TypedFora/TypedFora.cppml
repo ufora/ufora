@@ -58,12 +58,17 @@ void Serializer<TypedFora::ResultSignature, HashingStreamSerializer>::serialize(
 	}
 
 
-hash_type TypedFora::Type::hash(void) const
+namespace TypedFora {
+
+hash_type Type::hash(void) const
 	{
 	return jov().hash() + hashValue(refcountStyle());
 	}
 
-namespace TypedFora {
+Type Type::relaxed() const
+	{
+	return Type(jov().relaxedJOV(), refcountStyle());
+	}
 
 BlockID BlockID::internal()
 	{
@@ -112,6 +117,9 @@ bool Expression::computeHasSideEffects(void) const
 			return true;
 			}
 		-|	Halt(message) ->> {
+			return true;
+			}
+		-|	LocalityHint() ->> {
 			return true;
 			}
 		-|	KickCheck() ->> {
@@ -185,6 +193,9 @@ Nullable<Type> Expression::computeType(void) const
 				return null();
 
 			return second.type();
+			}
+		-|	LocalityHint() ->> {
+			return null() << Type(JOV::Constant(CSTValue()), RefcountStyle::Pooled());
 			}
 		-|	If(condition, ifTrue, ifFalse) ->> {
 			return typeForMergedControlFlowPaths(ifTrue.type(), ifFalse.type());
@@ -335,6 +346,13 @@ JudgmentOnAction ResultSignature::asJoa(void) const
 		JudgmentOnResult(jovListFromTypes(exceptionTypes())),
 		hasSideEffects()
 		);
+	}
+
+ResultSignature ResultSignature::relaxed() const
+	{
+	return ResultSignature(relaxedList(normalTypes()),
+						   relaxedList(exceptionTypes()),
+						   hasSideEffects());
 	}
 
 bool ResultSignature::covers(const ResultSignature& inResultSignature) const
@@ -557,12 +575,15 @@ void CPPML::Validator<TypedFora::Expression_InlineNativeOperationType, void>
 	for (long k = 0; k < in.variableMap().size();k++)
 		vars = vars - *in.variableMap()[k].internalArg();
 
-	vars = vars - NativeVariable("callbacks", NativeTypeFor<NativeRuntimeCallbacks>::get().ptr());
+	for (auto v: vars)
+		if (v.type() == NativeTypeFor<NativeRuntimeCallbacks>::get().ptr())
+			vars = vars - v;
 
 	if (vars.size())
 		throw standardLogicErrorWithStacktrace(
 			"Inline expression has free variables: " + prettyPrintString(vars) + "\nexpr = " +
-				prettyPrintString(*in.expr())
+				prettyPrintString(*in.expr()) + 
+				" of type " + prettyPrintString(mapITV(ImmutableTreeVector<NativeVariable>(vars), [&](NativeVariable v) { return v.type(); }))
 			);
 	}
 

@@ -12,14 +12,43 @@
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
 
-import pyfora.pyAst.PyAstFreeVariableAnalyses as PyAstFreeVariableAnalyses
-import pyfora.Exceptions as Exceptions
-import pyfora.pyAst.PyAstUtil as PyAstUtil
 import ast
+import copy
+import os
 import textwrap
 import unittest
 
+import pyfora.pyAst.PyAstFreeVariableAnalyses as PyAstFreeVariableAnalyses
+import pyfora.pyAst.NodeVisitorBases as NodeVisitorBases
+import pyfora.Exceptions as Exceptions
+import pyfora.pyAst.PyAstUtil as PyAstUtil
+
 class PyAstFreeVariableAnalyses_test(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        filename = \
+            os.path.abspath(
+                os.path.join(
+                    os.path.dirname(__file__), # the path of this module
+                    '../pyAst/PyAstUtil.py'
+                    )
+                )
+        with open(filename) as fhandle:
+            cls.some_python_code = fhandle.read()
+
+    def test_multiple_assignment(self):
+        tree = ast.parse(
+            textwrap.dedent(
+                """
+                x = y = z = w
+                """
+                )
+            )
+        self.assertEqual(
+            set(['w']),
+            PyAstFreeVariableAnalyses.getFreeVariables(tree)
+            )
+
     def test_members(self):
         tree = ast.parse(
             textwrap.dedent(
@@ -48,7 +77,7 @@ class PyAstFreeVariableAnalyses_test(unittest.TestCase):
                 """
                 )
             )
-        expectedResult = set(['x','y'])
+        expectedResult = set(['x', 'y'])
         self.assertEqual(
             expectedResult,
             PyAstFreeVariableAnalyses.getFreeVariables(tree)
@@ -65,7 +94,7 @@ class PyAstFreeVariableAnalyses_test(unittest.TestCase):
                 """
                 )
             )
-        expectedResult = set(['range','isinstance'])
+        expectedResult = set(['range', 'isinstance'])
         self.assertEqual(
             expectedResult,
             PyAstFreeVariableAnalyses.getFreeVariables(tree)
@@ -81,7 +110,7 @@ class PyAstFreeVariableAnalyses_test(unittest.TestCase):
                 """
                 )
             )
-        expectedResult = set(['range','isinstance','slice','list'])
+        expectedResult = set(['range', 'isinstance', 'slice', 'list'])
         self.assertEqual(
             expectedResult,
             PyAstFreeVariableAnalyses.getFreeVariables(tree)
@@ -171,8 +200,8 @@ class PyAstFreeVariableAnalyses_test(unittest.TestCase):
             textwrap.dedent(
                 """
                 class C(object):
-                    x = x
                     y = x
+                    x = 0
                 """
                 )
             )
@@ -326,6 +355,20 @@ class PyAstFreeVariableAnalyses_test(unittest.TestCase):
 
         self.assertEqual(
             set(['w']),
+            PyAstFreeVariableAnalyses.getFreeVariables(tree)
+            )
+
+    def test_freeVariables_Assign_2(self):
+        tree = ast.parse(
+            textwrap.dedent(
+                """
+                w = ((x, y), z)
+                """
+                )
+            )
+
+        self.assertEqual(
+            set(['x', 'y', 'z']),
             PyAstFreeVariableAnalyses.getFreeVariables(tree)
             )
 
@@ -858,12 +901,12 @@ class PyAstFreeVariableAnalyses_test(unittest.TestCase):
 
         self.assertEqual(
             set([]),
-            PyAstFreeVariableAnalyses.getFreeVariables(tree.body[0], isClassContext = False)
+            PyAstFreeVariableAnalyses.getFreeVariables(tree.body[0], isClassContext=False)
             )
 
         self.assertEqual(
             set(['fib']),
-            PyAstFreeVariableAnalyses.getFreeVariables(tree.body[0], isClassContext = True)
+            PyAstFreeVariableAnalyses.getFreeVariables(tree.body[0], isClassContext=True)
             )
 
     def test_freeVariables_name_substring_bug(self):
@@ -970,6 +1013,213 @@ class PyAstFreeVariableAnalyses_test(unittest.TestCase):
             set([('C', 'f')]),
             res
             )
+
+    def test_freeVariableMemberAccessChains_3(self):
+        tree = ast.parse(
+            textwrap.dedent(
+                """
+                class C:
+                  x.y.z = 3
+                  def f(self):
+                    y = 2
+                    class C:
+                      def g(self, arg):
+                        x.y.z + y + arg
+                C.f
+                """
+                )
+            )
+
+        res = PyAstFreeVariableAnalyses.getFreeVariableMemberAccessChains(tree)
+
+        self.assertEqual(
+            set([('x', 'y', 'z')]),
+            res
+            )
+
+    def test_freeVariableMemberAccessChains_4(self):
+        tree = ast.parse(
+            textwrap.dedent(
+                """
+                x.y.z = 1
+                q = x.y.z
+                """
+                )
+            )
+
+        res = PyAstFreeVariableAnalyses.getFreeVariableMemberAccessChains(tree)
+
+        self.assertEqual(
+            set([('x', 'y', 'z')]),
+            res
+            )
+
+    def test_freeVariableMemberAccessChains_5(self):
+        tree = ast.parse(
+            textwrap.dedent(
+                """
+                x.y.z = 2
+                """
+                )
+            )
+
+        res = PyAstFreeVariableAnalyses.getFreeVariableMemberAccessChains(tree)
+
+        self.assertEqual(
+            set([('x', 'y', 'z')]),
+            res
+            )
+
+    def test_freeVariableMemberAccessChains_6(self):
+        tree = ast.parse(
+            textwrap.dedent(
+                """
+                q = x.y.z = 2
+                """
+                )
+            )
+
+        res = PyAstFreeVariableAnalyses.getFreeVariableMemberAccessChains(tree)
+
+        self.assertEqual(
+            set([('x', 'y', 'z')]),
+            res
+            )
+
+    def test_TransvisitorsDontModifyTree(self):
+        tree = ast.parse(self.some_python_code)
+        # deep-copy tree because transformers modify the AST in place
+        # making the test of areAstsIdentical(tree, tree') meaningless
+        tree1 = copy.deepcopy(tree)
+        noopTransformer = NodeVisitorBases.SemanticOrderNodeTransvisitor()
+        tree2 = noopTransformer.visit(tree1)
+
+        self.assertIsNotNone(tree2)
+        self.assertTrue(PyAstUtil.areAstsIdentical(tree, tree2))
+
+        scopeMgr = NodeVisitorBases.InScopeSaveRestoreValue(
+                    lambda :  True,
+                    lambda x: None)
+        noopTransformer = NodeVisitorBases.GenericScopedTransvisitor(scopeMgr)
+        tree3 = noopTransformer.visit(tree1)
+
+        self.assertIsNotNone(tree3)
+        self.assertTrue(PyAstUtil.areAstsIdentical(tree, tree3))
+
+        freeVarsVisitor = PyAstFreeVariableAnalyses._FreeVariableMemberAccessChainsTransvisitor()
+        tree4 = freeVarsVisitor.visit(tree1)
+
+        self.assertIsNotNone(tree4)
+        self.assertTrue(PyAstUtil.areAstsIdentical(tree, tree4))
+
+
+    def test_FreeVariableTransformer_1(self):
+        tree = ast.parse(
+            textwrap.dedent(
+                """
+                def g(x):
+                    return x.y.z
+                """
+                )
+            )
+        # deep-copy tree because transformers modify the AST in place
+        # making the test of areAstsIdentical(tree, tree') meaningless
+        tree1 = copy.deepcopy(tree)
+        tree2 = PyAstFreeVariableAnalyses.collapseFreeVariableMemberAccessChains(
+                        tree1, {('x', 'y', 'z'):'x_y_z'}, isClassContext=False)
+        self.assertIsNotNone(tree2)
+        self.assertTrue(PyAstUtil.areAstsIdentical(tree, tree2))
+
+    def test_FreeVariableTransformer_2(self):
+        tree = ast.parse(
+            textwrap.dedent(
+                """
+                def g(y):
+                    return x.y.z
+                """
+                )
+            )
+        # deep-copy tree because transformers modify the AST in place
+        # making the test of areAstsIdentical(tree, tree') meaningless
+        tree1 = copy.deepcopy(tree)
+        tree2 = PyAstFreeVariableAnalyses.collapseFreeVariableMemberAccessChains(
+                        tree1, {('x', 'y', 'z'):'x_y_z'}, isClassContext=False)
+        self.assertIsNotNone(tree2)
+        self.assertFalse(PyAstUtil.areAstsIdentical(tree, tree2))
+
+    def test_FreeVariableTransformer_3(self):
+        tree = ast.parse(
+            textwrap.dedent(
+                """
+                def g(y):
+                    return x.y.z.__str__()
+                """
+                )
+            )
+        # deep-copy tree because transformers modify the AST in place
+        # making the test of areAstsIdentical(tree, tree') meaningless
+        tree1 = copy.deepcopy(tree)
+        tree2 = PyAstFreeVariableAnalyses.collapseFreeVariableMemberAccessChains(
+                        tree1, {('x', 'y', 'z'):'x_y_z'}, isClassContext=False)
+        self.assertIsNotNone(tree2)
+        self.assertFalse(PyAstUtil.areAstsIdentical(tree, tree2))
+
+    def test_FreeVariableTransformer_4(self):
+        tree = ast.parse(
+            textwrap.dedent(
+                """
+                def f(x,y):
+                    def g(x):
+                        return x.y.z
+                    return x.y.z, g(y)
+                """
+                )
+            )
+        # deep-copy tree because transformers modify the AST in place
+        # making the test of areAstsIdentical(tree, tree') meaningless
+        tree1 = copy.deepcopy(tree)
+        tree2 = PyAstFreeVariableAnalyses.collapseFreeVariableMemberAccessChains(
+                        tree1, {('x', 'y', 'z'):'x_y_z'}, isClassContext=False)
+        self.assertIsNotNone(tree2)
+        self.assertTrue(PyAstUtil.areAstsIdentical(tree, tree2))
+
+    def test_FreeVariableTransformer_5(self):
+        tree = ast.parse(
+            textwrap.dedent(
+                """
+                def f(x,y):
+                    def g(z):
+                        return x.y.z
+                    return x.y.z, g(y)
+                """
+                )
+            )
+        # deep-copy tree because transformers modify the AST in place
+        # making the test of areAstsIdentical(tree, tree') meaningless
+        tree1 = copy.deepcopy(tree)
+        tree2 = PyAstFreeVariableAnalyses.collapseFreeVariableMemberAccessChains(
+                        tree1, {('x', 'y', 'z'):'x_y_z'}, isClassContext=False)
+        self.assertIsNotNone(tree2)
+        self.assertTrue(PyAstUtil.areAstsIdentical(tree, tree2))
+
+    def test_FreeVariableTransformer_6(self):
+        tree = ast.parse(
+            textwrap.dedent(
+                """
+                def f(y,z):
+                    def g(x):
+                        return x.y.z
+                    return x.y.z, g(y)
+                """
+                )
+            )
+        # deep-copy tree because transformers modify the AST in place
+        # making the test of areAstsIdentical(tree, tree') meaningless
+        tree1 = copy.deepcopy(tree)
+        tree2 = PyAstFreeVariableAnalyses.collapseFreeVariableMemberAccessChains(
+                        tree1, {('x', 'y', 'z'):'x_y_z'}, isClassContext=False)
+        self.assertIsNotNone(tree2)
+        self.assertFalse(PyAstUtil.areAstsIdentical(tree, tree2))
 
 
 

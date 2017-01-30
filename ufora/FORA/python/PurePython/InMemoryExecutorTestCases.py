@@ -19,31 +19,6 @@ import ufora.FORA.python.PurePython.ExecutorTestCases as ExecutorTestCases
 import ufora.test.PerformanceTestReporter as PerformanceTestReporter
 
 class InMemoryExecutorTestCases(ExecutorTestCases.ExecutorTestCases):
-    def test_list_hashing(self):
-        def f(x):
-            x = x[0]
-            res = 0
-            while x > 0:
-                x = x - 1
-                res = res + x
-            return res
-
-        t0 = time.time()
-        self.evaluateWithExecutor(f, [1000000000])
-        t1 = time.time()
-        self.evaluateWithExecutor(f, [1000000001])
-        t2 = time.time()
-        self.evaluateWithExecutor(f, [1000000000])
-        t3 = time.time()
-
-        firstPass = t1 - t0
-        secondPass = t2 - t1
-        thirdPass = t3 - t2
-
-        #the third pass should be _way_ faster.
-        self.assertTrue(thirdPass / firstPass < .1)
-        self.assertTrue(thirdPass / secondPass < .1)
-
     def test_list_comprehension_perf(self):
         def f(totalCt):
             return sum([sum([x for x in xrange(ct)]) for ct in xrange(totalCt)])
@@ -117,6 +92,17 @@ class InMemoryExecutorTestCases(ExecutorTestCases.ExecutorTestCases):
                 res = (isinstance(a, X), isinstance(b, X), isinstance(c, X))
 
             self.assertEqual(res, (True,True,True))
+
+    def test_remote_python_object_432(self):
+        with self.create_executor() as ufora:
+            
+            with ufora.remotely:
+                x = 2
+
+            with ufora.remotely.downloadAll():
+                y = x + 3
+
+            self.assertEqual(y, 5)
 
     def test_with_blocks_inside_converted_code(self):
         with self.assertRaises(pyfora.InvalidPyforaOperation):

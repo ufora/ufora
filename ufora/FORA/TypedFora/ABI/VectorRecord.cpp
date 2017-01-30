@@ -842,7 +842,7 @@ bool VectorRecord::entirelyCoveredByJOV(const JudgmentOnValue& inJOV) const
 	return true;
 	}
 
-bool VectorRecord::visitAnyLoadedValues(
+bool VectorRecord::visitAnyValuesPresentInVdm(
 		VectorDataManager* inVDM,
 		boost::function2<void, ForaValueArray*, IntegerSequence> visitor,
 		IntegerSequence subsequence
@@ -859,7 +859,7 @@ bool VectorRecord::visitAnyLoadedValues(
 		stride() * subsequence.stride()
 		);
 
-	return dataPtr()->visitAnyLoadedValues(
+	return dataPtr()->visitAnyValuesPresentInVdm(
 		inVDM,
 		visitor,
 		subsequenceWithinVH

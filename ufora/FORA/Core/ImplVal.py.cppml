@@ -32,6 +32,7 @@
 #include "../TypedFora/ABI/ForaValueArray.hppml"
 #include "../Primitives/String.hppml"
 #include "../Judgment/JudgmentOnValue.hppml"
+#include "../Core/ExecutionContext.hppml"
 #include "../Language/Function.hppml"
 #include "../Language/ClassMediatorBindings.hppml"
 #include "../Language/FunctionStage1.hppml"
@@ -40,10 +41,7 @@
 #include "MemoryPool.hpp"
 #include "ImplValContainerUtilities.hppml"
 #include "TupleCategory.hppml"
-#include "../python/FORAPythonUtil.hppml"
-
-#include "../TypedFora/ABI/UpdateFreeStoreValues.hppml"
-
+#include "../../core/python/ValueLikeCPPMLWrapper.hppml"
 
 #define DEFAULT_FUNCTION_STAGE_1_SIMULATION_STEPS 100
 
@@ -57,6 +55,23 @@ public:
 	static bool ImplValContainerIsCST(ImplValContainer& value)
 		{
 		return value.isCST();
+		}
+
+	static ImplValContainer ImplValContainerEncodeImplvalAsEmptyObjectMetadata(ImplValContainer value)
+		{
+		ClassMediator mediator = ClassMediator::Object(ObjectDefinition(), LexicalBindingMap(), CSTValue(value));
+
+		return ImplValContainer(
+			CSTValue::blankOf(
+				Type::Class(
+					emptyTreeVec(), 
+					ClassBody(
+						CPPMLOpaqueHandle<ClassMediator>(mediator), 
+						ClassMediatorResumption::Entry()
+						)
+					)
+				)
+			);
 		}
 
 	static boost::python::object ImplValContainerGetStackTrace(ImplValContainer& value)
@@ -99,7 +114,6 @@ public:
 
 		return boost::python::object();
 		}
-
 
 	static bool ImplValContainerIsFunction(ImplValContainer& value)
 		{
@@ -1712,7 +1726,7 @@ public:
 		if (!val.type().isClass())
 			return boost::python::object();
 
-		ExpressionLocationMetadata meta;
+		Nullable<CodeLocation> meta;
 
 		@match ClassMediator(*val.type().getClass().classBody().mediator())
 			-| Function(f) ->> {
@@ -1730,12 +1744,9 @@ public:
 			-| _ ->> { return boost::python::object(); }
 			;
 
-		Nullable<CodeLocation> loc;
-		if (meta.isWithId())
-			loc = GlobalCodeLocationRegistry::getCodeLocation(meta.getWithId().id());
-
-		if (loc)
-			return boost::python::object(*loc);
+		if (meta)
+			return boost::python::object(*meta);
+		
 		return boost::python::object();
 		}
 
@@ -1747,8 +1758,8 @@ public:
 			.def("toString", &Symbol::toString)
 			.def("__str__", &Symbol::toString)
 			.def("__repr__", &Symbol::toString)
-			.def("__cmp__", &FORAPythonUtil::comparer<Symbol>)
-			.def("__hash__", &FORAPythonUtil::hasher<Symbol>)
+			.def("__cmp__", &ValueLikeCPPMLWrapper::comparer<Symbol>)
+			.def("__hash__", &ValueLikeCPPMLWrapper::hasher<Symbol>)
 			;
 
 		class_< ImplValContainer >("ImplValContainer", init<>())
@@ -1757,21 +1768,13 @@ public:
 			.def("__hash__", &ImplValContainerPyHash)
 			.def("isCST", &ImplValContainerIsCST)
 			.add_property("hash", &ImplValContainerHash)
-			.def("__str__", &FORAPythonUtil::scopedPrettyPrinter< ImplValContainer>)
-			.def("__repr__", &FORAPythonUtil::scopedPrettyPrinter< ImplValContainer>)
+			.def("__str__", &ValueLikeCPPMLWrapper::scopedPrettyPrinter< ImplValContainer>)
+			.def("__repr__", &ValueLikeCPPMLWrapper::scopedPrettyPrinter< ImplValContainer>)
 			.def("parsableRepresentation", &ImplValContainerParsableRepresentation)
 
 			.def("__getitem__", &ImplValContainerGetItem, "If the IV is a tuple, getitem for it.")
 			.def("__contains__", &ImplValContainerHasNamedTupleElement, "If the IV is a tuple, whether the item exists")
 			.def("__len__", &ImplValContainerLen, "If the IV is a tuple, len for it")
-
-
-			.def("__getstate__", &FORAPythonUtil::serializer<ImplValContainer>)
-			.def("__setstate__", &FORAPythonUtil::deserializer<ImplValContainer>)
-			.def("__getstate_manages_dict__", &ImplValContainer_getstate_manages_dict)
-
-			.def("serializeEntireObjectGraph", &FORAPythonUtil::serializeEntireObjectGraph<ImplValContainer>)
-			.def("deserializeEntireObjectGraph", &FORAPythonUtil::deserializeEntireObjectGraph<ImplValContainer>)
 
 			.def("getFunction", &ImplValContainerGetFunction)
 			.def("getFunctionMembers", &ImplValContainerGetFunctionMembers)
@@ -1865,7 +1868,11 @@ public:
 			.enable_pickling()
 			;
 
+		def("encodeImplvalAsEmptyObjectMetadata", ImplValContainerEncodeImplvalAsEmptyObjectMetadata);
+
 		def("simulateApply", &ImplValContainerSimulateApply);
+
+		def("CreateNamedTuple", &ImplValContainerCreateNamedTuple);
 
 		def("CreateNamedTuple", &ImplValContainerCreateNamedTuple);
 		def("simpleListToVector", &ImplValContainerVectorFromSimpleList);
@@ -1894,9 +1901,6 @@ public:
 
 		def("true", object(ImplValContainer(CSTValue(true))));
 		def("false", object(ImplValContainer(CSTValue(false))));
-
-
-		def("updateFreeStoreValues", &TypedFora::Abi::updateFreeStoreValues);
 
 
 		def("symbol_Function", object(ImplValContainer(CSTValue(Symbol("Function")))));

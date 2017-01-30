@@ -24,6 +24,9 @@ import textwrap
 
 LINENO_ATTRIBUTE_NAME = 'lineno'
 
+def areAstsIdentical(ast1, ast2):
+    return ast.dump(ast1) == ast.dump(ast2)
+
 def CachedByArgs(f):
     """Function decorator that adds a simple memo to 'f' on its arguments"""
     cache = {}
@@ -50,6 +53,11 @@ def getSourceFilenameAndText(pyObject):
         sourceFile = PyforaInspect.getsourcefile(pyObject)
     except TypeError as e:
         raise Exceptions.CantGetSourceTextError(e.message)
+
+    if sourceFile is None:
+        raise Exceptions.CantGetSourceTextError(
+            "can't get source lines for file %s" % sourceFile
+            )
 
     linesOrNone = PyforaInspect.getlines(sourceFile)
 
@@ -210,6 +218,24 @@ def functionDefOrLambdaAtLineNumber(sourceAst, lineNumber):
 
     return subnodesAtLineNumber[0]
 
+@CachedByArgs
+def functionDefOrLambdaOrWithBlockAtLineNumber(sourceAst, lineNumber):
+    visitor = _AtLineNumberVisitor(lineNumber)
+    visitor.visit(sourceAst)
+
+    subnodesAtLineNumber = visitor.funcDefSubnodesAtLineNumber + visitor.lambdaSubnodesAtLineNumber + visitor.withBlockSubnodesAtLineNumber
+
+    if len(subnodesAtLineNumber) == 0:
+        raise Exceptions.CantGetSourceTextError(
+            "can't find a function definition at line %s." % lineNumber
+            )
+    if len(subnodesAtLineNumber) > 1:
+        raise Exceptions.CantGetSourceTextError(
+            "can't find a unique function definition at line %s. Do you have two lambdas on the same line?" % lineNumber
+            )
+
+    return subnodesAtLineNumber[0]
+
 
 def collectDataMembersSetInInit(pyClassObject):
     # Return a list of data members set in the '__init__' method.
@@ -220,7 +246,7 @@ def collectDataMembersSetInInit(pyClassObject):
     if initAstOrNone is None:
         return []
 
-    return _collectDataMembersSetInInitAst(initAstOrNone)
+    return list(_collectDataMembersSetInInitAst(initAstOrNone))
 
 
 def _collectDataMembersSetInInitAst(initAst):
@@ -243,8 +269,8 @@ def _collectDataMembersSetInInitAst(initAst):
             )
 
     return _extractSimpleSelfMemberAssignments(
-        initFunctionDef = initAst,
-        selfName = selfArg.id
+        initFunctionDef=initAst,
+        selfName=selfArg.id
         )
 
 
@@ -317,6 +343,7 @@ def _computeInitMethodAstOrNone(pyClassObject):
     return tr
 
 def getRootInContext(pyAstNode, isClassContext):
+    """Return the given node either as-is, or wrapped in a Module node."""
     if not NodeVisitorBases.isScopeNode(pyAstNode):
         raise Exceptions.InternalError(
             "Unsupported type of root node in Analysis (%s)."
@@ -331,7 +358,7 @@ def getRootInContext(pyAstNode, isClassContext):
     return pyAstNode
 
 
-class _OuterScopeCountingVisitor(NodeVisitorBases.GenericInScopeVisitor):
+class _OuterScopeCountingVisitor(NodeVisitorBases.GenericInScopeTransvisitor):
     """Scan the current scope and count various types of statements and expressions"""
     def __init__(self, root):
         super(_OuterScopeCountingVisitor, self).__init__(root)
@@ -361,10 +388,12 @@ class _OuterScopeCountingVisitor(NodeVisitorBases.GenericInScopeVisitor):
     def visit_Return(self, node):
         self._returnCount += 1
         self._returnLocs.append(node.lineno)
+        return node
 
     def visit_Yield(self, node):
         self._yieldCount += 1
         self._yieldLocs.append(node.lineno)
+        return node
 
 
 @CachedByArgs

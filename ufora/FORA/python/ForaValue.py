@@ -315,30 +315,21 @@ class FORAException(Exception):
     """base class for all FORA exceptions"""
     def __init__(self, foraVal = None):
         Exception.__init__(self)
+
         if foraVal is None:
             self.foraVal = nothing
             self.trace = None
-            self.valuesInScope = None
         else:
             if not isinstance(foraVal, tuple) or len(foraVal) != 2:
                 assert False, "Improperly formed FORA exception."
 
-            stacktraceAndData = foraVal[1]
-            # stacktraceAndData = (stacktrace, values in scope)
+            stacktrace = foraVal[1]
 
-            if not isinstance(foraVal[1], tuple):
-                stacktraceAndData = stacktraceAndData.toPythonObject()
-
-            if not isinstance(stacktraceAndData, tuple) or len(stacktraceAndData) != 2:
-                print stacktraceAndData, type(stacktraceAndData)
-                assert False, "Improperly formed FORA exception."
-
-            if not (stacktraceAndData[0].type() == StackTrace):
+            if not stacktrace.type() == StackTrace:
                 assert False, "Improperly formed FORA exception."
 
             self.foraVal = foraVal[0]
-            self.trace = stacktraceAndData[0].implVal_.getStackTrace()  # Python list of codeLocations.
-            self.valuesInScope = stacktraceAndData[1]
+            self.trace = stacktrace.implVal_.getStackTrace()  # Python list of codeLocations.
 
     def __str__(self):
         exceptionString = str(self.foraVal)
@@ -347,7 +338,7 @@ class FORAException(Exception):
 
         return "FORA Exception: " + exceptionString + (
                     "\n\nTraceback:\n" +
-                        ErrorFormatting.formatStacktrace(self.trace, self.valuesInScope)
+                        ErrorFormatting.formatStacktrace(self.trace, None)
                     if self.trace is not None
                         else
                     " (<no stacktrace available>)")

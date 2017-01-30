@@ -16,7 +16,7 @@
 #include <stdint.h>
 #include <boost/python.hpp>
 #include "VectorDataID.hppml"
-#include "../python/FORAPythonUtil.hppml"
+#include "../../core/python/ValueLikeCPPMLWrapper.hppml"
 #include "../../core/python/ScopedPyThreads.hpp"
 #include "../../core/python/CPPMLWrapper.hpp"
 #include "../../native/Registrar.hpp"
@@ -41,15 +41,11 @@ public:
 
 			Ufora::python::CPPMLWrapper<VectorDataID>
 					("VectorDataID", false).class_()
-				.def("__str__", &FORAPythonUtil::scopedPrettyPrinter<VectorDataID>)
-				.def("__repr__", &FORAPythonUtil::scopedPrettyPrinter<VectorDataID>)
-				.def("__cmp__", &FORAPythonUtil::comparer<VectorDataID>)
-				.def("__hash__", &FORAPythonUtil::hasher<VectorDataID>)
-				.def("__getstate__", &FORAPythonUtil::serializer<VectorDataID>)
-				.def("__setstate__", &FORAPythonUtil::deserializer<VectorDataID>)
-				.def("__getstate_manages_dict__", &VectorDataID_getstate_manages_dict)
+				.def("__str__", &ValueLikeCPPMLWrapper::scopedPrettyPrinter<VectorDataID>)
+				.def("__repr__", &ValueLikeCPPMLWrapper::scopedPrettyPrinter<VectorDataID>)
+				.def("__cmp__", &ValueLikeCPPMLWrapper::comparer<VectorDataID>)
+				.def("__hash__", &ValueLikeCPPMLWrapper::hasher<VectorDataID>)
 				.add_property("page", &VectorDataID::getPage)
-				.enable_pickling()
 				;
 
 			PythonWrapper<ImmutableTreeSet<VectorDataID> >::exportPythonInterface("VectorDataID");

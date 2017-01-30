@@ -74,10 +74,11 @@ GlobalSchedulerImpl::GlobalSchedulerImpl(
 				boost::arg<1>()
 				)
 			),
+		mPendingRecomputeChecks(0),
 		mCallbackScheduler(inCallbackScheduler->getFactory()->createScheduler("GlobalSchedulerImpl")),
 		mRebalanceCallbackScheduler(inCallbackScheduler->getFactory()->createScheduler("GlobalSchedulerImpl::Rebalance")),
-		mIsRecomputingPageLayout(false),
-		mNextRecomputeTime(false),
+		mNextRecomputeTime(curClock() + 1000000),
+		mSoonestRecomputeTime(0),
 		mIsTornDown(false),
 		mVDM(inVDM)
 	{
@@ -100,15 +101,7 @@ void GlobalSchedulerImpl::polymorphicSharedPtrBaseInitialized()
 	{
 	TimedLock lock(mMutex, "GlobalSchedulerImpl");
 
-	mCallbackScheduler->scheduleImmediately(
-		boost::bind(
-			PolymorphicSharedPtrBinder::memberFunctionToWeakPtrFunction(
-				&GlobalSchedulerImpl::recomputePageLayoutAndReschedule
-				),
-			polymorphicSharedWeakPtrFromThis()
-			),
-		"recomputePageLayoutAndReschedule"
-		);
+	setNextRecomputeTime(curClock());
 
 	mCallbackScheduler->scheduleImmediately(
 		boost::bind(
@@ -192,7 +185,7 @@ void GlobalSchedulerImpl::onKernelTriggerComputationStatusUpdate(ComputationId c
 
 void GlobalSchedulerImpl::onKernelTriggerRecomputePageLayoutIfNecessary()
 	{
-	triggerRecomputePageLayoutIfNecessary_(curClock(), true);
+	setNextRecomputeTime(curClock());
 	}
 
 void GlobalSchedulerImpl::teardown()
@@ -266,77 +259,29 @@ void GlobalSchedulerImpl::addMachine(MachineId inMachine)
 
 	mKernel.addMachine(inMachine);
 	}
-
-void GlobalSchedulerImpl::triggerRecomputePageLayoutIfNecessary_(
-													double targetTime,
-													bool rescheduleIfTooEarly
-													)
-	{
-	mCallbackScheduler->schedule(
-		boost::bind(
-			PolymorphicSharedPtrBinder::memberFunctionToWeakPtrFunction(
-				&GlobalSchedulerImpl::recomputePageLayoutIfNecessary
-				),
-			polymorphicSharedWeakPtrFromThis(),
-			rescheduleIfTooEarly
-			),
-		targetTime,
-		"GlobalSchedulerImpl::triggerRecomputePageLayoutIfNecessary"
-		);
-	}
-
 void GlobalSchedulerImpl::recomputePageLayoutAndReschedule()
 	{
-		{
-		TimedLock lock(mMutex, "GlobalSchedulerImpl");
-
-		if (mIsTornDown)
-			return;
-		}
-
-	recomputePageLayoutIfNecessary(true);
-
-	mCallbackScheduler->schedule(
-		boost::bind(
-			PolymorphicSharedPtrBinder::memberFunctionToWeakPtrFunction(
-				&GlobalSchedulerImpl::recomputePageLayoutAndReschedule
-				),
-			polymorphicSharedWeakPtrFromThis()
-			),
-		curClock() + kRecomputePageLayoutInterval,
-		"GlobalSchedulerImpl::recomputePageLayoutAndReschedule"
-		);
-	}
-
-bool GlobalSchedulerImpl::shouldRecomputePageLayoutNow_(bool rescheduleIfTooEarly)
-	{
-	if (mNextRecomputeTime > curClock())
-		{
-		if (rescheduleIfTooEarly)
-			triggerRecomputePageLayoutIfNecessary_(mNextRecomputeTime, false);
-		return false;
-		}
-	return true;
-	}
-
-void GlobalSchedulerImpl::recomputePageLayoutIfNecessary(
-		bool rescheduleIfTooEarly
-		)
-	{
 	TimedLock lock(mMutex, "GlobalSchedulerImpl");
+
+	mPendingRecomputeChecks--;
 
 	if (mIsTornDown)
 		return;
 
-	if (!shouldRecomputePageLayoutNow_(rescheduleIfTooEarly) || mIsRecomputingPageLayout)
+	if (curClock() < mNextRecomputeTime)
 		return;
 
+	recomputePageLayoutAndReschedule_();
+
+	lassert(mPendingRecomputeChecks);
+	}
+
+void GlobalSchedulerImpl::recomputePageLayoutAndReschedule_()
+	{
 	if (mEventHandler)
 		mEventHandler(GlobalSchedulerEvent::RecomputePageLayout());
 
 	double t0 = curClock();
-
-	mIsRecomputingPageLayout = true;
 
 	std::string response = mKernel.recomputePageLayout();
 
@@ -351,10 +296,65 @@ void GlobalSchedulerImpl::recomputePageLayoutIfNecessary(
 		outfile.close();
 		}
 
+	mNextRecomputeTime = curClock() + 1000000;
 
-	mIsRecomputingPageLayout = false;
+	setSoonestRecomputeTime(curClock() + std::min<double>(5.0, (curClock() - t0) * 2));
+	setNextRecomputeTime(curClock() + kRecomputePageLayoutInterval);
+	}
 
-	mNextRecomputeTime = curClock() + std::min<double>(5.0, (curClock() - t0) * 2);
+void GlobalSchedulerImpl::setSoonestRecomputeTime(double nextTime)
+	{
+	TimedLock lock(mMutex, "GlobalSchedulerImpl");
+
+	if (nextTime < mSoonestRecomputeTime)
+		return;
+
+	mSoonestRecomputeTime = nextTime;
+
+	if (mNextRecomputeTime < mSoonestRecomputeTime)
+		{
+		mNextRecomputeTime = mSoonestRecomputeTime;
+
+		mCallbackScheduler->schedule(
+			boost::bind(
+				PolymorphicSharedPtrBinder::memberFunctionToWeakPtrFunction(
+					&GlobalSchedulerImpl::recomputePageLayoutAndReschedule
+					),
+				polymorphicSharedWeakPtrFromThis()
+				),
+			mNextRecomputeTime + 0.0000001,
+			"recomputePageLayoutAndReschedule"
+			);
+
+		mPendingRecomputeChecks++;
+		}
+	}
+
+void GlobalSchedulerImpl::setNextRecomputeTime(double nextTime)
+	{
+	TimedLock lock(mMutex, "GlobalSchedulerImpl");
+
+	if (nextTime < mSoonestRecomputeTime)
+		nextTime = mSoonestRecomputeTime;
+
+	if (nextTime > mNextRecomputeTime)
+		//don't do anything
+		return;
+
+	mNextRecomputeTime = nextTime;
+
+	mCallbackScheduler->schedule(
+		boost::bind(
+			PolymorphicSharedPtrBinder::memberFunctionToWeakPtrFunction(
+				&GlobalSchedulerImpl::recomputePageLayoutAndReschedule
+				),
+			polymorphicSharedWeakPtrFromThis()
+			),
+		mNextRecomputeTime + 0.0000001,
+		"recomputePageLayoutAndReschedule"
+		);
+
+	mPendingRecomputeChecks++;
 	}
 
 void GlobalSchedulerImpl::setDiagnosticLogfilePath(std::string inLogfilePath)

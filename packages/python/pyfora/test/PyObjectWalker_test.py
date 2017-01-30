@@ -1,4 +1,4 @@
-#   Copyright 2015 Ufora Inc.
+#   Copyright 2016 Ufora Inc.
 #
 #   Licensed under the Apache License, Version 2.0 (the "License");
 #   you may not use this file except in compliance with the License.
@@ -12,54 +12,112 @@
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
 
+from pyfora.BinaryObjectRegistry import BinaryObjectRegistry
 import pyfora.PureImplementationMappings as PureImplementationMappings
 import pyfora.PureImplementationMapping as PureImplementationMapping
-import pyfora.PyObjectWalker as PyObjectWalker
+from pyfora.PyObjectWalker import PyObjectWalker
 import pyfora.NamedSingletons as NamedSingletons
 
+import ast
+import gc
 import unittest
+
 
 class SomeRandomInstance:
     pass
 
+
 class PureUserWarning:
     pass
 
-class PyObjectWalkerTest(unittest.TestCase):
-    def test_cant_provide_mapping_for_named_singleton(self):
-        mappings = PureImplementationMappings.PureImplementationMappings()
 
+class PyObjectWalkerTest(unittest.TestCase):
+    def setUp(self):
+        self.excludeList = ["staticmethod", "property", "__inline_fora"]
+
+        def is_pureMapping_call(node):
+            return isinstance(node, ast.Call) and \
+                isinstance(node.func, ast.Name) and \
+                node.func.id == 'pureMapping'
+
+        self.excludePredicateFun = is_pureMapping_call
+
+        self.mappings = PureImplementationMappings.PureImplementationMappings()
+    
+    def test_cant_provide_mapping_for_named_singleton(self):
         #empty mappings work
-        PyObjectWalker.PyObjectWalker(
-            purePythonClassMapping=mappings,
-            objectRegistry=None
+        PyObjectWalker(
+            self.mappings,
+            BinaryObjectRegistry()
             )
 
-        mappings.addMapping(
+        self.mappings.addMapping(
             PureImplementationMapping.InstanceMapping(
                 SomeRandomInstance(), SomeRandomInstance
                 )
             )
 
         #an instance mapping doesn't cause an exception
-        PyObjectWalker.PyObjectWalker(
-            purePythonClassMapping=mappings,
-            objectRegistry=None
+        PyObjectWalker(
+            self.mappings,
+            BinaryObjectRegistry()
             )
 
         self.assertTrue(UserWarning in NamedSingletons.pythonSingletonToName)
+    
+    def test_PyObjectWalker_TypeErrors(self):
+        mappings = PureImplementationMappings.PureImplementationMappings()
 
-        mappings.addMapping(
-            PureImplementationMapping.InstanceMapping(UserWarning, PureUserWarning)
+        with self.assertRaises(TypeError):
+            not_an_objectregistry = 2
+            PyObjectWalker(mappings, not_an_objectregistry)
+
+    def test_PyObjectWalker_refcount_on_objectRegistry(self):
+        walker = PyObjectWalker(
+            self.mappings,
+            BinaryObjectRegistry()
             )
 
-        #but this mapping doesnt
-        with self.assertRaises(Exception):
-            PyObjectWalker.PyObjectWalker(
-                purePythonClassMapping=mappings,
-                objectRegistry=None
-                )
+        # just check that the folling calls succeeed (see github #289
+        gc.collect()
+        walker.walkPyObject(1)
+        
+    def test_PyObjectWalker_boto_connection_1(self):
+        import boto
+
+        conn = boto.connect_s3()
+
+        walker = PyObjectWalker(
+            self.mappings,
+            BinaryObjectRegistry()
+            )
+
+        # just check that these don't fail
+        walker.walkPyObject(boto)
+        walker.walkPyObject(conn)
+        
+    def test_PyObjectWalker_boto_connection_2(self):
+        import boto
+        bucketName = 'ufora-test-data'
+
+        conn = boto.connect_s3()
+        bucket = conn.get_bucket(bucketName)
+        key = bucket.get_key("trip_data_1.csv")
+
+        res = key.md5
+
+        walker = PyObjectWalker(
+            self.mappings,
+            BinaryObjectRegistry()
+            )
+
+        walker.walkPyObject(boto)
+        walker.walkPyObject(conn)
+        walker.walkPyObject(bucket)
+        walker.walkPyObject(key)
+        walker.walkPyObject(res)
 
 
 if __name__ == "__main__":
     unittest.main()
+

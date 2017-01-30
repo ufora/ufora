@@ -18,7 +18,7 @@ import os
 import sys
 import time
 import ufora.config.Mainline as Mainline
-import ufora.util.SubprocessingModified as subprocess
+import subprocess
 
 # importing the interpreter as a module to find its path here.
 # so if we ever decide to move the interpreter it, this file

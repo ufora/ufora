@@ -239,9 +239,15 @@ public:
 
 	void moveUnpagedValueArrayIntoPagelet(VectorDataManager* inVDM) const;
 
-	bool visitAnyLoadedValues(
+	bool visitAnyValuesPresentInVdm(
 			VectorDataManager* inVDM,
 			boost::function2<void, ForaValueArray*, IntegerSequence> visitor,
+			IntegerSequence subsequence
+			);
+
+	bool visitAnyVectorHandleComponents(
+			boost::function2<bool, Fora::BigVectorId, IntegerSequence> pagedDataVisitor,
+			boost::function2<bool, ForaValueArray*, IntegerSequence> pageletAndUnpagedValuesVisitor,
 			IntegerSequence subsequence
 			);
 

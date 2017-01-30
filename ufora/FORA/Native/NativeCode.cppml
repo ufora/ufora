@@ -20,7 +20,6 @@
 #include "../../core/StringUtil.hpp"
 #include <boost/lexical_cast.hpp>
 #include "../../core/cppml/CPPMLVisit.hppml"
-#include "../../core/STLOps.hpp"
 #include "../../core/SymbolExport.hpp"
 #include "../Runtime.hppml"
 #include "../TypedFora/TypedFora.hppml"
@@ -38,12 +37,12 @@ NativeContinuationVarMetadataSerialized::NativeContinuationVarMetadataSerialized
 		!inLayout || TypedFora::Abi::nativeTypeForForaType(**inLayout) == inData.type(),
 		"Created metadata with incorrect typing information:\n"
 		<< "TypedFora::Type: " << prettyPrintString(*inLayout) << "\n"
-		<< "TypedFora::Type's NativeType: " 
+		<< "TypedFora::Type's NativeType: "
 		<< prettyPrintString(TypedFora::Abi::nativeTypeForForaType(**inLayout)) << "\n"
 		<< "Data: " << prettyPrintString(inData) << "\n"
 		<< "Data's NativeType: " << prettyPrintString(inData.type()) << "\n"
 		)
-	
+
 
 	data() = inData;
 	layout() = inLayout;
@@ -61,7 +60,7 @@ NativeType NativeContinuationExpressionSerialized::computeNativeType(void) const
 			}
 		-| Tuple(children) ->> {
 			ImmutableTreeVector<NativeType> types;
-			
+
 			for (long k = 0; k < children.size(); k++)
 				types = types + children[k].type();
 
@@ -69,7 +68,7 @@ NativeType NativeContinuationExpressionSerialized::computeNativeType(void) const
 			}
 	}
 
-NativeContinuationExpressionSerialized 
+NativeContinuationExpressionSerialized
 NativeContinuationExpressionSerialized::Constant(const NativeConstant& c)
 	{
 	return Constant(c, c.type(), 0);
@@ -91,7 +90,7 @@ NativeContinuationVarMetadata::NativeContinuationVarMetadata(
 	{
 	dataVar() = inData;
 	layout() = CPPMLOpaqueHandle<TypedFora::Type>(inLayout);
-	
+
 	lassert(!inData.type() || TypedFora::Abi::nativeTypeForForaType(inLayout) == *inData.type());
 
 	toss() = false;
@@ -219,11 +218,23 @@ Nullable<NativeType>	NativeExpression::computeNativeType(void) const
 				return null();
 				}
 		-|	DiscardFirst(f,s) ->> { return f.type() ? s.type() : f.type(); }
-		-|	Load(v,isVol) ->> { return v.type() && v.type()->isPointer() ? null() << v.type()->getPointer().element() : Nullable<NativeType>(); }
+		-|	Load(v,isVol) ->> {
+			return v.type() && v.type()->isPointer() ?
+					null() << v.type()->getPointer().element() :
+					Nullable<NativeType>();
+			}
 		-|	Zero(t) ->> { return null() << t; }
 		-|	Alloc(t,_,_) ->> { return null() << t.ptr(); }
-		-|	Store(addr, val) ->> { return addr.type() && val.type() ? null() << NativeType::Nothing() : Nullable<NativeType>(); }
-		-|	Selector(c,t,f) ->> { return !(c.type() && t.type() && f.type()) ? Nullable<NativeType>() : t.type(); }
+		-|	Store(addr, val) ->> {
+			return addr.type() && val.type() ?
+					null() << NativeType::Nothing() :
+					Nullable<NativeType>();
+			}
+		-|	Selector(c,t,f) ->> {
+			return !(c.type() && t.type() && f.type()) ?
+					Nullable<NativeType>() :
+					t.type();
+			}
 		-|	If(c,t,f) ->> {
 			if (t.type() && f.type())
 				lassert_dump(*t.type() == *f.type(),
@@ -236,7 +247,7 @@ Nullable<NativeType>	NativeExpression::computeNativeType(void) const
 				lassert_dump(c.type()->isInteger() || c.type()->isFloat() || c.type()->isPointer(),
 					"can't branch on a value of type " << prettyPrintString(*c.type())
 					);
-				
+
 			return !c.type() ? Nullable<NativeType>() : !t.type() ? f.type() : t.type();
 			}
 		-|	Let(v,e,w) ->> {
@@ -251,7 +262,7 @@ Nullable<NativeType>	NativeExpression::computeNativeType(void) const
 							<< ". cmp = " << (long)cppmlCmp(v.type(), *e.type()) << "\n"
 							<< ". cmp = " << (long)cppmlCmp(v.type().hash(), e.type()->hash()) << "\n"
 							);
-				
+
 				return !e.type() ? Nullable<NativeType>() : w.type();
 				}
 		-|	BinaryOp(opcode,lhs,rhs) ->> {
@@ -282,10 +293,9 @@ Nullable<NativeType>	NativeExpression::computeNativeType(void) const
 				return src.type() ? null() << dest : Nullable<NativeType>();
 				}
 		-|	ElementAddress(elements, source) ->> {
-
 				Nullable<NativeType> t = source.type();
 
-				for (long k = 0; k < elements.size() && t;k++)
+				for (long k = 0; k < elements.size() && t; k++)
 					{
 					if (!elements[k].type())
 						t = null();
@@ -314,7 +324,7 @@ Nullable<NativeType>	NativeExpression::computeNativeType(void) const
 														<< prettyPrintString(*this)
 														<< "\nsource type = "
 														<< prettyPrintString(*source.type())
-													); 
+													);
 												t = null() <<  NativeType();
 												}
 											;
@@ -343,6 +353,9 @@ Nullable<NativeType>	NativeExpression::computeNativeType(void) const
 					return null();
 				return null() << *nativeTypeForValueExtractExpression(elements, *source.type());
 				}
+		-|	SideEffectfulNoOp() ->> {
+				return null() << NativeType();
+				}
 		-|	CallLibraryFunction(_, ret, args) ->> {
 				bool OK = true;
 				for (long k = 0; k < args.size() && OK;k++)
@@ -363,6 +376,17 @@ Nullable<NativeType>	NativeExpression::computeNativeType(void) const
 		-|	Call(f,conts,args) ->> {
 				return contListType(conts);
 				}
+		-|	Resumption(_, e, eOverride) ->> { 
+				if (!eOverride.type())
+					return e.type(); 
+				if (!e.type())
+					return eOverride.type();
+				
+				lassert(eOverride.type() == e.type());
+
+				return e.type();
+				}
+		-|	JumpToResumption() ->> { return Nullable<NativeType>(); }
 		-|	Jump() ->> { return Nullable<NativeType>(); }
 		-|	FollowContinuation() ->> { return Nullable<NativeType>(); }
 		-|	Return() ->> { return Nullable<NativeType>(); }
@@ -373,7 +397,7 @@ Nullable<NativeType>	NativeExpression::computeNativeType(void) const
 @type NativeReturnTypeExtractor = ImmutableTreeMap<uint64_t, NativeType> elts {
 public:
 		template<class T>
-		void processDown(const T& in, bool& shouldContinue)
+		void processDown(const T& in)
 			{
 			}
 		template<class T>
@@ -381,7 +405,7 @@ public:
 			{
 			}
 
-		void processDown(const NativeExpression& in, bool& shouldContinue)
+		void processDown(const NativeExpression& in)
 			{
 			@match NativeExpression(in)
 				-|	Return(exit, expr) ->> {
@@ -393,12 +417,14 @@ public:
 							elts() = elts() + make_pair(exit, *expr.type());
 							}
 						}
-				-|	_ ->> {;};
+				-|	_ ->> {}
 			}
-		void processDown(const NativeCallTarget& t, bool& shouldContinue)
+
+		ContinueOrStop processDown(const NativeCallTarget& t)
 			{
 			if (t.isInline())
-				shouldContinue = false;
+				return ContinueOrStop::Stop;
+			return ContinueOrStop::Continue;
 			}
 };
 
@@ -412,7 +438,7 @@ ImmutableTreeMap<uint64_t, NativeType> extractReturnTypes(const NativeExpression
 @type NativeJumpTargetExtractor = ImmutableTreeVector<pair<NativeBlockID, ImmutableTreeVector<NativeType> > > elts {
 public:
 		template<class T>
-		void processDown(const T& in, bool& shouldContinue)
+		void processDown(const T& in)
 			{
 			}
 		template<class T>
@@ -420,7 +446,7 @@ public:
 			{
 			}
 
-		void processDown(const NativeExpression& in, bool& shouldContinue)
+		void processDown(const NativeExpression& in)
 			{
 			@match NativeExpression(in)
 				-|	Jump(target, expressions) ->> {
@@ -436,12 +462,14 @@ public:
 
 						elts() = elts() + make_pair(target, types);
 						}
-				-|	_ ->> {;};
+				-|	_ ->> {}
 			}
-		void processDown(const NativeCallTarget& t, bool& shouldContinue)
+
+		ContinueOrStop processDown(const NativeCallTarget& t)
 			{
 			if (t.isInline())
-				shouldContinue = false;
+				return ContinueOrStop::Stop;
+			return ContinueOrStop::Continue;
 			}
 };
 
@@ -458,7 +486,7 @@ NativeCFG::NativeCFG(const ImmutableTreeVector<NativeType>& inRet, const Immutab
 	returnTypes() = inRet;
 	blocks() = inBlocks;
 	name() = inName;
-	
+
 	//validate();
 	}
 
@@ -471,7 +499,7 @@ NativeCFG::NativeCFG(const ImmutableTreeVector<NativeType>& inRet, const Immutab
 	lassert(!inExpr.type());
 
 	blocks() = blocks() + NativeBlockID::entry() + NativeBlock(inArgs, inExpr);
-	
+
 	//validate();
 	}
 
@@ -510,19 +538,18 @@ public:
 	map<NativeVariable, uint64_t> mVarsDefined;
 
 	template<class T>
-	void processDown(const T& in, bool& shouldContinue)
+	void processDown(const T& in)
 		{
 		}
 	template<class T>
 	void processUp(const T& in)
 		{
 		}
-	void processDown(const NativeContinuation& in, bool& shouldContinue)
+	StopVisiting processDown(const NativeContinuation& in)
 		{
-		shouldContinue = false;
 		@match NativeContinuation(in)
 			-|	(v,x) ->> {
-				if (v == mVarsDefined)
+				if (mVarsDefined.find(v) != mVarsDefined.end())
 					throw InvalidNativeCallTarget("variable " + prettyPrintString(v) + " is defined twice!");
 
 				mVarsDefined[v]++;
@@ -532,18 +559,19 @@ public:
 					mVarsDefined.erase(v);
 				}
 			;
+
+		return StopVisiting();
 		}
-	void processDown(const NativeExpression& in, bool& shouldContinue)
+
+	ContinueOrStop processDown(const NativeExpression& in)
 		{
 		@match NativeExpression(in)
 			-|	Call(Inline(f, b), rets, args) ->> {
 
-				shouldContinue = false;
-
 				if (f.returnTypes().size() != rets.size())
 					throw InvalidNativeCallTarget(
-						"didn't pass enough continuations to " + prettyPrintString(f) + 
-						". " + prettyPrintString(f.returnTypes()) + 
+						"didn't pass enough continuations to " + prettyPrintString(f) +
+						". " + prettyPrintString(f.returnTypes()) +
 						" != " + prettyPrintString(rets)
 						);
 
@@ -551,26 +579,26 @@ public:
 					if (f.returnTypes()[k] != rets[k].var().type())
 						throw InvalidNativeCallTarget(
 							"passed wrong continuation type:\n\t" +
-								prettyPrintString(rets[k].var().type()) + 
+								prettyPrintString(rets[k].var().type()) +
 								"\nto function expecting" +
-								prettyPrintString(f.returnTypes()[k]) + 
-								"\nin slot " + boost::lexical_cast<string>(k) + "\nf = " + 
+								prettyPrintString(f.returnTypes()[k]) +
+								"\nin slot " + boost::lexical_cast<string>(k) + "\nf = " +
 								prettyPrintString(f)
 							);
 
 				if (!f.blocks()[b])
-					throw InvalidNativeCallTarget("tried to jump to " + 
-						prettyPrintString(b) + 
-						" which doesn't exit in \n\n" + 
+					throw InvalidNativeCallTarget("tried to jump to " +
+						prettyPrintString(b) +
+						" which doesn't exit in \n\n" +
 						prettyPrintString(f));
-				
+
 				const NativeBlock& entBlock = *f.blocks()[b];
 
 				if (args.size() != entBlock.args().size())
 					throw InvalidNativeCallTarget(
-						"didn't pass right number of arguments to " + 
-						prettyPrintString(f) + ". " + 
-						prettyPrintString(entBlock.args()) + 
+						"didn't pass right number of arguments to " +
+						prettyPrintString(f) + ". " +
+						prettyPrintString(entBlock.args()) +
 						" != " + prettyPrintString(args)
 						);
 
@@ -579,14 +607,15 @@ public:
 					visit(args[k], *this);
 					if (args[k].type() && *args[k].type() != entBlock.args()[k].type())
 						throw InvalidNativeCallTarget(
-							"passed wrong arg type to " + 
-							prettyPrintString(f) + " in slot " + 
+							"passed wrong arg type to " +
+							prettyPrintString(f) + " in slot " +
 							boost::lexical_cast<string>(k)
 							);
 					}
+
+				return ContinueOrStop::Stop;
 				}
 			-|	Call(f, rets, args) ->> {
-				shouldContinue = false;
 				//rets need to either have same out type or be empty
 				Nullable<NativeType> t;
 				for (long k = 0; k < rets.size();k++)
@@ -598,28 +627,29 @@ public:
 							else
 						if (t != rets[k].expression().type())
 							throw InvalidNativeCallTarget(
-								"in call to " + 
-								prettyPrintString(f) + " continuation " + 
-								boost::lexical_cast<string>(k) + 
+								"in call to " +
+								prettyPrintString(f) + " continuation " +
+								boost::lexical_cast<string>(k) +
 								" has conflicting return type"
 								);
 						}
 					visit(rets[k], *this);
 					}
 				visit(args, *this);
+				
+				return ContinueOrStop::Stop;
 				}
 			-|	Continuations(conts, meta) ->> {
-				shouldContinue = false;
 				for (long k = 0; k < conts.size();k++)
 					if (conts[k].expression().type())
 						throw InvalidNativeCallTarget(
 							"continuation created in 'Continuations' should not "
 							"continue flow control"
 							);
+
+				return ContinueOrStop::Stop;
 				}
 			-|	Let(v, within, x) ->> {
-				shouldContinue = false;
-
 				visit(within, *this);
 
 				mVarsDefined[v]++;
@@ -627,7 +657,7 @@ public:
 				mVarsDefined[v]--;
 				if (mVarsDefined[v] == 0)
 					mVarsDefined.erase(v);
-
+				return ContinueOrStop::Stop;
 				}
 			-|	Jump(id, args) ->> {
 				if (!fun()->blocks()[id])
@@ -636,20 +666,21 @@ public:
 
 				if (args.size() != b.args().size())
 					throw InvalidNativeCallTarget(
-						"jump to " + prettyPrintString(id) + 
-						" has wrong arg count (" + prettyPrintString(args.size()) + 
+						"jump to " + prettyPrintString(id) +
+						" has wrong arg count (" + prettyPrintString(args.size()) +
 							" instead of " + prettyPrintString(b.args().size()) + ")"
 						);
 
 				for (long k = 0; k < args.size(); k++)
 					if (args[k].type() && *args[k].type() != b.args()[k].type())
 						throw InvalidNativeCallTarget(
-							"passed wrong arg type during jump to " + prettyPrintString(id) + 
+							"passed wrong arg type during jump to " + prettyPrintString(id) +
 							" in slot " + boost::lexical_cast<string>(k)
 							);
 				}
-			-|	_ ->> {;}
-			;
+			-|	_ ->> {}
+
+		return ContinueOrStop::Continue;
 		}
 
 };
@@ -657,8 +688,8 @@ public:
 const NativeBlock& NativeCFG::operator[](const NativeBlockID& n)  const
 	{
 	lassert_dump(
-		blocks()[n], 
-		"cfg\n" << Ufora::indent(prettyPrintString(*this)) 
+		blocks()[n],
+		"cfg\n" << Ufora::indent(prettyPrintString(*this))
 			<< "\ndoesn't have block " << prettyPrintString(n) << "\n"
 		);
 	return *blocks()[n];
@@ -677,7 +708,7 @@ void	NativeCFG::validate(void) const
 			{
 			auto block = blocks().pairAtPosition(k).second;
 
-			ImmutableTreeMap<uint64_t, NativeType> blockReturns = 
+			ImmutableTreeMap<uint64_t, NativeType> blockReturns =
 				extractReturnTypes(block.expression());
 
 			for (long j = 0; j < blockReturns.size();j++)
@@ -687,15 +718,15 @@ void	NativeCFG::validate(void) const
 
 				if (returnIndex >= returnTypes().size())
 					throw InvalidNativeCallTarget(
-						"Control flow graph returns to index " + 
+						"Control flow graph returns to index " +
 							boost::lexical_cast<string>(returnIndex) + " which is "
 							"out of range in " + prettyPrintString(returnTypes())
 						);
 
 				if (returnTypes()[returnIndex] != returnType)
 					throw InvalidNativeCallTarget(
-						"Control flow graph returns " + prettyPrintString(returnType) + 
-							" to return index " + 
+						"Control flow graph returns " + prettyPrintString(returnType) +
+							" to return index " +
 							boost::lexical_cast<string>(returnIndex) + " which expects " +
 							prettyPrintString(returnTypes()[returnIndex])
 						);
@@ -707,14 +738,14 @@ void	NativeCFG::validate(void) const
 			{
 			auto block = blocks().pairAtPosition(k).second;
 
-			ImmutableTreeVector<pair<NativeBlockID, ImmutableTreeVector<NativeType> > > jumpTargets = 
+			ImmutableTreeVector<pair<NativeBlockID, ImmutableTreeVector<NativeType> > > jumpTargets =
 				extractJumpTargets(block.expression());
 
 			for (long j = 0; j < jumpTargets.size(); j++)
 				{
 				NativeBlockID target = jumpTargets[j].first;
 				ImmutableTreeVector<NativeType> types = jumpTargets[j].second;
-				
+
 				lassert_dump(
 					blocks().contains(target),
 					"block " << prettyPrintString(block) << " tried to jump to non-existent "
@@ -838,6 +869,9 @@ ImmutableTreeSet<NativeBlockID>		NativeExpression::computeJumpTargets(void) cons
 		-|	ValueExtract(_,x) ->> {
 			return x.jumpTargets();
 			}
+		-|	SideEffectfulNoOp() ->> { 
+			return emptyTreeSet(); 
+			}
 		-|	CallLibraryFunction(_,_,x) ->> {
 			return ::jumpTargets(x);
 			}
@@ -852,6 +886,15 @@ ImmutableTreeSet<NativeBlockID>		NativeExpression::computeJumpTargets(void) cons
 			}
 		-|	FollowContinuation(v,c,i) ->> {
 			return v.jumpTargets() + c.jumpTargets();
+			}
+		-|	Resumption(_,e, e2) ->> {
+			return e.jumpTargets() + e2.jumpTargets();
+			}
+		-|	JumpToResumption(_,e) ->> {
+			ImmutableTreeSet<NativeBlockID> jumpTargets;
+			for (auto kv: e)
+				jumpTargets = jumpTargets + kv.second.jumpTargets();
+			return jumpTargets;
 			}
 		-|	Return(_,v) ->> {
 			return v.jumpTargets();
@@ -878,7 +921,7 @@ ImmutableTreeSet<string>				NativeCFG::externalBranches(void) const
 	return blocks().sumValues(getExternalBranchesFromBlock);
 	}
 
-	
+
 ImmutableTreeSet<string>	NativeCallTarget::externalBranches(void) const
 	{
 	@match NativeCallTarget(*this)
@@ -902,8 +945,8 @@ ImmutableTreeSet<uword_t>	NativeCallTarget::exits(void) const
 		-|	Inline() ->> {
 			return  emptyTreeSet();
 			}
-		-|	Expansion() ->> { 
-			return emptyTreeSet(); 
+		-|	Expansion() ->> {
+			return emptyTreeSet();
 			}
 		-|	External(t,b) ->> {
 			return  emptyTreeSet();
@@ -913,7 +956,7 @@ ImmutableTreeSet<uword_t>	NativeCallTarget::exits(void) const
 			}
 		;
 	}
-	
+
 template<class T1, class T2>
 ImmutableTreeSet<NativeVariable>	freeVariables(const pair<T1, T2>& inExpr)
 	{
@@ -1021,11 +1064,14 @@ bool	NativeExpression::computeHasSideEffects(void) const
 			for (long k = 0; k < x.size();k++)
 				if (x[k].hasSideEffects())
 					return true;
-			
+
 			return y.hasSideEffects();
 			}
 		-|	ValueExtract(_,x) ->> {
 			return  x.hasSideEffects();
+			}
+		-|	SideEffectfulNoOp() ->> {
+			return true;
 			}
 		-|	CallLibraryFunction(_,_,x) ->> {
 			return  true;
@@ -1043,10 +1089,10 @@ bool	NativeExpression::computeHasSideEffects(void) const
 			for (long k = 0; k < a.size();k++)
 				if (a[k].hasSideEffects())
 					return true;
-			
+
 			return t.hasSideEffects();
 			}
-		-|	Jump(_,e) ->> { 
+		-|	Jump(_,e) ->> {
 			for (long k = 0; k < e.size();k++)
 				if (e[k].hasSideEffects())
 					return true;
@@ -1054,6 +1100,15 @@ bool	NativeExpression::computeHasSideEffects(void) const
 			}
 		-|	FollowContinuation(v,c,i) ->> {
 			return  true;
+			}
+		-|	Resumption(_,e, e2) ->> {
+			return e.hasSideEffects() || e2.hasSideEffects();
+			}
+		-|	JumpToResumption(_,e) ->> {
+			for (auto kv: e)
+				if (kv.second.hasSideEffects())
+					return true;
+			return false;
 			}
 		-|	Return(_,v) ->> {
 			return  v.hasSideEffects();
@@ -1063,6 +1118,85 @@ bool	NativeExpression::computeHasSideEffects(void) const
 			}
 		;
 	}
+
+ImmutableTreeSet<NativeBlockID>	NativeExpression::computeResumptionTargets() const
+	{
+	ImmutableTreeSet<NativeBlockID> out;
+
+	CPPMLVisitor<>()
+		.down<NativeExpression::JumpToResumptionType>(
+			[&](const NativeExpression::JumpToResumptionType& jump) {
+				out = out + jump.targetBlock();
+				}
+			)
+		.down<NativeExpression>(
+			[&](const NativeExpression& e) {
+				out = out + e.resumptionTargets();
+				return StopVisiting();
+				}
+			)
+		.stopAt<NativeType>()
+		.stopAt<NativeConstant>()
+		.stopAt<NativeContinuationMetadata>()
+		.visitInternals(*this)
+		;
+
+	return out;
+	}
+
+
+ImmutableTreeSet<NativeVariable> NativeBlock::freeVariables() const
+	{
+	auto res = expression().freeVariables();
+	
+	for (auto v: args())
+		res = res - v;
+
+	return res;
+	}
+
+ImmutableTreeSet<NativeBlockID>	NativeCFG::resumptions() const
+	{
+	ImmutableTreeSet<NativeBlockID> res;
+	for (auto idAndBlock: blocks())
+		res = res + idAndBlock.second.expression().resumptions();
+	return res;
+	}
+
+ImmutableTreeSet<NativeBlockID>	NativeCFG::resumptionTargets() const
+	{
+	ImmutableTreeSet<NativeBlockID> res;
+	for (auto idAndBlock: blocks())
+		res = res + idAndBlock.second.expression().resumptionTargets();
+	return res;
+	}
+
+ImmutableTreeSet<NativeBlockID>	NativeExpression::computeResumptions() const
+	{
+	ImmutableTreeSet<NativeBlockID> out;
+
+	CPPMLVisitor<>()
+		.down<NativeExpression::ResumptionType>(
+			[&](const NativeExpression::ResumptionType& jump) {
+				out = out + jump.block();
+				}
+			)
+		.down<NativeExpression>(
+			[&](const NativeExpression& e) {
+				out = out + e.resumptions();
+				return StopVisiting();
+				}
+			)
+		.stopAt<NativeType>()
+		.stopAt<NativeConstant>()
+		.stopAt<NativeContinuationMetadata>()
+		.visitInternals(*this)
+		;
+
+	return out;
+	}
+
+
 ImmutableTreeSet<NativeVariable>	NativeExpression::computeFreeVariables(void) const
 	{
 	@match NativeExpression(*this)
@@ -1071,6 +1205,12 @@ ImmutableTreeSet<NativeVariable>	NativeExpression::computeFreeVariables(void) co
 			}
 		-|	Variable(v) ->> {
 			return  emptyTreeSet() + v;
+			}
+		-|	Tagged(e, Generic(_, childExpressions)) ->> {
+			ImmutableTreeSet<NativeVariable> freeVars = e.freeVariables();
+			for (auto nameAndChild: childExpressions)
+				freeVars = freeVars + nameAndChild.second.freeVariables();
+			return freeVars;
 			}
 		-|	Tagged(e) ->> {
 			return  e.freeVariables();
@@ -1117,6 +1257,9 @@ ImmutableTreeSet<NativeVariable>	NativeExpression::computeFreeVariables(void) co
 		-|	ValueExtract(_,x) ->> {
 			return  x.freeVariables();
 			}
+		-| 	SideEffectfulNoOp() ->> {
+			return emptyTreeSet();
+			}
 		-|	CallLibraryFunction(_,_,x) ->> {
 			return  ::freeVariables(x);
 			}
@@ -1135,6 +1278,15 @@ ImmutableTreeSet<NativeVariable>	NativeExpression::computeFreeVariables(void) co
 		-|	Return(_,v) ->> {
 			return  v.freeVariables();
 			}
+		-|	Resumption(_,e, e2) ->> {
+			return e.freeVariables() + e2.freeVariables();
+			}
+		-|	JumpToResumption(_,v) ->> {
+			ImmutableTreeSet<NativeVariable> vars;
+			for (auto kv: v)
+				vars = vars + kv.second.freeVariables();
+			return vars;
+			}
 		-|	Halt() ->> {
 			return  emptyTreeSet();
 			}
@@ -1143,11 +1295,10 @@ ImmutableTreeSet<NativeVariable>	NativeExpression::computeFreeVariables(void) co
 ImmutableTreeSet<NativeVariable>	NativeContinuationMetadata::freeVariables(void) const
 	{
 	ImmutableTreeSet<NativeVariable> tr;
-	
+
 	for (long k = 0; k < vars().size(); k++)
-		tr = tr + vars()[k].dataVar().freeVariables()
-				;
-	
+		tr = tr + vars()[k].dataVar().freeVariables();
+
 	return tr;
 	}
 ImmutableTreeSet<NativeVariable>	NativeContinuation::freeVariables(void) const
@@ -1266,6 +1417,9 @@ ImmutableTreeSet<string>			NativeExpression::computeExternalBranches(void) const
 		-|	ValueExtract(_,x) ->> {
 			return  x.externalBranches();
 			}
+		-|	SideEffectfulNoOp() ->> {
+			return emptyTreeSet();
+			}
 		-|	CallLibraryFunction(_,_,x) ->> {
 			return  ::externalBranches(x);
 			}
@@ -1280,6 +1434,15 @@ ImmutableTreeSet<string>			NativeExpression::computeExternalBranches(void) const
 			}
 		-|	FollowContinuation(v,c,i) ->> {
 			return  v.externalBranches() + c.externalBranches();
+			}
+		-| Resumption(_, e, e2) ->> {
+			return e.externalBranches() + e2.externalBranches();
+			}
+		-| JumpToResumption(_, exprs) ->> {
+			ImmutableTreeSet<string> external;
+			for (auto kv: exprs)
+				external = external + kv.second.externalBranches();
+			return external;
 			}
 		-|	Return(_,v) ->> {
 			return  v.externalBranches();
@@ -1374,6 +1537,9 @@ ImmutableTreeSet<uword_t>			NativeExpression::computeExits(void) const
 		-|	ValueExtract(_,x) ->> {
 			return  x.exits();
 			}
+		-| 	SideEffectfulNoOp() ->> {
+			return emptyTreeSet();
+			}
 		-|	CallLibraryFunction(_,_,x) ->> {
 			return  ::exits(x);
 			}
@@ -1386,6 +1552,15 @@ ImmutableTreeSet<uword_t>			NativeExpression::computeExits(void) const
 		-|	Jump(_,e) ->> {
 			return  ::exits(e);
 			}
+		-|	Resumption(_,e, e2) ->> {
+			return e.exits() + e2.exits();
+			}
+		-|	JumpToResumption(_,e) ->> {
+			ImmutableTreeSet<uword_t> res;
+			for (auto kv: e)
+				res = res + kv.second.exits();
+			return res;
+			}
 		-|	FollowContinuation(v,c,i) ->> {
 			return  v.exits() + c.exits();
 			}
@@ -1397,24 +1572,7 @@ ImmutableTreeSet<uword_t>			NativeExpression::computeExits(void) const
 			}
 		;
 	}
-NativeBlockID NativeBlockID::internal(void)
-	{
-	static AO_t ix = 1000000000000;
-	return NativeBlockID(true, AO_fetch_and_add_full(&ix, 1));
-	}
-NativeBlockID NativeBlockID::external(void)
-	{
-	static AO_t ix = 1000000000000;
-	return NativeBlockID(false, AO_fetch_and_add_full(&ix, 1));
-	}
-NativeBlockID NativeBlockID::external(uword_t branch)
-	{
-	return NativeBlockID(false, branch);
-	}
-NativeBlockID NativeBlockID::entry(void)
-	{
-	return NativeBlockID(false, 0);
-	}
+
 ImmutableTreeSet<string>	NativeContinuation::externalBranches(void) const
 	{
 	return expression().externalBranches();
@@ -1502,6 +1660,9 @@ uint64_t									NativeExpression::computeComplexity(void) const
 		-|	ValueExtract(_,x) ->> {
 			return  x.complexity();
 			}
+		-| 	SideEffectfulNoOp() ->> {
+			return 0;
+			}
 		-|	CallLibraryFunction(_,_,e) ->> {
 			return  ::complexity(e) + 1;
 			}
@@ -1516,6 +1677,15 @@ uint64_t									NativeExpression::computeComplexity(void) const
 			}
 		-|	FollowContinuation(x,y,i) ->> {
 			return  x.complexity() + y.complexity();
+			}
+		-|	Resumption(_,e, e2) ->> {
+			return  e.complexity() + e2.complexity();
+			}
+		-|	JumpToResumption(_,exprs) ->> {
+			int res = 1;
+			for (auto kv: exprs)
+				res = res + kv.second.complexity();
+			return res;
 			}
 		-|	Return(_,e) ->> {
 			return  e.complexity();
@@ -1579,6 +1749,9 @@ uint64_t									NativeExpression::computeHeight(void) const
 		-|	ValueExtract(_,x) ->> {
 			return  x.height() + 1;
 			}
+		-| 	SideEffectfulNoOp() ->> {
+			return 1;
+			}
 		-|	CallLibraryFunction(_,_,e) ->> {
 			return  ::height(e) + 1;
 			}
@@ -1593,6 +1766,15 @@ uint64_t									NativeExpression::computeHeight(void) const
 			}
 		-|	FollowContinuation(x,y,i) ->> {
 			return  std::max(x.height(),y.height()) + 1;
+			}
+		-| Resumption(_, e, e2) ->> {
+			return std::max<uint64_t>(e.height(), e2.height()) + 1;
+			}
+		-| JumpToResumption(_, exprs) ->> {
+			long h = 0;
+			for (auto kv: exprs)
+				h = std::max<long>(h, kv.second.height());
+			return h + 1;
 			}
 		-|	Return(_,e) ->> {
 			return  e.height();
@@ -1622,7 +1804,7 @@ NativeExpression NativeExpression::printf(std::string s, ImmutableTreeVector<Nat
 	return NativeExpression::CallLibraryFunction("fprintf", NativeType::Nothing(), emptyTreeVec()  +
 		NativeExpression::ConstantULong(
 			(unsigned long)(toStdErr ? stderr : stdout)
-			) + 
+			) +
 		TypedFora::Abi::ArbitraryNativeConstantForString::expressionForString(s)
 		+ arguments
 		);
@@ -1630,7 +1812,7 @@ NativeExpression NativeExpression::printf(std::string s, ImmutableTreeVector<Nat
 
 NativeContinuation NativeContinuation::addTeardown(NativeExpression e) const
 	{
-	@match NativeContinuation(*this) 
+	@match NativeContinuation(*this)
 		-| (v,r,f,meta) ->> {
 			return NativeContinuation(v,e>>r,f,meta);
 			};
@@ -1686,7 +1868,7 @@ NativeExpression NativeExpression::taggedWith(
 		return *this;
 	return NativeExpression::Tagged(*this, *t);
 	}
-	
+
 NativeExpression	NativeCFG::operator()(const ImmutableTreeVector<NativeExpression>& inExprs) const
 	{
 	if (returnTypes().size() == 1)
@@ -1697,7 +1879,7 @@ NativeExpression	NativeCFG::operator()(const ImmutableTreeVector<NativeExpressio
 				NativeBlockID::entry()
 				),
 			emptyTreeVec() + NativeContinuation(returnTypes()[0]),
-			inExprs, 
+			inExprs,
 			emptyTreeVec()
 			);
 		}
@@ -1713,7 +1895,7 @@ NativeExpression	NativeCFG::operator()(const ImmutableTreeVector<NativeExpressio
 				NativeBlockID::entry()
 				),
 			conts,
-			inExprs, 
+			inExprs,
 			emptyTreeVec()
 			);
 		}
@@ -1766,13 +1948,13 @@ Nullable<uint64_t> NativeExpression::integerConstant(void) const
 			}
 		;
 	}
-	
+
 NativeType		NativeCFG::implicitContinuationArgType(void) const
 	{
 	ImmutableTreeVector<NativeType> types;
 	for (long k = 0; k < returnTypes().size();k++)
 		types = types + returnTypes()[k];
-	return NativeType::Continuations(types); 
+	return NativeType::Continuations(types);
 	}
 
 NativeExpression NativeExpression::Let(const NativeVariable& var,
@@ -1794,71 +1976,6 @@ NativeExpression		NativeExpression::If(const NativeExpression& condition, const 
 	{
 	return NativeExpression::If(condition, ifTrue, ifFalse, .5);
 	}
-NativeExpression
-		NativeExpression::Loop(
-					const NativeVariable& var,
-					const NativeExpression& initializer,
-					const NativeExpression& condition,
-					const NativeExpression& body,
-					const NativeExpression& update,
-					const NativeExpression& result,
-					double conditionFrequency
-					)
-	{
-	NativeBlockID block = NativeBlockID::entry();
-
-	return NativeExpression::Call(
-		NativeCallTarget::Inline(
-			NativeCFG(
-				emptyTreeVec() + *result.type(),
-				emptyTreeMap() + block +
-					NativeBlock(emptyTreeVec() + var,
-						NativeExpression::If(
-							condition,
-							body >> NativeExpression::Jump(block, emptyTreeVec() + update),
-							NativeExpression::Return(0, result),
-							conditionFrequency
-							)
-						)
-					)
-				,
-			block
-			),
-		emptyTreeVec() +
-			NativeContinuation(*result.type())
-			,
-		emptyTreeVec() +
-			initializer,
-		emptyTreeVec()
-		);
-	}
-NativeExpression		NativeExpression::Loop(const ImmutableTreeVector<NativeVariable>& var, const ImmutableTreeVector<NativeExpression>& initializer, const NativeExpression& condition, const NativeExpression& body, const ImmutableTreeVector<NativeExpression>& update, const NativeExpression& result)
-	{
-	NativeBlockID block = NativeBlockID::entry();
-
-	return NativeExpression::Call(
-		NativeCallTarget::Inline(
-			NativeCFG(
-				emptyTreeVec() + *result.type(),
-				emptyTreeMap() + block +
-					NativeBlock(var,
-						NativeExpression::If(
-							condition,
-							body >> NativeExpression::Jump(block, update),
-							NativeExpression::Return(0, result)
-							)
-						)
-					)
-				,
-			block
-			),
-		emptyTreeVec() +
-			NativeContinuation(*result.type())
-			,
-		initializer,
-		emptyTreeVec()
-		);
-	}
 
 NativeContinuation::NativeContinuation(NativeType t)
 	{
@@ -1866,12 +1983,12 @@ NativeContinuation::NativeContinuation(NativeType t)
 	relativeFrequency() = 1.0;
 	expression() = var().expr();
 	}
-	
+
 const ImmutableTreeVector<NativeVariable>& NativeCFG::args(NativeBlockID block) const
 	{
 	return blocks()[block]->args();
 	}
-	
+
 NativeExpression	wrapInLetStatements(
 		const ImmutableTreeVector<pair<NativeVariable, NativeExpression> >& lets,
 		const NativeExpression& expr
@@ -1944,8 +2061,8 @@ NativeExpression NativeExpression::operator[](const std::string& inName) const
 		;
 
 	lassert_dump(false,
-		"Can't find " 
-			<< inName << " as a valid name in type " 
+		"Can't find "
+			<< inName << " as a valid name in type "
 			<< prettyPrintString(*type())
 			<< " while trying to use operator[]"
 		);
@@ -2050,6 +2167,14 @@ NativeExpression NativeExpression::ConstantPointer(void* u)
 	{
 	return NativeExpression::Constant(NativeConstant::VoidPtr((uword_t)u));
 	}
+NativeExpression NativeExpression::ConstantUInt8(uint8_t u)
+	{
+	return NativeExpression::Constant(NativeConstant::UInt8(u));
+	}
+NativeExpression NativeExpression::ConstantUInt16(uint16_t u)
+	{
+	return NativeExpression::Constant(NativeConstant::UInt16(u));
+	}
 NativeExpression NativeExpression::ConstantUInt32(uint32_t u)
 	{
 	return NativeExpression::Constant(NativeConstant::UInt32(u));
@@ -2057,6 +2182,14 @@ NativeExpression NativeExpression::ConstantUInt32(uint32_t u)
 NativeExpression NativeExpression::ConstantUInt64(uint64_t u)
 	{
 	return NativeExpression::Constant(NativeConstant::UInt64(u));
+	}
+NativeExpression NativeExpression::ConstantInt8(int8_t u)
+	{
+	return NativeExpression::Constant(NativeConstant::Int8(u));
+	}
+NativeExpression NativeExpression::ConstantInt16(int16_t u)
+	{
+	return NativeExpression::Constant(NativeConstant::Int16(u));
 	}
 NativeExpression NativeExpression::ConstantInt32(int32_t u)
 	{
@@ -2109,14 +2242,14 @@ void Validator<NativeExpression_CallType, void>::operator()(NativeExpression_Cal
 
 			for (long k = 0; k < nativeCfg.returnTypes().size();k++)
 				lassert_dump(returnHandlers[k].var().type() == cfgReturnTypes[k],
-					"cfg return slot " << k << " had type " << 
-						prettyPrintString(cfgReturnTypes[k]) << " but handed continuation of type " 
-					<< prettyPrintString(returnHandlers[k].var().type()) << " in call of :\n" << 
+					"cfg return slot " << k << " had type " <<
+						prettyPrintString(cfgReturnTypes[k]) << " but handed continuation of type "
+					<< prettyPrintString(returnHandlers[k].var().type()) << " in call of :\n" <<
 					prettyPrintString(nativeCfg)
 					);
 
 			const NativeBlock& block = nativeCfg[blockID];
-			
+
 			bool valid = args.size() == block.args().size();
 			for (long k = 0; k < args.size() && valid;k++)
 				if (args[k].type() && block.args()[k].type() != *args[k].type())
@@ -2128,12 +2261,12 @@ void Validator<NativeExpression_CallType, void>::operator()(NativeExpression_Cal
 				str << "Invalid call operation. Block args are\n";
 				for (long k = 0; k < block.args().size();k++)
 					str << "\t" << prettyPrintString(block.args()[k].type()) << "\n";
-				
+
 				str << "\nwhile args are\n";
 
 				for (long k = 0; k < args.size();k++)
 					str << "\t" << prettyPrintString(args[k].type()) << " -- " << prettyPrintString(args[k]) << "\n";
-				
+
 				throw standardLogicErrorWithStacktrace("bad call for " + name + ": " + str.str());
 				}
 			}
@@ -2148,19 +2281,21 @@ void Validator<NativeExpression_CallType, void>::operator()(NativeExpression_Cal
 			const ImmutableTreeVector<NativeExpression>& args(in.args());
 
 			lassert_dump(returnHandlers.size() == nativeCfg.returnTypes().size(),
-				"wrong number of return control flow paths for inline call"
+				"wrong number of return control flow paths for inline call: "
+					<< returnHandlers.size() << " != " << nativeCfg.returnTypes().size()
+					<< " (" << prettyPrintString(nativeCfg.returnTypes()[0])
 				);
 
 			for (long k = 0; k < returnHandlers.size();k++)
 				lassert_dump(returnHandlers[k].var().type() == cfgReturnTypes[k],
-					"cfg return slot " << k << " had type " << 
-						prettyPrintString(cfgReturnTypes[k]) << " but handed continuation of type " 
-					<< prettyPrintString(returnHandlers[k].var().type()) << " in call of :\n" << 
+					"cfg return slot " << k << " had type " <<
+						prettyPrintString(cfgReturnTypes[k]) << " but handed continuation of type "
+					<< prettyPrintString(returnHandlers[k].var().type()) << " in call of :\n" <<
 					prettyPrintString(nativeCfg)
 					);
 
 			const NativeBlock& block = nativeCfg[blockID];
-			
+
 			bool valid = args.size() == block.args().size();
 			for (long k = 0; k < args.size() && valid;k++)
 				if (args[k].type() && block.args()[k].type() != *args[k].type())
@@ -2172,12 +2307,12 @@ void Validator<NativeExpression_CallType, void>::operator()(NativeExpression_Cal
 				str << "Invalid call operation. Block args are\n";
 				for (long k = 0; k < block.args().size();k++)
 					str << "\t" << prettyPrintString(block.args()[k].type()) << "\n";
-				
+
 				str << "\nwhile args are\n";
 
 				for (long k = 0; k < args.size();k++)
 					str << "\t" << prettyPrintString(args[k].type()) << " -- " << prettyPrintString(args[k]) << "\n";
-				
+
 				throw standardLogicErrorWithStacktrace("bad call: " + str.str());
 				}
 			}
@@ -2199,7 +2334,7 @@ void Validator<NativeExpression_ValueExtractType, void>::operator()(NativeExpres
 
 	@match NativeExpression(in.source())
 		-| ValueExtract(subArgs, subSrc) ->> {
-			
+
 			//make copies, since we're going to destroy stuff when we copy them into 'in'
 			ImmutableTreeVector<uword_t> newArgs = subArgs + in.args();
 			NativeExpression newSrc = subSrc;
@@ -2216,7 +2351,7 @@ void Validator<NativeExpression_StoreType, void>::operator()(NativeExpression_St
 	if (in.address().type() && in.valueToStore().type())
 		{
 		lassert_dump(
-			*in.address().type() == in.valueToStore().type()->ptr() || 
+			*in.address().type() == in.valueToStore().type()->ptr() ||
 				//allow the case created by the default constructor
 				in.address().type()->isNothing() && in.valueToStore().type()->isNothing(),
 			"can't store value of type "
@@ -2247,18 +2382,18 @@ Nullable<NativeType> nativeTypeForValueExtractExpression(
 			-|	Array(eltType, ct) ->> {
 					t = eltType;
 					}
-			-|	_ ->> { 
+			-|	_ ->> {
 					return null();
 					}
 			;
 		}
-	
+
 	return null() << t;
 	}
 
 NativeExpression NativeExpression::CallLibraryFunction(
-							std::string functionName, 
-							const NativeType& retType, 
+							std::string functionName,
+							const NativeType& retType,
 							const ImmutableTreeVector<NativeExpression>& expressions
 							)
 	{
@@ -2272,8 +2407,8 @@ NativeExpression NativeExpression::CallLibraryFunction(
 	}
 
 NativeExpression NativeExpression::CallLibraryFunction(
-							void* functionPointer, 
-							const NativeType& retType, 
+							void* functionPointer,
+							const NativeType& retType,
 							const ImmutableTreeVector<NativeExpression>& expressions
 							)
 	{
@@ -2315,7 +2450,7 @@ NativeExpression NativeExpression::isNotNull() const
 	}
 
 void CPPMLPrettyPrint<NativeIndividualContinuationMetadata>::prettyPrint(
-				CPPMLPrettyPrintStream& s, 
+				CPPMLPrettyPrintStream& s,
 				const NativeIndividualContinuationMetadata& t
 				)
 	{
@@ -2327,4 +2462,11 @@ void CPPMLPrettyPrint<NativeIndividualContinuationMetadata>::prettyPrint(
 			}
 	}
 
+NativeContinuation NativeContinuation::Return(NativeType t, uint64_t ix)
+	{
+	NativeVariable resVar = NativeVariable::Temp(t);
+
+	return NativeContinuation(resVar, NativeExpression::Return(ix, resVar.expr()));
+	}
+		
 

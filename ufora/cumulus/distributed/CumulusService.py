@@ -30,6 +30,7 @@ import ufora.distributed.Stoppable as Stoppable
 import ufora.util.ManagedThread as ManagedThread
 import ufora.cumulus.distributed.CumulusActiveMachines as CumulusActiveMachines
 import ufora.cumulus.distributed.PythonIoTaskService as PythonIoTaskService
+import ufora.cumulus.OutOfProcessPythonTasks as OutOfProcessPythonTasks
 
 import ufora.native.Cumulus as CumulusNative
 import ufora.native.Hash as Hash
@@ -131,6 +132,14 @@ class CumulusService(Stoppable.Stoppable):
             config.cumulusDiskCacheStorageFileCount
             )
 
+        #If the "s3InterfaceFactory" is not in-memory, we use real out of process python.
+        #it would be better if this were more explicit
+        outOfProcess = self.s3InterfaceFactory is not None and self.s3InterfaceFactory.isCompatibleWithOutOfProcessDownloadPool
+
+        self.outOfProcessPythonTasks = OutOfProcessPythonTasks.OutOfProcessPythonTasks(outOfProcess=outOfProcess)
+
+        self.vdm.initializeOutOfProcessPythonTasks(self.outOfProcessPythonTasks.nativeTasks)
+
         checkpointInterval = config.cumulusCheckpointIntervalSeconds
         if checkpointInterval == 0:
             checkpointPolicy = CumulusNative.CumulusCheckpointPolicy.None()
@@ -193,6 +202,7 @@ class CumulusService(Stoppable.Stoppable):
         logging.debug('CumulusService teardown: starting')
         try:
             #self.datasetLoadService.stopService()
+            self.outOfProcessPythonTasks.teardown()
 
             if self.cumulusActiveMachines.isConnected:
                 self.cumulusActiveMachines.dropListener(self)

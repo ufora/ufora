@@ -5,7 +5,7 @@
    you may not use this file except in compliance with the License.
    You may obtain a copy of the License at
 
-       http://www.apache.org/licenses/LICENSE-2.0
+	   http://www.apache.org/licenses/LICENSE-2.0
 
    Unless required by applicable law or agreed to in writing, software
    distributed under the License is distributed on an "AS IS" BASIS,
@@ -18,11 +18,13 @@
 #include "ExecutionContext.hppml"
 #include "Type.hppml"
 #include "ClassMediator.hppml"
+#include "TupleCategory.hppml"
 #include "../Primitives/ExternalFunctionDescription.hppml"
 #include "../TypedFora/ABI/PackedForaValues.hppml"
 #include "../TypedFora/ABI/ForaValueArray.hppml"
 #include "../TypedFora/ABI/VectorRecord.hpp"
 #include "../Language/ClassDefinitionExpansion.hppml"
+#include "../Language/FunctionStage1Simulation.hppml"
 #include "../TypedFora/ABI/VectorHandle.hpp"
 #include <boost/python.hpp>
 #include "../VectorDataManager/VectorDataManager.hppml"
@@ -88,6 +90,14 @@ void copyStrided(void* dest, void* src, uint32_t count, uint32_t strideBytes)
 }//anonymous namespace
 
 namespace ImplValContainerUtilities {
+
+
+	ImplValContainer createStackTrace(const ForaStackTrace& val)
+		{
+		ForaStackTrace trace = val;
+
+		return ImplValContainer(ImplVal(Type::StackTrace(), &trace));
+		}
 
 	ImplValContainer createString(const String& val)
 		{
@@ -328,8 +338,17 @@ namespace ImplValContainerUtilities {
 				);
 		}
 
-
 	ImplValContainer classGetItem(const ImplValContainer& cls, uword_t index)
+		{
+		return ImplValContainer(classGetItemRaw(cls.getReference(), index));
+		}
+
+	ImplVal classGetItemRaw(const ImplValContainer& cls, uword_t index)
+		{
+		return classGetItemRaw(cls.getReference(), index);
+		}
+
+	ImplVal classGetItemRaw(const ImplVal& cls, uword_t index)
 		{
 		@match Type(cls.type())
 			-|	Class(types, (f, resump)) ->> {
@@ -350,7 +369,7 @@ namespace ImplValContainerUtilities {
 				else
 					tr = ImplVal(outType, dataPtr);
 
-				return ImplValContainer(tr);
+				return tr;
 				}
 			-|  _ ->> { lassert(false); }
 			;
@@ -359,8 +378,31 @@ namespace ImplValContainerUtilities {
 	//extract the named element 'val' as if it were referred to in 'object's inner closure
 	//if it's a calculated field (say, on itself or a bound member) then the second element of the
 	//pair will be populated.
-	Nullable<pair<ImplValContainer, Nullable<Symbol> > >
+	Nullable<pair<ImplValContainer, Nullable<Symbol>>>
 			objectGetMember(const ImplValContainer& object, Symbol val)
+		{
+		Nullable<pair<ImplVal, Nullable<Symbol>>> res =
+			objectGetMemberRaw(object.getReference(), val);
+
+		if (res.isNull()) {
+			return null();
+			}
+
+		return null() << std::make_pair(
+			ImplValContainer(res->first),
+			res->second
+			);
+		}
+
+	Nullable<pair<ImplVal, Nullable<Symbol> > >
+			objectGetMemberRaw(const ImplValContainer& object, Symbol val)
+		{
+		return objectGetMemberRaw(object.getReference(), val);
+		}
+		
+
+	Nullable<pair<ImplVal, Nullable<Symbol> > >
+			objectGetMemberRaw(const ImplVal& object, Symbol val)
 		{
 		if (!object.type().isClass())
 			return null();
@@ -374,28 +416,33 @@ namespace ImplValContainerUtilities {
 
 		LexicalBinding binding = *lexicalSurroundings[val];
 
-		ImplValContainer item = object;
+		ImplVal item = object;
 
 		@match LexicalBinding(binding)
 			-| Member(unbindIndexSequence, member) ->> {
 				for (auto index: unbindIndexSequence)
 					if (item.type().isTuple())
 						{
-						Nullable<ImplValContainer> child = item.tupleGetItem(index);
-						if (!child)
+						uword_t tupleSize = TupleCategory::tupleSize(item);
+						if (index >= tupleSize) {
 							return null();
-						item = *child;
+							}
+
+						item = TupleCategory::getItem(item, index);
 						}
 						else
-					if (item.type().isClass() && item.type().getClass().elements().size() > index)
-						item = classGetItem(item, index);
-					else
+					if (item.type().isClass() &&
+						item.type().getClass().elements().size() > index) {
+						item = classGetItemRaw(item, index);
+						}
+					else {
 						return null();
+						}
 
 				return null() << make_pair(item, member);
 				}
 			-| Constant(c) ->> {
-				return null() << make_pair(ImplValContainer(c), Nullable<Symbol>());
+				return null() << make_pair(c.getReference(), Nullable<Symbol>());
 				}
 		}
 
@@ -590,10 +637,10 @@ namespace ImplValContainerUtilities {
 			const ImmutableTreeMap<ImplValContainer, ImplValContainer>& keysAndValues
 			)
 		{
-        auto keys = keysAndValues.keys();
-        auto values = keysAndValues.values();
+		auto keys = keysAndValues.keys();
+		auto values = keysAndValues.values();
 
-        return createDict(keys, values);
+		return createDict(keys, values);
 		}
 
 	ImplValContainer createDict(
@@ -604,7 +651,7 @@ namespace ImplValContainerUtilities {
 		lassert(keys.size() == values.size());
 
 		ImplVal tr = ImplVal::introduce(Type::Dictionary(true));
-        Dictionary dict;
+		Dictionary dict;
 
 		for (long ix = 0; ix < keys.size(); ++ix)
 			{
@@ -614,8 +661,8 @@ namespace ImplValContainerUtilities {
 				);
 			}
 
-        Dictionary* data = (Dictionary*)tr.data();
-        new (data) Dictionary(dict);
+		Dictionary* data = (Dictionary*)tr.data();
+		new (data) Dictionary(dict);
 
 		return ImplValContainer::assumeOwnershipOf(tr);
 		}
@@ -909,5 +956,28 @@ namespace ImplValContainerUtilities {
 		inVDM->getPageRefcountTracker()->broadcastBigvecsInFlight(bigvecs, -1, moveGuid);
 		}
 
-}
+
+    ImplValContainer simulateClassInstantiation(
+            const ImplValContainer& classImplVal, 
+            const ImplValContainer& memberImplVal,
+            uword_t maxApplyCount
+            )
+        {
+        FunctionStage1::Simulation simulation(maxApplyCount);
+
+        ImmutableTreeVector<ImplValContainer> applyArgs;
+
+        applyArgs = applyArgs + classImplVal;
+        applyArgs = applyArgs +
+            ImplValContainerUtilities::createSymbol(Symbol("CreateInstance"));
+        applyArgs = applyArgs + memberImplVal;
+
+        auto res = simulation.evaluateApply(applyArgs);
+
+        lassert(res.isResult());
+
+        return res.getResult().val();
+        }
+
+} // namespace ImplValContainerUtilities
 

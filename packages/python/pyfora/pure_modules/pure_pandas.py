@@ -15,6 +15,7 @@
 
 from pyfora.PureImplementationMapping import PureImplementationMapping, pureMapping
 from pyfora.pure_modules.pure_numpy import PurePythonNumpyArray
+import pyfora.TypeDescription as TypeDescription
 
 from pyfora.unique import unique
 import numpy
@@ -351,6 +352,9 @@ class PurePythonSeriesMapping(PureImplementationMapping):
         return PurePythonSeries(pandasSeries.tolist())
 
     def mapPyforaInstanceToPythonInstance(self, pureSeries):
+        if isinstance(pureSeries.values, TypeDescription.HomogenousListAsNumpyArray):
+            return pandas.Series(pureSeries.values.array)
+
         return pandas.Series(pureSeries.values)
 
 

@@ -1,0 +1,230 @@
+/***************************************************************************
+    Copyright 2016 Ufora Inc.
+ 
+    Licensed under the Apache License, Version 2.0 (the "License");
+    you may not use this file except in compliance with the License.
+    You may obtain a copy of the License at
+ 
+        http://www.apache.org/licenses/LICENSE-2.0
+ 
+    Unless required by applicable law or agreed to in writing, software
+    distributed under the License is distributed on an "AS IS" BASIS,
+    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    See the License for the specific language governing permissions and
+    limitations under the License.
+****************************************************************************/
+
+#include "PausedComputationTree.hppml"
+#include "../../core/Logging.hpp"
+#include "../ControlFlowGraph/ControlFlowGraphToCodeLocation.hppml"
+#include "../VectorDataManager/ExtractBigVectorReferencesVisitor.hppml"
+#include "../TypedFora/ABI/ImplValVisitor.hppml"
+#include "../../core/cppml/CPPMLVisit.hppml"
+
+class BigVecExtractVisitor {
+public:
+	BigVecExtractVisitor(boost::function1<void, ImplValContainer> visitor) :
+			mVisitor(visitor)
+		{
+
+		}
+
+	template<class T>
+	void processDown(const T& in)
+		{
+		}
+
+	template<class T>
+	void processUp(const T& in)
+		{
+		}
+
+	StopVisiting processDown(const Type& t)
+		{
+		return StopVisiting();
+		}
+
+	void processDown(const ImplValContainer& in)
+		{
+		mVisitor(in);
+		}
+
+	void processDown(const PolymorphicSharedPtr<CFGWithFutures>& in)
+		{
+		in->visitValues(mVisitor);
+		}
+
+private:
+	boost::function1<void, ImplValContainer> mVisitor;
+};
+
+namespace Fora {
+namespace Interpreter {
+
+
+ImmutableTreeSet<Fora::BigVectorId> PausedComputationTree::bigvecsReferenced() const
+	{
+	std::set<Fora::BigVectorId> bigvecsSet;
+
+	ExtractBigVectorReferencesVisitor extractor(bigvecsSet);
+
+	ImplValVisitor<ExtractBigVectorReferencesVisitor> visitor(extractor);
+
+	BigVecExtractVisitor vis([&](ImplValContainer c) { visitor.visit(c); });
+	::visit(*this, vis);
+
+	return ImmutableTreeSet<Fora::BigVectorId>(bigvecsSet);
+	}
+
+PausedComputationTree PausedComputationTree::Value(const ImplValContainer& ivc)
+	{
+	return PausedComputationTree::Thread(
+		PausedComputationTreeThreadChildren::NoChildren(),
+		PausedComputation(
+			emptyTreeVec(),
+			PausedComputationTail::PendingResult(ivc,false)
+			),
+		TimeElapsed(),
+		PausedComputationTreeStats()
+		);
+	}
+
+hash_type PausedComputationTree::hashSelf() const
+	{
+	@match PausedComputationTree(*this)
+		-| Thread(children, computation, timeElapsed, treeStats) ->> {
+			return hash_type(0) + hashValue(children) + hashValue(computation) + 
+				hashValue(timeElapsed) + hashValue(treeStats);
+			}
+		-| Simulation(children, sim, timeElapsed, treeStats) ->> {
+			return hash_type(1) + hashValue(children) + hashValue(sim) + 
+				hashValue(timeElapsed) + hashValue(treeStats);
+			}
+		-| Hole(c) ->> {
+			return hash_type(2) + hashValue(c);
+			}
+	}
+
+std::string nullOrEmpty(Nullable<std::string> s)
+	{
+	if (!s)
+		return "";
+	return *s;
+	}
+
+void PausedComputationTree::treeStateToString(std::ostringstream& stream, long depth) const
+	{
+	for (long k = 0; k < depth;k++)
+		stream << " ";
+
+	@match PausedComputationTree(*this)
+		-| Thread(children, computation, timeElapsed, treeStats) ->> {
+			auto frames = computation.frames();
+
+			stream << "Thread with " 
+				<< frames.size() 
+				<< " frames. "
+				<< " time=" << timeElapsed.total() 
+				<< " sec. "
+				;
+			
+			stream << "(a=" << treeStats.countOfActiveThreads() << ",";
+			stream << "cc=" << treeStats.countOfCachecallThreads() << ",";
+			stream << "bl=" << treeStats.pagesBlockedOn().size() << ",";
+			stream << "subs=" << treeStats.totalBranchCount() << ")";
+
+			stream << "\n";
+
+			for (auto frame: frames)
+				{
+				for (long k = 0; k < depth+2;k++)
+					stream << " ";
+				stream << "@"
+					<< nullOrEmpty(
+						ControlFlowGraphToCodeLocation::graphAndLabelToDisplayString(
+							frame.graph(),
+							frame.label()
+							)
+						)
+					<< "\n";
+				}	
+				
+			@match PausedComputationTail(computation.tail())
+				-| None() ->> {}
+				-| VectorLoad(ivc, low, high) ->> { 
+					for (long k = 0; k < depth+2;k++)
+						stream << " ";
+					stream << "VectorLoad[" << low << "," << high << "]\n";
+					}
+				-| PendingResult() ->> {
+					for (long k = 0; k < depth+2;k++)
+						stream << " ";
+					stream << "PendingResult()\n";
+					}
+				-| Cachecall() ->> {
+					for (long k = 0; k < depth+2;k++)
+						stream << " ";
+					stream << "Cachecall()\n";
+					}
+
+			@match PausedComputationTreeThreadChildren(children)
+				-| NoChildren() ->> {}
+				-| SingleChildPassedBackToParent(c) ->> {
+					c.treeStateToString(stream, depth+1)
+					}
+				-| MultipleChildrenAsTuple(children) ->> {
+					for (long k = 0; k < depth+2;k++)
+						stream << " ";
+					stream << "MakeTupleFromResults:\n";
+					for (auto& child: children)
+						child.first.treeStateToString(stream, depth+1);
+					}
+				-| MultipleChildrenAsApply(children) ->> {
+					for (long k = 0; k < depth+1;k++)
+						stream << " ";
+					stream << "ApplyResults (" << children.size() << ")\n";
+					for (auto& child: children)
+						child.first.treeStateToString(stream, depth+2);
+					}
+			}
+		-| Simulation(children, simulation, timeElapsed, treeStats) ->> {
+			stream << "Simulation over "
+				<< simulation->getSlots().size()
+				<< ". time=" << timeElapsed.total()
+				<< ". @"
+				<< nullOrEmpty(
+					ControlFlowGraphToCodeLocation::graphAndLabelToDisplayString(
+						simulation->graph(),
+						simulation->currentLabel()
+						)
+					)
+				<< ". "
+				;
+
+			stream << "(a=" << treeStats.countOfActiveThreads() << ",";
+			stream << "cc=" << treeStats.countOfCachecallThreads() << ",";
+			stream << "bl=" << treeStats.pagesBlockedOn().size() << ",";
+			stream << "subs=" << treeStats.totalBranchCount() << ")";
+
+			stream << "\n";
+			
+			for (auto& child: children)
+				child.second.treeStateToString(stream, depth+1);
+			}
+		-| Hole(guid) ->> {
+			stream << "Hole(" << prettyPrintString(guid) << ")\n";
+			}
+	}
+
+}
+}
+
+void CPPMLPrettyPrint<Fora::Interpreter::PausedComputationTree>::prettyPrint(
+												CPPMLPrettyPrintStream& s, 
+												const Fora::Interpreter::PausedComputationTree& t
+												)
+	{
+	std::ostringstream str;
+	t.treeStateToString(str, 0);
+	s << str.str();
+	}

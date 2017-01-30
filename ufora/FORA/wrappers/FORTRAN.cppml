@@ -150,6 +150,7 @@ All arguments to this function must already be loaded in memory.
 *****/
 
 NativeExpression prepareFortranArgument(
+			const NativeVariable& callbacksVar,
 			const NativeExpression& inArgumentExpr,
 			const Type& inType,
 			NativeExpressionBuilder& ioBuilder,
@@ -166,7 +167,7 @@ NativeExpression prepareFortranArgument(
 		if (isMutatingVector)
 			{
 			pooledOrDuplicatedVec =
-				ioBuilder.add(vecExpr.deepcopiedAndContiguous());
+				ioBuilder.add(vecExpr.deepcopiedAndContiguous(callbacksVar));
 
 			outputMutatedExpressions =
 				outputMutatedExpressions + pooledOrDuplicatedVec.getExpression();
@@ -175,7 +176,7 @@ NativeExpression prepareFortranArgument(
 			{
 			pooledOrDuplicatedVec =
 				ioBuilder.add(
-					vecExpr.contiguousAndLoadedVectorRecordNonincremented()
+					vecExpr.contiguousAndLoadedVectorRecordNonincremented(callbacksVar)
 					);
 			}
 
@@ -213,6 +214,7 @@ NativeExpression prepareFortranArgument(
 
 NativeExpression loadcheckFortranArgument(
 			const NativeExpression& inArgumentExpr,
+			const NativeVariable& callbacksVar,
 			const Type& inType
 			)
 	{
@@ -220,7 +222,7 @@ NativeExpression loadcheckFortranArgument(
 		{
 		TypedNativeExpression<VectorRecord> vecExpr(inArgumentExpr);
 
-		return vecExpr.loadCheckAll().getExpression();
+		return vecExpr.loadCheckAll(callbacksVar).getExpression();
 		}
 	else
 		{
@@ -321,12 +323,16 @@ TypedFora::Callable getFORTRANCallTarget(
 
 	NativeAxiomVars axiomVars(callSignature);
 
+	NativeVariable callbacksVar = 
+		NativeVariable::Temp(NativeTypeFor<NativeRuntimeCallbacks>::get().ptr());
+
 	//get an expression that verifies all values are loaded
 	NativeExpression loadcheckExpression;
 	for (long k = 0; k < axiomVars.size(); k++)
 		loadcheckExpression = loadcheckExpression >>
 			loadcheckFortranArgument(
 				axiomVars.var(k).expr(),
+				callbacksVar,
 				*jovs[k].type()
 				);
 
@@ -343,6 +349,7 @@ TypedFora::Callable getFORTRANCallTarget(
 
 		args = args +
 			prepareFortranArgument(
+				callbacksVar,
 				axiomVars.var(k).expr(),
 				*typeOfJov_k,
 				builder,
@@ -391,8 +398,7 @@ TypedFora::Callable getFORTRANCallTarget(
 		emptyTreeVec() + *resultExpr.type() + NativeTypeFor<String>::get(),
 		emptyTreeMap() + NativeBlockID::entry() +
 			NativeBlock(
-				NativeVariable::Temp(NativeTypeFor<NativeRuntimeCallbacks>::get().ptr()) +
-					axiomVars.vars(),
+				callbacksVar + axiomVars.vars(),
 				finalExpression
 				),
 		"",
@@ -401,7 +407,7 @@ TypedFora::Callable getFORTRANCallTarget(
 
 	//rename the variables in here so that when we use the target signature
 	//again a second time, we don't get variable conflicts.
-	toInline = NativeCFGTransforms::renameVariables(toInline, 0);
+	toInline = NativeCFGTransforms::renameVariablesStably(toInline);
 
 	return
 		TypedFora::graphFromNativeCfgPassingOwned(

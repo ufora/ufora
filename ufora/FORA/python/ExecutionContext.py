@@ -29,10 +29,12 @@ import ufora.native.FORA as FORANative
 def configureContextConfiguration(
                         configuration,
                         allowInterpreterTracing = True,
-                        blockUntilTracesAreCompiled = False
+                        blockUntilTracesAreCompiled = False,
+                        allowInternalSplitting = True
                         ):
     configuration.allowInterpreterTracing = allowInterpreterTracing
     configuration.blockUntilTracesAreCompiled = blockUntilTracesAreCompiled
+    configuration.allowInternalSplitting = allowInternalSplitting
 
 def createContextConfiguration(*args, **kwds):
     configuration = FORANative.ExecutionContextConfiguration.defaultConfiguration()
@@ -42,21 +44,22 @@ def createContextConfiguration(*args, **kwds):
     return configuration
 
 
-def ExecutionContext(	stackIncrement = 32 * 1024,
-                        dataManager = None,
+def ExecutionContext(	dataManager = None,
                         allowInterpreterTracing = True,
-                        blockUntilTracesAreCompiled = False
+                        blockUntilTracesAreCompiled = False,
+                        allowInternalSplitting = True
                         ):
     """Create a new execution context and return it"""
 
     assert dataManager is not None
 
-    tr = FORANative.ExecutionContext(dataManager, stackIncrement)
+    tr = FORANative.ExecutionContext(dataManager)
 
     configureContextConfiguration(
             tr.configuration,
             allowInterpreterTracing,
-            blockUntilTracesAreCompiled
+            blockUntilTracesAreCompiled,
+            allowInternalSplitting
             )
 
     return tr
@@ -71,7 +74,8 @@ def simpleEval(callbackScheduler, *args):
     e = ExecutionContext(
         dataManager = VectorDataManager.constructVDM(callbackScheduler)
         )
-    e.evaluate(*[FORANative.ImplValContainer(x) for x in args])
+    e.placeInEvaluationState(FORANative.ImplValContainer(tuple([FORANative.ImplValContainer(x) for x in args])))
+    e.compute()
     tr = e.getFinishedResult()
     if tr.isFailure():
         assert False

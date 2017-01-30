@@ -128,7 +128,7 @@ class ByteCountProtocol : public OProtocol {
 public:
 	ByteCountProtocol() : mCount(0) {}
 
-	void write(uword_t inByteCount, void *inData)
+	void write(uword_t inByteCount, const void* inData)
 		{
 		mCount += inByteCount;
 		}

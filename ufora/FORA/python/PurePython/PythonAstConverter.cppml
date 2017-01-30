@@ -23,7 +23,7 @@
 #include "../../Judgment/JudgmentOnValue.hppml"
 #include "../../Core/ImplValContainerUtilities.hppml"
 #include "../../Language/FunctionStage1Simulation.hppml"
-#include "../../Language/ExpressionLocationMetadata.hppml"
+#include "../../Language/PushDownMetadata.hppml"
 #include "../../../core/cppml/CPPMLVisit.hppml"
 #include "../../../core/cppml/CPPMLTransform.hppml"
 #include "../../../core/Logging.hpp"
@@ -118,10 +118,10 @@ public:
         {
         }
 
-    template<class T> void processDown(const T&, bool&) {}
+    template<class T> void processDown(const T&) {}
     template<class T> void processUp(const T&) {}
 
-    void processDown(const PythonAstExpr& expr, bool& outContinue)
+    void processDown(const PythonAstExpr& expr)
         {
         if (expr.isYield())
             throw PythonToForaConversionError(
@@ -130,7 +130,7 @@ public:
                 );
         }
 
-    void processDown(const PythonAstStatement& stmt, bool& outContinue)
+    void processDown(const PythonAstStatement& stmt)
         {
         if (stmt.isFunctionDef() or stmt.isClassDef())
             throw PythonToForaConversionError(
@@ -178,10 +178,10 @@ public:
     {
     }
 
-    template<class T> void processDown(const T&, bool&) {}
+    template<class T> void processDown(const T&) {}
     template<class T> void processUp(const T&) {}
 
-    void processDown(const PythonAstExpr& expr, bool& outContinue)
+    ContinueOrStop processDown(const PythonAstExpr& expr)
         {
         @match PythonAstExpr(expr)
             -| Name(id, ctx) ->> {
@@ -197,13 +197,17 @@ public:
                 // to __init__ calls
                 @match PythonAstExpr(func)
                     -| Attribute(value, attr, ctx) ->> {
-                        outContinue = (attr != "__init__") || (args.size() == 0) ||
-                            !args[0].isName() || (args[0].getName().id() != mSelfName);
+                        if ((attr != "__init__") || (args.size() == 0) ||
+                                !args[0].isName() || (args[0].getName().id() != mSelfName))
+                            return ContinueOrStop::Continue;
+                        else
+                            return ContinueOrStop::Stop;
                         }
                     -| _ ->> {}
                 }
             -| _ ->> {}
-            ;
+
+        return ContinueOrStop::Continue;
         }
     };
 
@@ -231,32 +235,36 @@ public:
         {
         }
 
-    template<class T> void processDown(const T&, bool&) {}
+    template<class T> void processDown(const T&) {}
     template<class T> void processUp(const T&) {}
 
-    void processDown(const PythonAstExpr& expr, bool& outContinue)
+    ContinueOrStop processDown(const PythonAstExpr& expr)
         {
         @match PythonAstExpr(expr)
             -| Yield(id, _) ->> {
                 mHasYield = true;
                 }
-            -| Lambda() ->> { outContinue = false; }
-            -| GeneratorExp() ->> { outContinue = false; }
+            -| Lambda() ->> { return ContinueOrStop::Stop; }
+            -| GeneratorExp() ->> { return ContinueOrStop::Stop; }
             -| _ ->> {}
             ;
+
+        return ContinueOrStop::Continue;
         }
 
-    void processDown(const PythonAstStatement& expr, bool& outContinue)
+    ContinueOrStop processDown(const PythonAstStatement& expr)
         {
         @match PythonAstStatement(expr)
             -| FunctionDef() ->> {
-                outContinue = false;
+                return ContinueOrStop::Stop;
                 }
             -| ClassDef() ->> {
-                outContinue = false;
+                return ContinueOrStop::Stop;
                 }
             -| _ ->> {}
             ;
+
+        return ContinueOrStop::Continue;
         }
 
 };
@@ -284,10 +292,10 @@ public:
         {
         }
 
-    template<class T> void processDown(const T&, bool&) {}
+    template<class T> void processDown(const T&) {}
     template<class T> void processUp(const T&) {}
 
-    void processDown(const PythonAstExpr& expr, bool& outContinue)
+    void processDown(const PythonAstExpr& expr)
         {
         @match PythonAstExpr(expr)
             -| Name(id, _) ->> {
@@ -725,6 +733,23 @@ Expression populateMembersTuple(const Expression& expr,
 
         }
 
+    //metadata consists of named tuples (sourceText: ..., sourcePath: ..., sourceLine: <int64_t>)
+    //this replaces the line number with appropriate metadata
+    ImplValContainer replaceLine(ImplValContainer metadata, SimpleParseRange extent)
+        {
+        lassert_dump(
+            metadata.tupleGetItem(2) && metadata.tupleGetItem(2)->type().isInteger(),
+            prettyPrintString(metadata)
+            );
+
+        return ImplValContainer(
+            emptyTreeVec() + 
+                make_pair(*metadata.tupleGetItem(0), metadata.tupleGetName(0)) + 
+                make_pair(*metadata.tupleGetItem(1), metadata.tupleGetName(1)) + 
+                make_pair(ImplValContainer(CSTValue((int64_t)extent.start().line())), metadata.tupleGetName(2))
+            );
+        }
+
 } // anonymous namespace
 
 namespace Fora {
@@ -787,12 +812,60 @@ PythonAstConverter::PythonAstConverter(
     mAssertionError = getModuleMember(pyforaBuiltins, "AssertionError");
     }
 
+PythonAstConverter::PythonAstConverter(
+            const PythonAstConverter& inOther,
+            CSTValue inObjectMeta
+            )
+        : mConstantConverter(inOther.mConstantConverter),
+          mPythonListConverter(inOther.mPythonListConverter),
+          mPythonTupleConverter(inOther.mPythonTupleConverter),
+          mPythonDictConverter(inOther.mPythonDictConverter),
+          mPyforaBuiltins(inOther.mPyforaBuiltins),
+          mBuiltinMemberMapping(inOther.mBuiltinMemberMapping),
+          mPyBoundMethod(inOther.mPyBoundMethod),
+          mPyObjectBaseMixin(inOther.mPyObjectBaseMixin),
+          mPyGeneratorFactory(inOther.mPyGeneratorFactory),
+          mPySliceFactory(inOther.mPySliceFactory),
+          mPyListType(inOther.mPyListType),
+          mTypeError(inOther.mTypeError),
+          mPyString(inOther.mPyString),
+          mPyDictType(inOther.mPyDictType),
+          mAssertionError(inOther.mAssertionError),
+          mCodeDefPoint(inOther.mCodeDefPoint),
+          mObjectMetadata(inObjectMeta)
+    {
+    }
+
+PythonAstConverter::PythonAstConverter(
+            const PythonAstConverter& inOther,
+            CodeDefinitionPoint inCDP
+            )
+        : mConstantConverter(inOther.mConstantConverter),
+          mPythonListConverter(inOther.mPythonListConverter),
+          mPythonTupleConverter(inOther.mPythonTupleConverter),
+          mPythonDictConverter(inOther.mPythonDictConverter),
+          mPyforaBuiltins(inOther.mPyforaBuiltins),
+          mBuiltinMemberMapping(inOther.mBuiltinMemberMapping),
+          mPyBoundMethod(inOther.mPyBoundMethod),
+          mPyObjectBaseMixin(inOther.mPyObjectBaseMixin),
+          mPyGeneratorFactory(inOther.mPyGeneratorFactory),
+          mPySliceFactory(inOther.mPySliceFactory),
+          mPyListType(inOther.mPyListType),
+          mTypeError(inOther.mTypeError),
+          mPyString(inOther.mPyString),
+          mPyDictType(inOther.mPyDictType),
+          mAssertionError(inOther.mAssertionError),
+          mObjectMetadata(inOther.mObjectMetadata),
+          mCodeDefPoint(inCDP)
+    {
+    }
+
 Expression PythonAstConverter::invalidPyforaCodeExpression(SimpleParseRange extent) const
     {
     return CPPML::replaceCommonData(
             Expression::Constant(CSTValue(mPyObjectBaseMixin))
                 .member(Symbol("__pyfora_unconvertible_code__"))(),
-            ExpressionLocationMetadata::WithSimpleParseRange(extent)
+            null() << CodeLocation(mCodeDefPoint, extent)
             );
     }
 
@@ -1141,7 +1214,7 @@ PythonAstConverter::convertPythonClassBodyFunctionDefToForaClassDefinitionTerms(
                     Expression::CreateFunction(
                         functionName,
                         function,
-                        CSTValue()
+                        replaceLine(mObjectMetadata, extent)
                         ).normalApplyArg() +
                     Expression::Constant(CSTValue(Symbol(functionName))).normalApplyArg()
                 )
@@ -1152,11 +1225,13 @@ PythonAstConverter::convertPythonClassBodyFunctionDefToForaClassDefinitionTerms(
     }
 
 namespace {
-    Expression constantExpressionForImplVal(const ImplValContainer& val)
-        {
-        return Expression::Constant(CSTValue(val));
-        }
+
+Expression constantExpressionForImplVal(const ImplValContainer& val)
+    {
+    return Expression::Constant(CSTValue(val));
     }
+
+}
 
 Expression PythonAstConverter::convertPythonAstLambdaToFora(
                     const PythonAstArguments& arguments,
@@ -1164,7 +1239,19 @@ Expression PythonAstConverter::convertPythonAstLambdaToFora(
                     const SimpleParseRange& extent
                     ) const
     {
-    return convertPythonAstFunctionDefToFora(
+    return PushDownMetadata::transform(
+        convertPythonAstLambdaToFora_(arguments, body, extent),
+        null() << CodeLocation(mCodeDefPoint, extent)
+        );
+    }
+
+Expression PythonAstConverter::convertPythonAstLambdaToFora_(
+                    const PythonAstArguments& arguments,
+                    const PythonAstExpr& body,
+                    const SimpleParseRange& extent
+                    ) const
+    {
+    return convertPythonAstFunctionDefToFora_(
         PythonAstStatement_FunctionDefType(
             "<lambda>",
             arguments,
@@ -1182,7 +1269,7 @@ Expression PythonAstConverter::convertNullableExpressionToExpression(
     if (expr.isNull())
         return Expression::Constant(mConstantConverter->noneValue());
 
-    return convertPythonAstExpressionToFora(*expr);
+    return convertPythonAstExpressionToFora_(*expr);
     }
 
 Expression PythonAstConverter::convertPythonAstSliceToExpression(
@@ -1234,7 +1321,7 @@ Expression PythonAstConverter::convertPythonAstSliceToExpression(
                 );
             }
         -| Index(value) ->> {
-            return convertPythonAstExpressionToFora(value);
+            return convertPythonAstExpressionToFora_(value);
             }
         ;
     }
@@ -1259,7 +1346,7 @@ Expression PythonAstConverter::wrapExpressionInPyContinueCheck(Expression e) con
     }
 
 Expression
-PythonAstConverter::convertPythonAstExpressionToFora_inner(
+PythonAstConverter::convertPythonAstExpressionToFora_untagged(
         const PythonAstExpr& expr
         ) const
     {
@@ -1297,7 +1384,7 @@ PythonAstConverter::convertPythonAstExpressionToFora_inner(
         -| BoolOp(And(), exprs) ->> {
             lassert(exprs.size() > 0)
 
-            Expression res = convertPythonAstExpressionToFora(exprs.back());
+            Expression res = convertPythonAstExpressionToFora_(exprs.back());
 
             for (long k = exprs.size() - 2; k >= 0; k--)
                 {
@@ -1305,7 +1392,7 @@ PythonAstConverter::convertPythonAstExpressionToFora_inner(
 
                 res = Expression::Let(
                     conditional,
-                    convertPythonAstExpressionToFora(exprs[k]),
+                    convertPythonAstExpressionToFora_(exprs[k]),
                     Expression::Branch(
                         convertExpressionToForaBoolean(
                             Expression::Variable(conditional)
@@ -1321,7 +1408,7 @@ PythonAstConverter::convertPythonAstExpressionToFora_inner(
         -| BoolOp(Or(), exprs) ->> {
             lassert(exprs.size() > 0)
 
-            Expression res = convertPythonAstExpressionToFora(exprs.back());
+            Expression res = convertPythonAstExpressionToFora_(exprs.back());
 
             for (long k = exprs.size() - 2; k >= 0; k--)
                 {
@@ -1329,7 +1416,7 @@ PythonAstConverter::convertPythonAstExpressionToFora_inner(
 
                 res = Expression::Let(
                     conditional,
-                    convertPythonAstExpressionToFora(exprs[k]),
+                    convertPythonAstExpressionToFora_(exprs[k]),
                     Expression::Branch(
                         convertExpressionToForaBoolean(
                             Expression::Variable(conditional)
@@ -1343,14 +1430,14 @@ PythonAstConverter::convertPythonAstExpressionToFora_inner(
             return res;
             }
         -| Attribute(value, attribute, ctx) ->> {
-            Expression agent = convertPythonAstExpressionToFora(value);
+            Expression agent = convertPythonAstExpressionToFora_(value);
 
             return agent.member(Symbol(attribute));
             }
         -| Subscript(value, slice, ctx) ->> {
             Expression valueGetItemMemberFunction =
                 Expression::Member(
-                    convertPythonAstExpressionToFora(value),
+                    convertPythonAstExpressionToFora_(value),
                     Symbol("__getitem__"),
                     1
                     );
@@ -1400,12 +1487,12 @@ PythonAstConverter::convertPythonAstExpressionToFora_inner(
             for (long genIx = generators.size() - 1; genIx >= 0; genIx--)
                 {
                 Expression generator =
-                    convertPythonAstExpressionToFora(generators[genIx].iter())
+                    convertPythonAstExpressionToFora_(generators[genIx].iter())
                         .member(Symbol("__pyfora_generator__"))();
 
                 for (const auto& c: generators[genIx].conditions())
                     generator = generator.member(Symbol("filter"))(
-                        convertPythonAstExpressionToFora(
+                        convertPythonAstExpressionToFora_(
                             PythonAstExpr::Lambda(
                                 PythonAstArguments(
                                     emptyTreeVec() + generators[genIx].target(),
@@ -1421,7 +1508,7 @@ PythonAstConverter::convertPythonAstExpressionToFora_inner(
                 //the first time in the loop, we are calculating the
                 if (!accumulator)
                     accumulator = generator.member(Symbol("map"))(
-                        convertPythonAstExpressionToFora(
+                        convertPythonAstExpressionToFora_(
                             PythonAstExpr::Lambda(
                                 PythonAstArguments(
                                     emptyTreeVec() + generators[genIx].target(),
@@ -1465,7 +1552,7 @@ PythonAstConverter::convertPythonAstExpressionToFora_inner(
 
             auto res =
                 Expression::Constant(mPyListType)(
-                    convertPythonAstExpressionToFora(
+                    convertPythonAstExpressionToFora_(
                         PythonAstExpr::GeneratorExp(elt, generators)
                         )
                     );
@@ -1485,7 +1572,7 @@ PythonAstConverter::convertPythonAstExpressionToFora_inner(
             return mPythonListConverter->convertPyList(
                 expr.getList(),
                 boost::bind(
-                    &PythonAstConverter::convertPythonAstExpressionToFora,
+                    &PythonAstConverter::convertPythonAstExpressionToFora_,
                     this,
                     _1
                     )
@@ -1495,7 +1582,7 @@ PythonAstConverter::convertPythonAstExpressionToFora_inner(
             return mPythonDictConverter->convertPyDict(
                 expr.getDict(),
                 boost::bind(
-                    &PythonAstConverter::convertPythonAstExpressionToFora,
+                    &PythonAstConverter::convertPythonAstExpressionToFora_,
                     this,
                     _1
                     )
@@ -1512,7 +1599,7 @@ PythonAstConverter::convertPythonAstExpressionToFora_inner(
                     );
 
             Expression foraUpdateSequence =
-                convertPythonAstExpressionToFora(
+                convertPythonAstExpressionToFora_(
                     pyUpdateSequence
                     );
 
@@ -1528,7 +1615,7 @@ PythonAstConverter::convertPythonAstExpressionToFora_inner(
             return mPythonTupleConverter->convertPyTuple(
                 expr.getTuple(),
                 boost::bind(
-                    &PythonAstConverter::convertPythonAstExpressionToFora,
+                    &PythonAstConverter::convertPythonAstExpressionToFora_,
                     this,
                     _1
                     )
@@ -1546,12 +1633,12 @@ PythonAstConverter::convertPythonAstExpressionToFora_inner(
 
             return Expression::LeftOperator(
                 opAsSymbol,
-                convertPythonAstExpressionToFora(rhs)
+                convertPythonAstExpressionToFora_(rhs)
                 );
             }
         -| BinOp(lhs, Add(), List(Leaf(elt, Empty()))) ->> {
-            Expression convertedLhs = convertPythonAstExpressionToFora(lhs);
-            Expression convertedElt = convertPythonAstExpressionToFora(elt);
+            Expression convertedLhs = convertPythonAstExpressionToFora_(lhs);
+            Expression convertedElt = convertPythonAstExpressionToFora_(elt);
 
             return mPythonListConverter->concatSingleEltVectorExpr(
                 convertedLhs, convertedElt
@@ -1576,19 +1663,19 @@ PythonAstConverter::convertPythonAstExpressionToFora_inner(
                 ;
 
             return Expression::BinaryOperator(
-                convertPythonAstExpressionToFora(lhs),
+                convertPythonAstExpressionToFora_(lhs),
                 opAsSymbol,
-                convertPythonAstExpressionToFora(rhs)
+                convertPythonAstExpressionToFora_(rhs)
                 );
             }
         -| Lambda(arguments, body) ->> {
-            return convertPythonAstLambdaToFora(arguments, body, expr.extent());
+            return convertPythonAstLambdaToFora_(arguments, body, expr.extent());
             }
         -| IfExp(cond, ifTrue, ifFalse) ->> {
             return Expression::Branch(
                 convertPythonAstExpressionToForaBoolean(cond),
-                convertPythonAstExpressionToFora(ifTrue),
-                null() << convertPythonAstExpressionToFora(ifFalse)
+                convertPythonAstExpressionToFora_(ifTrue),
+                null() << convertPythonAstExpressionToFora_(ifFalse)
                 );
             }
         -| Repr(expr) ->> {
@@ -1596,7 +1683,7 @@ PythonAstConverter::convertPythonAstExpressionToFora_inner(
                 Expression::Constant(CSTValue(Symbol("ParsableRepresentation"))),
                 emptyTreeVec() +
                     ApplyArgument::Normal(
-                        convertPythonAstExpressionToFora(expr)
+                        convertPythonAstExpressionToFora_(expr)
                         )
                 );
             }
@@ -1613,12 +1700,12 @@ PythonAstConverter::convertPythonAstExpressionToFora_inner(
                     expr.extent()
                     );
 
-            Expression curExpr = convertPythonAstExpressionToFora(expr);
+            Expression curExpr = convertPythonAstExpressionToFora_(expr);
             Expression result;
 
             for (long k = 0; k < comparisons.size(); k++)
                 {
-                Expression curRhs = convertPythonAstExpressionToFora(comparisonExprs[k]);
+                Expression curRhs = convertPythonAstExpressionToFora_(comparisonExprs[k]);
 
                 Expression toAdd;
 
@@ -1680,7 +1767,7 @@ PythonAstConverter::convertPythonAstExpressionToFora_inner(
                             Expression::CreateTuple(
                                 emptyTreeVec() +
                                     ApplyArgument::Normal(
-                                        e ? convertPythonAstExpressionToFora(*e) : Expression()
+                                        e ? convertPythonAstExpressionToFora_(*e) : Expression()
                                         ) +
                                     ApplyArgument::Normal(Expression::Variable(Symbol("@continuation")))
                                 )
@@ -1706,7 +1793,7 @@ PythonAstConverter::convertPythonAstExpressionToFora_inner(
                     );
 
             return Expression::Call(
-                convertPythonAstExpressionToFora(func),
+                convertPythonAstExpressionToFora_(func),
                 adaptPyArgsToForaCallingConvention(
                     args,
                     kwds
@@ -1743,7 +1830,7 @@ PythonAstConverter::adaptPyArgsToForaCallingConvention(
             Expression::CreateTuple(
                 mapITV(args, [this](const PythonAstExpr& expr) {
                         return ApplyArgument::Normal(
-                            convertPythonAstExpressionToFora(expr)
+                            convertPythonAstExpressionToFora_(expr)
                             );
                         })
                 )
@@ -1755,7 +1842,7 @@ PythonAstConverter::adaptPyArgsToForaCallingConvention(
                 mapITV(keywords, [this](const PythonAstKeyword& keyword) {
                         return ApplyArgument::Normal(
                             null() << Symbol(keyword.arg()),
-                            convertPythonAstExpressionToFora(keyword.value())
+                            convertPythonAstExpressionToFora_(keyword.value())
                             );
                         })
                 )
@@ -1802,9 +1889,17 @@ Expression PythonAstConverter::convertInlineFora(
             );
 
     const std::string& inlineForaCode = arg.getStr().s();
-    const SimpleParseNode simpleParseNode = parseStringToSimpleParse(inlineForaCode);
 
-    ParserExpressions p(true, CodeDefinitionPoint(), "");
+    std::ostringstream codeStream;
+    for (long k = 0; k < extent.start().line(); k++)
+        codeStream << "\n";
+    for (long k = 1; k < extent.start().col(); k++)
+        codeStream << " ";
+    codeStream << inlineForaCode;
+
+    const SimpleParseNode simpleParseNode = parseStringToSimpleParse(codeStream.str());
+
+    ParserExpressions p(true, mCodeDefPoint, "");
 
     Expression inlineForaExpr = p.parseToExpression(simpleParseNode);
 
@@ -1847,7 +1942,7 @@ CSTValue PythonAstConverter::bindFreeVariablesInInlineForaExpressionToConstantUs
             createFunctionExpression.name(),
             createFunctionExpression.predicate(),
             LexicalBindingMap(),
-            CSTValue()
+            replaceLine(mObjectMetadata, extent)
             ),
         mBuiltinMemberMapping,
         createFunctionExpression.objectMetadata()
@@ -1874,7 +1969,7 @@ Expression PythonAstConverter::convertPythonAstExpressionToForaBoolean(
         const PythonAstExpr& expr
         ) const
     {
-    Expression tr = convertPythonAstExpressionToFora(expr);
+    Expression tr = convertPythonAstExpressionToFora_(expr);
 
     return convertExpressionToForaBoolean(tr);
     }
@@ -1884,11 +1979,23 @@ Expression PythonAstConverter::convertPythonAstExpressionToFora(
         const PythonAstExpr& expr
         ) const
     {
-    Expression tr = convertPythonAstExpressionToFora_inner(expr);
+    Expression tr = convertPythonAstExpressionToFora_(expr);
+
+    return PushDownMetadata::transform(
+        tr,
+        null() << CodeLocation(mCodeDefPoint, expr.extent())
+        );
+    }
+
+Expression PythonAstConverter::convertPythonAstExpressionToFora_(
+        const PythonAstExpr& expr
+        ) const
+    {
+    Expression tr = convertPythonAstExpressionToFora_untagged(expr);
 
     return CPPML::replaceCommonData(
         tr,
-        ExpressionLocationMetadata::WithSimpleParseRange(expr.extent())
+        null() << CodeLocation(mCodeDefPoint, expr.extent())
         );
     }
 
@@ -1916,7 +2023,7 @@ Expression PythonAstConverter::convertPythonAstStatementsToExpression(
 
         result = Expression::Sequence(
             result,
-            convertPythonAstStatementToExpression(statements[ix])
+            convertPythonAstStatementToExpression_(statements[ix])
             );
         }
 
@@ -1939,7 +2046,7 @@ Function PythonAstConverter::convertPythonAstExceptionHandlers(
 
     if (handlers[0].type().isValue())
         {
-        Expression e = convertPythonAstExpressionToFora(*handlers[0].type());
+        Expression e = convertPythonAstExpressionToFora_(*handlers[0].type());
 
         pattern.pattern() =
             Pattern::MatchBoth(
@@ -1986,7 +2093,7 @@ Expression PythonAstConverter::convertPythonAstStatementToExpression_inner(
 
             return Expression::Assign(
                 PatternWithName::Anything(null() << Symbol(name)),
-                convertPythonAstFunctionDefToFora(
+                convertPythonAstFunctionDefToFora_(
                     statement.getFunctionDef(),
                     statement.extent()
                     )
@@ -1997,7 +2104,7 @@ Expression PythonAstConverter::convertPythonAstStatementToExpression_inner(
 
             return Expression::Assign(
                 PatternWithName::Anything(null() << Symbol(name)),
-                convertPythonAstClassDefToFora(
+                convertPythonAstClassDefToFora_(
                     statement.getClassDef(),
                     statement.extent(),
                     emptyTreeVec()
@@ -2008,7 +2115,7 @@ Expression PythonAstConverter::convertPythonAstStatementToExpression_inner(
             return Expression::Return(Expression::Constant(mConstantConverter->noneValue()));
             }
         -| Return(Value(e)) ->> {
-            return Expression::Return(convertPythonAstExpressionToFora(e));
+            return Expression::Return(convertPythonAstExpressionToFora_(e));
             }
         -| Pass() ->> { return Expression::Constant(mConstantConverter->noneValue()); }
         -| Break() ->> { return Expression::Break(); }
@@ -2021,7 +2128,7 @@ Expression PythonAstConverter::convertPythonAstStatementToExpression_inner(
             if (type && !inst && !tback)
                 {
                 return Expression::Throw(
-                    convertPythonAstExpressionToFora(*type),
+                    convertPythonAstExpressionToFora_(*type),
                     Nullable<Expression>()
                     );
                 }
@@ -2032,7 +2139,7 @@ Expression PythonAstConverter::convertPythonAstStatementToExpression_inner(
                     );
             }
         -| Expr(e) ->> {
-            return convertPythonAstExpressionToFora(e);
+            return convertPythonAstExpressionToFora_(e);
             }
         -| For(target, iter, body, orelse) ->> {
 
@@ -2048,7 +2155,7 @@ Expression PythonAstConverter::convertPythonAstStatementToExpression_inner(
                     ListComprehensionChain::Term(
                         PatternWithName::Anything(null() << var),
                         null(),
-                        convertPythonAstExpressionToFora(iter),
+                        convertPythonAstExpressionToFora_(iter),
                         ListComprehensionChain::Leaf(
                             Expression::Sequence(
                                 Expression::Assign(
@@ -2106,7 +2213,7 @@ Expression PythonAstConverter::convertPythonAstStatementToExpression_inner(
             if (exprs.size() == 1)
                 return Expression::Assign(
                     convertPythonAstExpressionToPattern(exprs[0]),
-                    convertPythonAstExpressionToFora(expression)
+                    convertPythonAstExpressionToFora_(expression)
                     );
             else
                 return Expression::Assign(
@@ -2124,9 +2231,9 @@ Expression PythonAstConverter::convertPythonAstStatementToExpression_inner(
                             ),
                         null(),
                         null(),
-                        ExpressionLocationMetadata()
+                        null()
                         ),
-                    convertPythonAstExpressionToFora(expression)
+                    convertPythonAstExpressionToFora_(expression)
                     );
             }
         -| Assert(test, msg) ->> {
@@ -2150,7 +2257,7 @@ Expression PythonAstConverter::convertPythonAstStatementToExpression_inner(
                                         Expression::Constant(CSTValue(""))
                                         .normalApplyArg()
                                 ).normalApplyArg() :
-                            convertPythonAstExpressionToFora(*msg).normalApplyArg())
+                            convertPythonAstExpressionToFora_(*msg).normalApplyArg())
                         ),
                     null()
                     )
@@ -2159,11 +2266,11 @@ Expression PythonAstConverter::convertPythonAstStatementToExpression_inner(
         -| Print(file, values,newline) ->> {
             auto res = Expression::Constant(mConstantConverter->noneValue());
             if (file)
-                res = convertPythonAstExpressionToFora(*file);
+                res = convertPythonAstExpressionToFora_(*file);
 
             ImmutableTreeVector<ApplyArgument> exprs;
             for (const auto& v: values)
-                exprs = exprs + convertPythonAstExpressionToFora(v);
+                exprs = exprs + convertPythonAstExpressionToFora_(v);
 
             res = Expression::Sequence(
                 res,
@@ -2180,13 +2287,111 @@ Expression PythonAstConverter::convertPythonAstStatementToExpression_inner(
                 
             return res;
             }
+        -| With(contextExpr, optional_vars, body) ->> {
+            if (optional_vars)
+                return invalidPyforaCodeExpression(statement.extent());
+
+            //evaluate the context expression
+            Expression e = convertPythonAstExpressionToFora_(contextExpr);
+
+            Expression innerScopeAsExpr = convertPythonAstStatementsToExpression(body);
+
+            ImmutableTreeVector<string> freeVars;
+            for (auto var: innerScopeAsExpr.freeVariables())
+                freeVars = freeVars + var.toString();
+
+            Expression bodyAsFunc = convertPythonAstWithBlockFunctionDefToFora_(
+                PythonAstStatement_FunctionDefType(
+                    "",
+                    PythonAstArguments(),
+                    body,
+                    emptyTreeVec()
+                    ),
+                statement.extent(),
+                freeVars
+                );
+
+            Expression assignExpr;
+
+            for (const Symbol& var: innerScopeAsExpr.assignedVariables()) {
+                auto varAsPyforaString = Expression::Constant(
+                    constantConverter()->convertString(var.toString()));
+                auto withblock_variable_assignments_dict_expr = 
+                    Expression::Variable(Symbol("@withblock_variable_assignments"));
+
+                assignExpr = Expression::Sequence(
+                    assignExpr,
+                    Expression::Branch(
+                        Expression::In(
+                            varAsPyforaString,
+                            withblock_variable_assignments_dict_expr
+                            ),
+                        Expression::Assign(
+                            PatternWithName::Anything(null() << var),
+                            Expression::GetItem(
+                                withblock_variable_assignments_dict_expr,
+                                emptyTreeVec() +
+                                ApplyArgument::Normal(
+                                    varAsPyforaString
+                                    )
+                                )
+                            ),
+                        null()
+                        )
+                    );
+                }
+
+            Expression testForException = 
+                Expression::Call(
+                    e.member(Symbol("__pyfora_context_exception_check__")),
+                    emptyTreeVec() + 
+                        ApplyArgument::Normal(
+                            null() << Symbol("@unnamed_args"), 
+                            Expression::Variable(Symbol("@withblock_result")).member(Symbol("@m"))
+                            ) + 
+                        ApplyArgument::Normal(
+                            null() << Symbol("@named_args"), 
+                            Expression::CreateTuple(ImmutableTreeVector<Expression>())
+                            )
+                    );
+
+            return Expression::Let(
+                Symbol("@withblock_result"),
+                Expression::Call(
+                    e.member(Symbol("__pyfora_context_apply__")),
+                    emptyTreeVec() + 
+                        ApplyArgument::Normal(
+                            null() << Symbol("@unnamed_args"), 
+                            Expression::CreateTuple(ImmutableTreeVector<Expression>() + bodyAsFunc)
+                            ) + 
+                        ApplyArgument::Normal(
+                            null() << Symbol("@named_args"), 
+                            Expression::CreateTuple(ImmutableTreeVector<Expression>())
+                            )
+                    ),
+                Expression::Let(
+                    Symbol("@withblock_variable_assignments"),
+                    Expression::GetItem(
+                        Expression::Variable(Symbol("@withblock_result")).member(Symbol("@m")),
+                        emptyTreeVec() +
+                            ApplyArgument::Normal(
+                                Expression::Constant(CSTValue((int64_t)0))
+                                )
+                        ).member(Symbol("@m")),
+                    Expression::Sequence(
+                        assignExpr,
+                        testForException
+                        )
+                    )
+                );
+            }
         -| _ ->> {
             LOG_INFO << "Conversion error. Unexpected statement: " << statement;
             return invalidPyforaCodeExpression(statement.extent());
             }
     }
 
-Expression PythonAstConverter::convertPythonAstStatementToExpression(
+Expression PythonAstConverter::convertPythonAstStatementToExpression_(
         const PythonAstStatement& statement
         ) const
     {
@@ -2194,9 +2399,19 @@ Expression PythonAstConverter::convertPythonAstStatementToExpression(
 
     return CPPML::replaceCommonData(
         tr,
-        ExpressionLocationMetadata::WithSimpleParseRange(
-            statement.extent()
-            )
+        null() << CodeLocation(mCodeDefPoint, statement.extent())
+        );
+    }
+
+Expression PythonAstConverter::convertPythonAstStatementToExpression(
+        const PythonAstStatement& statement
+        ) const
+    {
+    Expression tr = convertPythonAstStatementToExpression_(statement);
+
+    return PushDownMetadata::transform(
+        tr,
+        null() << CodeLocation(mCodeDefPoint, statement.extent())
         );
     }
 
@@ -2229,19 +2444,21 @@ PatternWithName PythonAstConverter::convertPythonAstExpressionToPattern_inner(
                     ),
                 null(),
                 null(),
-                ExpressionLocationMetadata::WithSimpleParseRange(expr.extent())
+                null() << CodeLocation(mCodeDefPoint, expr.extent())
                 );
             }
         -| _ ->> {
-            LOG_INFO << "Conversion error. Expressions is neither Name nor Tuple: " << expr;
             return PatternWithName(
                 Pattern::ExpressionMatch(
-                    invalidPyforaCodeExpression(expr.extent()),
+                    Expression::Sequence(
+                        invalidPyforaCodeExpression(expr.extent()), 
+                        convertPythonAstExpressionToFora_(expr)
+                        ),
                     TuplePattern()
                     ),
                 null(),
                 null(),
-                ExpressionLocationMetadata::WithSimpleParseRange(expr.extent())
+                null() << CodeLocation(mCodeDefPoint, expr.extent())
                 );
             }
     }
@@ -2256,9 +2473,7 @@ PatternWithName PythonAstConverter::convertPythonAstExpressionToPattern(
         tr.pattern(),
         tr.name(),
         tr.condition(),
-        ExpressionLocationMetadata::WithSimpleParseRange(
-            expr.extent()
-            )
+        null() << CodeLocation(mCodeDefPoint, expr.extent())
         );
     }
 
@@ -2309,6 +2524,18 @@ bool hasInit(const ImmutableTreeVector<PythonAstStatement>& classBody)
 }
 
 Expression PythonAstConverter::convertPythonAstClassDefToFora(
+        const PythonAstStatement_ClassDefType& classDef,
+        const SimpleParseRange& extent,
+        ImmutableTreeVector<ImmutableTreeVector<std::string>> baseClassChains
+        ) const
+    {
+    return PushDownMetadata::transform(
+        convertPythonAstClassDefToFora_(classDef, extent, baseClassChains),
+        null() << CodeLocation(mCodeDefPoint, extent)
+        );
+    }
+
+Expression PythonAstConverter::convertPythonAstClassDefToFora_(
         const PythonAstStatement_ClassDefType& classDef,
         const SimpleParseRange& extent,
         ImmutableTreeVector<ImmutableTreeVector<std::string>> baseClassChains
@@ -2439,19 +2666,19 @@ Expression PythonAstConverter::convertPythonAstClassDefToFora(
             classDefinitionBody,
             null() << Symbol(className),
             null() << Symbol("@self"),
-            ExpressionLocationMetadata::WithSimpleParseRange(extent)
+            null() << CodeLocation(mCodeDefPoint, extent)
             ),
-        CSTValue()
+        replaceLine(mObjectMetadata, extent)
         );
     }
 
-Expression PythonAstConverter::replaceUnconvertiblesWithThrowExprs(
+Expression PythonAstConverter::replaceSymbolsWithCheckValidityExpressions(
         const Expression& e,
-        const ImmutableTreeVector<Symbol>& unconvertibleSymbols
+        const ImmutableTreeVector<Symbol>& symbols
         ) const
     {
     ImmutableTreeMap<Symbol, Expression> remap;
-    for (const auto& sym: unconvertibleSymbols)
+    for (const auto& sym: symbols)
         {
         remap = remap + std::make_pair(
             sym,
@@ -2459,7 +2686,7 @@ Expression PythonAstConverter::replaceUnconvertiblesWithThrowExprs(
             );
         }
 
-    return rebindFreeAs(e, remap);
+    return PushDownMetadata::transform(rebindFreeAs(e, remap));
     }
 
 Function PythonAstConverter::convertFunctionDefToForaFunction(
@@ -2526,7 +2753,7 @@ Function PythonAstConverter::convertFunctionDefToForaFunction(
                             functionBody,
                             Function::Empty()
                             ),
-                        CSTValue()
+                        replaceLine(mObjectMetadata, extent)
                         ).normalApplyArg()
                 );
 
@@ -2544,7 +2771,7 @@ Function PythonAstConverter::convertFunctionDefToForaFunction(
                     inner_func_name
                     )
                 ),
-            CSTValue()
+            replaceLine(mObjectMetadata, extent)
             ),
         Expression::Call(
             Expression::Variable(inner_func_name),
@@ -3002,7 +3229,7 @@ PythonAstConverter::unpackDefaultArgs(
                             emptyTreeVec() +
                             TuplePatternElement::VarArgs(null())
                             ),
-                        convertPythonAstExpressionToFora(defaultValues[ix]),
+                        convertPythonAstExpressionToFora_(defaultValues[ix]),
                         Function::Empty()
                         )
                     )
@@ -3067,6 +3294,17 @@ Expression PythonAstConverter::convertPythonAstWithBlockFunctionDefToFora(
         ImmutableTreeVector<std::string> varsToConsiderFree
         ) const
     {
+    return PushDownMetadata::transform(
+        convertPythonAstWithBlockFunctionDefToFora_(functionDef, extent, varsToConsiderFree)
+        );
+    }
+
+Expression PythonAstConverter::convertPythonAstWithBlockFunctionDefToFora_(
+        const PythonAstStatement_FunctionDefType& functionDef,
+        const SimpleParseRange& extent,
+        ImmutableTreeVector<std::string> varsToConsiderFree
+        ) const
+    {
     ImmutableTreeSet<Symbol> varsToConsiderFreeSet;
 
     for (const auto& v: varsToConsiderFree)
@@ -3081,9 +3319,11 @@ Expression PythonAstConverter::convertPythonAstWithBlockFunctionDefToFora(
             );
 
     ImmutableTreeVector<std::string> assigned;
-    for (const auto& var: functionBodyAndPattern.first.assignedVariables())
-        if (var.toString()[0] != '@')
+    for (const auto& var: functionBodyAndPattern.first.assignedVariables()) {
+        if (var.toString()[0] != '@') {
             assigned = assigned + var.toString();
+            }
+        }
 
     @match Expression(functionBodyAndPattern.first)
         -| Sequence(inner, Return(Constant(shouldBeNone))) ->> {
@@ -3096,9 +3336,14 @@ Expression PythonAstConverter::convertPythonAstWithBlockFunctionDefToFora(
 
     ImmutableTreeSet<Symbol> freeVarsToCheck = functionBody.freeVariables();
 
-    for (const auto& s: freeVarsToCheck)
-        if (!varsToConsiderFreeSet.contains(s))
-            functionBody = rebindFreeAs(functionBody, emptyTreeMap() + s + checkVariableValidityExpression(s));
+    for (const auto& s: freeVarsToCheck) {
+        if (!varsToConsiderFreeSet.contains(s)) {
+            functionBody = rebindFreeAs(
+                functionBody,
+                emptyTreeMap() + s + checkVariableValidityExpression(s)
+                );
+            }
+        }
 
     functionBody = wrapWithBlockFunctionBodyInTryCatch(
         functionBody,
@@ -3196,7 +3441,7 @@ Expression PythonAstConverter::wrapWithBlockFunctionBodyInTryCatch(
                             Pattern::Anything(),
                             null() << catchVar,
                             null(),
-                            ExpressionLocationMetadata::Empty()
+                            null()
                             ),
                         null()
                         )
@@ -3234,6 +3479,17 @@ Expression PythonAstConverter::wrapWithBlockFunctionBodyInTryCatch(
     }
 
 Expression PythonAstConverter::convertPythonAstFunctionDefToFora(
+        const PythonAstStatement_FunctionDefType& functionDef,
+        const SimpleParseRange& extent
+        ) const
+    {
+    return PushDownMetadata::transform(
+        convertPythonAstFunctionDefToFora_(functionDef, extent),
+        null() << CodeLocation(mCodeDefPoint, extent)
+        );
+    }
+
+Expression PythonAstConverter::convertPythonAstFunctionDefToFora_(
         const PythonAstStatement_FunctionDefType& functionDef,
         const SimpleParseRange& extent
         ) const
@@ -3284,10 +3540,10 @@ Expression PythonAstConverter::createObjectImplementingCallOperatorForFunction(
                 ),
             null() << Symbol(functionName),
             extent ?
-                ExpressionLocationMetadata::WithSimpleParseRange(*extent)
-            :   ExpressionLocationMetadata::Empty()
+                null() << CodeLocation(mCodeDefPoint, *extent)
+            :   Nullable<CodeLocation>()
             ),
-        CSTValue()
+        extent ? replaceLine(mObjectMetadata, *extent) : ImplValContainer(mObjectMetadata)
         );
     }
 
@@ -3373,7 +3629,7 @@ PythonAstConverter::convertPythonClassBodyPropertyToForaClassDefinitionTerm(
                         Expression::CreateFunction(
                             "__property_fun",
                             function,
-                            CSTValue()
+                            replaceLine(mObjectMetadata, extent)
                             ).normalApplyArg() +
                         Expression::Constant(
                             CSTValue(Symbol(functionDef.name()))
@@ -3408,7 +3664,7 @@ ImmutableTreeVector<TuplePatternElement> PythonAstConverter::computeForaArgs(
         foraArgs = foraArgs + TuplePatternElement::Normal(
             null(),
             convertPythonAstExpressionToPattern(pythonArgs.args()[k]),
-            null() << convertPythonAstExpressionToFora(pythonArgs.defaults()[idx++])
+            null() << convertPythonAstExpressionToFora_(pythonArgs.defaults()[idx++])
             );
 
     return foraArgs;
@@ -3430,6 +3686,17 @@ PythonAstConverter::throwTypeErrorExpression(const std::string& message) const
         null()
         );
     }
+
+PolymorphicSharedPtr<PythonAstConverter> PythonAstConverter::withObjectMetadata(CSTValue newMeta) const
+    {
+    return PolymorphicSharedPtr<PythonAstConverter>(new PythonAstConverter(*this, newMeta));
+    }
+
+PolymorphicSharedPtr<PythonAstConverter> PythonAstConverter::withCodeDefinitionPoint(CodeDefinitionPoint newCDP) const
+    {
+    return PolymorphicSharedPtr<PythonAstConverter>(new PythonAstConverter(*this, newCDP));
+    }
+
 
 }
 

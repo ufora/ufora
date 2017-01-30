@@ -1,0 +1,141 @@
+/***************************************************************************
+    Copyright 2016 Ufora Inc.
+
+    Licensed under the Apache License, Version 2.0 (the "License");
+    you may not use this file except in compliance with the License.
+    You may obtain a copy of the License at
+
+        http://www.apache.org/licenses/LICENSE-2.0
+
+    Unless required by applicable law or agreed to in writing, software
+    distributed under the License is distributed on an "AS IS" BASIS,
+    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    See the License for the specific language governing permissions and
+    limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include "../../../core/containers/ImmutableTreeVector.hppml"
+#include "../../../core/math/Random.hpp"
+#include "../../../core/math/Smallest.hpp"
+#include "../../../core/math/StatisticsAccumulator.hpp"
+#include "../../../core/math/SimpleLinearRegression.hpp"
+
+namespace Cumulus {
+
+class FixedWidthModel {
+public:
+    FixedWidthModel() : 
+            mCount(0)
+        {
+        }
+
+    void observe(ImmutableTreeVector<double> inputs, double output)
+        {
+        mSamples.push_back(make_pair(inputs, output));
+
+        if (mRegressions.size() == 0)
+            {
+            mRegressions.resize(inputs.size());
+            for (long k = 0; k < mRegressions.size(); k++)
+                mRegressions[k].resize(mRegressions.size() - k + 1);
+            }
+        else
+            lassert(mRegressions.size() == inputs.size());
+
+        mCount++;
+
+        //we keep a set of regressions predicting the output: one per variable,
+        //one per pair of variables (since we often have runtime proportional to differences)
+        Smallest<pair<int64_t, int64_t> > best;
+        for (int64_t k = 0; k < mRegressions.size(); k++)
+            {
+            for (int64_t j = k; j < mRegressions.size(); j++)
+                {
+                mRegressions[k][j - k].observe(
+                    std::log((j == k ? abs(inputs[k]) : abs(inputs[k] - inputs[j])) + 0.0000001),
+                    std::log(output + 0.001)
+                    );
+   
+                if (mCount >= 10)
+                    {
+                    auto reg = mRegressions[k][j - k];
+                    auto rv = reg.residualVariance();
+
+                    if (boost::math::isfinite(rv))
+                        best.observe(make_pair(k,j), rv);
+                    }
+                }
+            }
+
+        mBestModel = best.smallest();
+
+        if (SHOULD_LOG_DEBUG())
+            //now go through and pick the best model
+            if (mCount >= 10 && mCount % 10 == 0)
+                {
+                int j = mBestModel->first;
+                int k = mBestModel->second;
+
+                auto model = mRegressions[mBestModel->first][mBestModel->second - mBestModel->first];
+
+                LOGGER_DEBUG_T log = LOGGER_DEBUG;
+
+                log << "bestModel = " << *mBestModel << " with " 
+                    << inputs
+                    << model.residualVariance() << " sq logStds residual vs "
+                    << model.rawVariance() << " sq logStds raw. "
+                    << model.getParams() << " is params. "
+                    << model.getX().getXX() << " is mean X^2. "
+                    << model.getY().getXX() << " is mean Y^2. "
+                    << model.getXY().mean() << " is mean XY. "
+                    << "\n"
+                    ;
+
+                //now check how well the model does for each integer log of output
+                map<int64_t, StatisticsAccumulator<double, double> > predictedBuckets;
+                map<int64_t, StatisticsAccumulator<double, double> > actualBuckets;
+                map<int64_t, StatisticsAccumulator<double, double> > errorBuckets;
+                for (auto sample: mSamples)
+                    {
+                    auto inputs = sample.first;
+
+                    double predictionX = 
+                        std::log((j == k ? abs(inputs[k]) : abs(inputs[k] - inputs[j])) + 0.0000001);
+                    double prediction = model.getParams().first * predictionX + model.getParams().second;
+                    
+                    double actual = std::log(sample.second + 0.001);
+
+                    actualBuckets[int(actual)].observe(actual, 1.0);
+                    predictedBuckets[int(actual)].observe(prediction, 1.0);
+                    errorBuckets[int(actual)].observe(prediction-actual, 1.0);
+                    }
+
+                for (auto& bucketAndVal: predictedBuckets)
+                    {
+                    int bucket = bucketAndVal.first;
+                    log << "\tbucket " << bucketAndVal.first
+                        << " obs=" << int(actualBuckets[bucket].weight() + 0.1) << " "
+                        << " has actual "
+                        << actualBuckets[bucket].mean()
+                        << " vs predicted " << predictedBuckets[bucket].mean()
+                        << " with rsquared of "
+                        << (1.0 - errorBuckets[bucket].getXX() / actualBuckets[bucket].getXX())
+                        << "\n"
+                        ;
+                    }
+                }
+        }
+
+private:
+    int64_t mCount;
+
+    std::vector<std::vector<SimpleLinearRegression> > mRegressions;
+
+    std::vector<pair<ImmutableTreeVector<double>, double> > mSamples;
+
+    Nullable<pair<int64_t, int64_t> > mBestModel;
+};
+
+}
+

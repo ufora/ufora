@@ -32,9 +32,16 @@ callbackScheduler = CallbackScheduler.singletonForTesting()
 
 def expensiveChildCachecalls(ix):
     return  """
-        Vector.range(10).papply(fun(ix) {
-            sum(ix, 10**12) + %s
-            })
+        let sumf = fun(a,b) { 
+            if (a+1 >= b)
+                return [sum(a, 10**12) + %s]
+
+            let mid = (a+b)/2
+
+            return sumf(a,mid) + sumf(mid,b)
+            }
+
+        sumf(0,10)
         """ % ix
 
 vecOfVecCalcText = """
@@ -148,7 +155,7 @@ class CheckpointingTest(unittest.TestCase):
 
         assert False, "timed out"
 
-    def timestampOfMostRecentFullCheckpoint(self, simulation, onlyUnfinished = True):
+    def timestampOfMostRecentFullCheckpoint(self, simulation, onlyUnfinished = True, onlySuccessful = True):
         if not simulation.getGlobalScheduler():
             return None
 
@@ -157,7 +164,7 @@ class CheckpointingTest(unittest.TestCase):
             (computation, (checkpointStatus, checkpointRequest)) = statuses[0]
 
             timestamp = checkpointRequest.timestamp
-            isFull = checkpointRequest.writeToStorage
+            isFull = checkpointRequest.writeToStorage and (not onlySuccessful or checkpointStatus.checkpointSuccessful)
 
             if isFull:
                 return timestamp
@@ -177,7 +184,7 @@ class CheckpointingTest(unittest.TestCase):
             return {}
 
         statuses = simulation.getGlobalScheduler().currentOutstandingCheckpointStatuses(onlyUnfinished, onlyCommitted)
-        return {status[0]: status[1][0].statistics.timeSpentInCompiler for status in statuses}
+        return {status[0]: status[1][0].statistics.timeElapsed.timeSpentInCompiledCode for status in statuses}
 
     def totalTimeElapsedOfMostRecentCheckpoints(self, simulation, onlyUnfinished = True, onlyCommitted = False):
         return sum(self.timeElapsedOfMostRecentCheckpoints(simulation, onlyUnfinished, onlyCommitted).values(), 0)
@@ -190,7 +197,7 @@ class CheckpointingTest(unittest.TestCase):
             if scheduler:
                 statuses = simulation.getGlobalScheduler().currentOutstandingCheckpointStatuses(onlyUnfinished, False)
                 if statuses:
-                    checkpointSecondsElapsed = statuses[0][1][0].statistics.timeSpentInCompiler
+                    checkpointSecondsElapsed = statuses[0][1][0].statistics.timeElapsed.timeSpentInCompiledCode
 
                     if priorCheckpoint is None or priorCheckpoint < checkpointSecondsElapsed:
                         foundFullCheckpoint = True
@@ -209,8 +216,8 @@ class CheckpointingTest(unittest.TestCase):
             if scheduler:
                 statuses = simulation.getGlobalScheduler().currentOutstandingCheckpointStatuses(True, True)
                 for (computation, (stats, checkpoint)) in statuses:
-                    if checkpoint.writeToStorage:
-                        checkpointSecondsElapsed = stats.statistics.timeSpentInCompiler
+                    if checkpoint.writeToStorage and stats.checkpointSuccessful:
+                        checkpointSecondsElapsed = stats.statistics.timeElapsed.timeSpentInCompiledCode
                         found.append(checkpointSecondsElapsed)
 
             if len(found) < count:
@@ -219,7 +226,7 @@ class CheckpointingTest(unittest.TestCase):
                 return found
 
 
-    def waitForFullCheckpoint(self, simulation, priorCheckpoint = None, checkInterval = 0.1, onlyUnfinished = True):
+    def waitForFullCheckpoint(self, simulation, priorCheckpoint = None, checkInterval = 0.1, onlyUnfinished = True, onlySuccessful = False):
         t1 = time.time()
         foundFullCheckpoint = False
         while time.time() - t1 < TIMEOUT and not foundFullCheckpoint:
@@ -228,8 +235,8 @@ class CheckpointingTest(unittest.TestCase):
                 statuses = simulation.getGlobalScheduler().currentOutstandingCheckpointStatuses(onlyUnfinished, True)
                 if statuses:
                     (computation, (stats, checkpoint)) = statuses[0]
-                    if checkpoint.writeToStorage:
-                        checkpointSecondsElapsed = stats.statistics.timeSpentInCompiler
+                    if checkpoint.writeToStorage and (not onlySuccessful or stats.checkpointSuccessful):
+                        checkpointSecondsElapsed = stats.statistics.timeElapsed.timeSpentInCompiledCode
 
                         if priorCheckpoint is None or priorCheckpoint < checkpointSecondsElapsed:
                             foundFullCheckpoint = True
@@ -315,11 +322,12 @@ class CheckpointingTest(unittest.TestCase):
                         newCheckpoint = checkpoint.timestamp
                         if lastCheckpoint is None or newCheckpoint != lastCheckpoint:
                             lastCheckpoint = newCheckpoint
-                            if checkpoint.writeToStorage:
+                            if checkpoint.writeToStorage and stats.checkpointSuccessful:
                                 foundFullCheckpoint = True
                     time.sleep(.1)
 
                 self.assertTrue(foundFullCheckpoint)
+
                 count += 1
                 logging.info(
                     "Total: %d after %s with %d files.",
@@ -494,13 +502,22 @@ class CheckpointingTest(unittest.TestCase):
         finally:
             simulation.teardown()
 
-    def test_checkpointingRecoveryFromCorruptedCacheStateOne(self):
-        self.checkpointingRecoveryFromCorruptedCacheState(False)
+    def test_checkpointingRecoveryFromCorruptedCacheStatePage(self):
+        self.checkpointingRecoveryFromCorruptedCacheState("_page")
+
+    def test_checkpointingRecoveryFromCorruptedCacheStateSummary(self):
+        self.checkpointingRecoveryFromCorruptedCacheState("_summary")
+
+    def test_checkpointingRecoveryFromCorruptedCacheStateSlice(self):
+        self.checkpointingRecoveryFromCorruptedCacheState("_slice")
+
+    def test_checkpointingRecoveryFromCorruptedCacheStateBigvec(self):
+        self.checkpointingRecoveryFromCorruptedCacheState("_bigvec")
 
     def test_checkpointingRecoveryFromCorruptedCacheStateAll(self):
-        self.checkpointingRecoveryFromCorruptedCacheState(True)
+        self.checkpointingRecoveryFromCorruptedCacheState("")
 
-    def checkpointingRecoveryFromCorruptedCacheState(self, deleteAll):
+    def checkpointingRecoveryFromCorruptedCacheState(self, suffix):
         simulation = self.createSimulation(workerCount=1)
         self.assertTrue(len(simulation.objectStore.listValues()) == 0)
 
@@ -528,18 +545,11 @@ class CheckpointingTest(unittest.TestCase):
             #delete everything in the object store
             keys = simulation.objectStore.listValues()
 
-            if deleteAll:
-                logging.info("Deleting all values")
-                for k in keys:
+            for k in keys:
+                if k[0].endswith(suffix):
+                    logging.info("Deleting %s", k[0])
                     simulation.objectStore.deleteValue(k[0])
-            else:
-                toDelete = keys[int(random.random() * len(keys))][0];
-
-                logging.info("Deleting %s of %s", toDelete, keys)
-
-                #delete a random value
-                simulation.objectStore.deleteValue(toDelete)
-
+    
             #give the simulation a couple of seconds to pick a scheduler
             simulation.addWorker()
 
@@ -798,6 +808,31 @@ class CheckpointingTest(unittest.TestCase):
         finally:
             simulation.teardown()
 
+    def test_checkpointingTimestampOnlyIncreases(self):
+        simulation = self.createSimulation()
+        
+        try:
+            #give the simulation a couple of seconds to pick a scheduler
+            self.assertTrue(simulation.waitForGlobalScheduler(timeout=2.0))
+
+            simulation.submitComputation(sumInLoopText)
+
+            simulation.waitForGlobalScheduler()
+            time.sleep(1.0)
+
+            priorTotalTime = 0.0
+            t0 = time.time()
+
+            simulation.getGlobalScheduler().setCheckpointStatusInterval(0.01)
+            while time.time() - t0 < 10.0:
+                totalTime = self.totalTimeElapsedOfMostRecentCheckpoints(simulation)
+                time.sleep(.1)
+
+                self.assertTrue(totalTime >= priorTotalTime, (totalTime, priorTotalTime))
+                priorTotalTime = totalTime
+        finally:
+            simulation.teardown()
+
     def test_checkpointingWithFaultyWrites(self):
         for injectionType in ["page","bigvec","checkpoint_slice","checkpoint_summary"]:
             print "starting test for injection type ", injectionType
@@ -842,7 +877,7 @@ class CheckpointingTest(unittest.TestCase):
 
                     simulation.getGlobalScheduler().triggerFullCheckpointsOnOutstandingComputations()
 
-                    timestamp = self.waitForFullCheckpoint(simulation, priorCheckpoint=timestamp)
+                    timestamp = self.waitForFullCheckpoint(simulation, priorCheckpoint=timestamp, onlySuccessful = False)
 
                     statuses = simulation.getGlobalScheduler().currentOutstandingCheckpointStatuses(True, True)
 
@@ -1034,17 +1069,51 @@ class CheckpointingTest(unittest.TestCase):
             )
 
     def validateSingleIncreasingComputationTimestamp(self, checkpointRegimes):
-        #we should see a single computation with its timestamp steadily increasing
+        regimeMessages = ["        **********"]
+        for regime in checkpointRegimes:
+            regimeMessages.append("        regime: ")
+            for r in regime:
+                regimeMessages.append("            " + str(r))
+        regimeMessages.append("        ********")
+        regimeMessages = "\n".join(regimeMessages)
+
+        print regimeMessages
+
+        # we should see a single computation with its timestamp steadily increasing across two regimes,
+        # and another computation that's not increasing (because it's the root computation)
+        expectedOutputExample = """
+        **********
+        regime: 
+            {Root(3E66E99C93B5...): 3.438832511000002, Root(64276A1D30FD...): 9.379000000000657e-06}
+            {Root(3E66E99C93B5...): 11.964439515000002, Root(64276A1D30FD...): 9.379000000000657e-06}
+            {Root(3E66E99C93B5...): 18.916097162000003, Root(64276A1D30FD...): 9.379000000000657e-06}
+            {Root(3E66E99C93B5...): 25.952656669000007, Root(64276A1D30FD...): 9.379000000000657e-06}
+            {Root(3E66E99C93B5...): 27.14454732300001, Root(64276A1D30FD...): 9.379000000000657e-06}
+        regime: 
+            {Root(3E66E99C93B5...): 34.49058485900001, Root(64276A1D30FD...): 9.379000000000657e-06}
+            {Root(3E66E99C93B5...): 39.58481955800001, Root(64276A1D30FD...): 9.379000000000657e-06}
+            {Root(3E66E99C93B5...): 46.831529699000015, Root(64276A1D30FD...): 9.379000000000657e-06}
+            {Root(3E66E99C93B5...): 55.38760236600001, Root(64276A1D30FD...): 9.379000000000657e-06}
+            {Root(3E66E99C93B5...): 55.423727262, Root(64276A1D30FD...): 9.379000000000657e-06}
+        ********
+        """
+
         index = 0
         for regime in checkpointRegimes:
             if index > 0:
                 lastSample = regime[-1]
                 comps = [lastSample[c] for c in lastSample if lastSample[c] > .1]
-                self.assertTrue(len(comps) == 1, "Expected 1 comp. Had %s at index %s" % (len(comps), index))
+                self.assertTrue(len(comps) == 1, 
+                    "Expected at least 1 computation with some time. Regime was\n\n%s\n\nReasonable would be %s" % 
+                        (regimeMessages, expectedOutputExample)
+                    )
             index += 1
 
         for ix in range(len(comps)-1):
-            self.assertTrue(comps[ix+1] > comps[ix])
+            self.assertTrue(comps[ix+1] > comps[ix],
+                "Expected computation time to be increasing. Regime was\n\n%s\n\nReasonable would be %s" % 
+                    (regimeMessages, expectedOutputExample)
+                    )
 
     def loadCheckpointFromFreshSimulationTest(self, calculationText, timestampsPerPassList, clientCount=1, timestep = 1.0):
         s3 = InMemoryS3Interface.InMemoryS3InterfaceFactory()

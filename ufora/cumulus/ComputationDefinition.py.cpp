@@ -17,7 +17,7 @@
 
 #include <stdint.h>
 #include <boost/python.hpp>
-#include "../FORA/python/FORAPythonUtil.hppml"
+#include "../core/python/ValueLikeCPPMLWrapper.hppml"
 #include "../native/Registrar.hpp"
 #include "../core/python/CPPMLWrapper.hpp"
 #include "../core/python/utilities.hpp"
@@ -51,7 +51,7 @@ public:
 			using namespace boost::python;
 
 			boost::python::object compDefCls =
-				FORAPythonUtil::exposeValueLikeCppmlType<ComputationDefinition>()
+				ValueLikeCPPMLWrapper::exposeValueLikeCppmlType<ComputationDefinition>()
 					.class_()
 					.def("__init__", make_constructor(computationDefinitionFromIVC))
 					.def("hash", &ComputationDefinitionHash)
@@ -59,7 +59,7 @@ public:
 			def("ComputationDefinition", compDefCls);
 
 			boost::python::object compDefTermCls =
-				FORAPythonUtil::exposeValueLikeCppmlType<ComputationDefinitionTerm>()
+				ValueLikeCPPMLWrapper::exposeValueLikeCppmlType<ComputationDefinitionTerm>()
 					.class_();
 
 			def("ComputationDefinitionTerm", compDefTermCls);

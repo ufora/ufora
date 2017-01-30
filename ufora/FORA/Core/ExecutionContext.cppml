@@ -15,21 +15,20 @@
 ****************************************************************************/
 #include "ExecutionContext.hppml"
 #include "ExecutionContextImpl.hppml"
-#include "PausedComputation.hppml"
+#include "PausedComputationTree.hppml"
 #include "../Primitives/CodeLocation.hppml"
+#include "TimeElapsed.hppml"
 
 namespace Fora {
 namespace Interpreter {
 
 ExecutionContext::ExecutionContext(
 				PolymorphicSharedPtr<VectorDataManager> inVectorDataManager,
-				uword_t inStackIncrement,
 				uint64_t memoryQuota
 				) :
 			mImpl(
 				new ExecutionContextImpl(
 					inVectorDataManager,
-					inStackIncrement,
 					memoryQuota,
 					this
 					)
@@ -76,11 +75,6 @@ void ExecutionContext::interruptAfterCycleCount(sword_t checks)
 sword_t ExecutionContext::remainingCycleCount()
 	{
 	return mImpl->remainingCycleCount();
-	}
-
-uword_t ExecutionContext::totalStackMemoryUsed(void)
-	{
-	return mImpl->totalStackMemoryUsed();
 	}
 
 ExecutionContext*	ExecutionContext::currentExecutionContext(void)
@@ -168,11 +162,6 @@ void ExecutionContext::setFinishedResult(const ComputationResult& inResult)
 	mImpl->setFinishedResult(inResult);
 	}
 
-ImplValContainer ExecutionContext::getComputationLog() const
-	{
-	return mImpl->getComputationLog();
-	}
-
 ImmutableTreeVector<pair<ForaStackTrace, Fora::Interpreter::StackframeMetadata> >
 ExecutionContext::extractStacktrace(bool inExportValues) const
 	{
@@ -189,12 +178,17 @@ void ExecutionContext::deserialize(Fora::ForaValueDeserializationStream& deseria
 	mImpl->deserialize(deserializer);
 	}
 
-PausedComputation ExecutionContext::extractPausedComputation() const
+PausedComputationTreeStats ExecutionContext::extractComputationTreeStats() const
+	{
+	return mImpl->getStats();
+	}
+
+PausedComputationTree ExecutionContext::extractPausedComputation() const
 	{
 	return mImpl->extractPausedComputation();
 	}
 
-void ExecutionContext::resumePausedComputation(const PausedComputation& computation)
+void ExecutionContext::resumePausedComputation(const PausedComputationTree& computation)
 	{
 	mImpl->resumePausedComputation(computation);
 	}
@@ -214,21 +208,6 @@ bool ExecutionContext::pageLargeVectorHandles(uword_t inBytecountThreshold)
 	return mImpl->pageLargeVectorHandles(inBytecountThreshold);
 	}
 
-void ExecutionContext::logAMessage(const ImplValContainer& msg)
-	{
-	mImpl->logAMessage(msg);
-	}
-
-void ExecutionContext::logSomeMessages(const ImplValContainer& msg)
-	{
-	mImpl->logSomeMessages(msg);
-	}
-
-void ExecutionContext::evaluate(const ImplValContainer& args)
-	{
-	mImpl->evaluate(args);
-	}
-
 void ExecutionContext::placeInEvaluationStateWithoutRenamingMutableVectors(const ImplValContainer& args)
 	{
 	mImpl->placeInEvaluationStateWithoutRenamingMutableVectors(args);
@@ -242,14 +221,14 @@ void ExecutionContext::evaluateFunctionPointer(
 	mImpl->evaluateFunctionPointer(toCall, args);
 	}
 
-void ExecutionContext::resumeComputation()
+void ExecutionContext::compute()
 	{
-	mImpl->resumeComputation();
+	mImpl->compute();
 	}
 
-void ExecutionContext::resumeComputation(const ComputationResult& val)
+void ExecutionContext::addCachecallResult(const ComputationResult& val)
 	{
-	mImpl->resumeComputation(val);
+	mImpl->addCachecallResult(val);
 	}
 
 void ExecutionContext::teardown(bool assertEmpty)
@@ -262,19 +241,9 @@ boost::shared_ptr<ExecutionContextConfiguration> ExecutionContext::getConfigurat
 	return mImpl->getConfiguration();
 	}
 
-double ExecutionContext::getTimeSpentInInterpreter() const
+TimeElapsed ExecutionContext::getTotalTimeElapsed() const
 	{
-	return mImpl->getTimeSpentInInterpreter();
-	}
-
-double ExecutionContext::getTimeSpentInCompiledCode() const
-	{
-	return mImpl->getTimeSpentInCompiledCode();
-	}
-
-double ExecutionContext::getTimeSpentGarbageCollecting() const
-	{
-	return mImpl->getTimeSpentGarbageCollecting();
+	return mImpl->getTotalTimeElapsed();
 	}
 
 RefcountPool* ExecutionContext::getRefcountPool(void)
@@ -332,11 +301,6 @@ void ExecutionContext::initialize()
 	mImpl->initialize();
 	}
 
-MemBlockAllocator& ExecutionContext::getStackAllocator(void)
-	{
-	return mImpl->mStackAllocator;
-	}
-
 InterpreterThreadObserver& ExecutionContext::getInterpreterHistory()
 	{
 	return *mImpl->mInterpreterHistory;
@@ -344,7 +308,7 @@ InterpreterThreadObserver& ExecutionContext::getInterpreterHistory()
 
 InterpreterScratchSpace& ExecutionContext::getInterpreterScratchSpace()
 	{
-	return mImpl->mThreadState.getScratchSpace();
+	return mImpl->mInterpreterScratchSpace;
 	}
 
 hash_type ExecutionContext::newVectorHash()
@@ -362,16 +326,22 @@ void ExecutionContext::visitStackFramesAndValues(TypedFora::Abi::StackFrameVisit
 	mImpl->visitStackFramesAndValues(visitor);
 	}
 
-Nullable<ControlFlowGraphSplitter::SplitPausedComputation>
-				ExecutionContext::splitComputation(bool disableVectorPagingIfSplit)
+bool ExecutionContext::splitComputation(
+			boost::function<hash_type (PausedComputationTree)> inCreateSplit, 
+			double minSecondsElapsed
+			)
 	{
-	return mImpl->splitComputation(disableVectorPagingIfSplit);
+	return mImpl->splitComputation(inCreateSplit, minSecondsElapsed);
 	}
 
-PolymorphicSharedPtr<FuturesSplitResult> ExecutionContext::splitWithFutures()
-    {
-    return mImpl->splitWithFutures();
-    }
+bool ExecutionContext::absorbSplitResult(
+		hash_type computationHash,
+		const ComputationResult& result,
+		TimeElapsed totalTimeElapsed
+		)
+	{
+	return mImpl->absorbSplitResult(computationHash, result, totalTimeElapsed);
+	}
 
 void ExecutionContext::disableMemoryPoolDefragment()
 	{
@@ -381,11 +351,6 @@ void ExecutionContext::disableMemoryPoolDefragment()
 void ExecutionContext::setOnPageCreated(boost::function1<void, Fora::PageId> function)
 	{
 	mImpl->setOnPageCreated(function);
-	}
-
-void ExecutionContext::setOnCurrentActivePageGroupChanged(boost::function2<void, ImmutableTreeSet<Fora::PageId>, double> function)
-	{
-	mImpl->setOnCurrentActivePageGroupChanged(function);
 	}
 
 pair<uint64_t, uint64_t> ExecutionContext::getCurrentMemoryUsage()

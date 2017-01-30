@@ -15,7 +15,7 @@
 ****************************************************************************/
 #include "FunctionStage2.hppml"
 
-#include "../python/FORAPythonUtil.hppml"
+#include "../../core/python/ValueLikeCPPMLWrapper.hppml"
 #include <boost/python.hpp>
 #include "../../native/Registrar.hpp"
 #include "../../core/python/CPPMLWrapper.hpp"
@@ -33,8 +33,8 @@ public:
 			{
 			using namespace boost::python;
 
-			FORAPythonUtil::exposeValueLikeCppmlType<FunctionStage2::Function>();
-			FORAPythonUtil::exposeValueLikeCppmlType<FunctionStage2::Expression>();
+			ValueLikeCPPMLWrapper::exposeValueLikeCppmlType<FunctionStage2::Function>();
+			ValueLikeCPPMLWrapper::exposeValueLikeCppmlType<FunctionStage2::Expression>();
 			}
 };
 

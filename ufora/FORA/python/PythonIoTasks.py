@@ -18,6 +18,18 @@ import ufora.native.FORA as ForaNative
 import ufora.native.Cumulus as CumulusNative
 import ufora.config.Setup as Setup
 import ufora.util.ExponentialMovingAverage as ExponentialMovingAverage
+import pyfora.PureImplementationMappings as PureImplementationMappings
+from pyfora.PythonObjectRehydrator import PythonObjectRehydrator
+import pyfora.PyObjectWalker as PyObjectWalker
+import pyfora.BinaryObjectRegistry as BinaryObjectRegistry
+import ufora.FORA.python.PurePython.Converter as Converter
+import ufora.FORA.python.PurePython.PythonAstConverter as PythonAstConverter
+import ufora.FORA.python.ModuleImporter as ModuleImporter
+import pyfora.NamedSingletons as NamedSingletons
+import pyfora.PyAbortSingletons as PyAbortSingletons
+import ufora.util.OutOfProcessDownloader as OutOfProcessDownloader
+
+import struct
 import logging
 import os
 import requests
@@ -77,8 +89,7 @@ def loadExternalDatasetAsForaValue(datasetDescriptor, vdm):
         return normalComputationResult(ForaNative.ImplValContainer(time.time()))
     elif datasetDescriptor.isExceptionThrowingDataset():
         return ForaNative.ComputationResult.Exception(
-            ForaNative.ImplValContainer("ExceptionThrowingDataset"),
-            ForaNative.ImplValContainer()
+            ForaNative.ImplValContainer("ExceptionThrowingDataset")
             )
     elif datasetDescriptor.isFailureInducingDataset():
         raise DatasetLoadException("FailureInducingDataset")
@@ -123,7 +134,7 @@ def persistObject(obj, objectStore, outOfProcessDownloaderPool):
     def inputCallback(fd):
         data = obj.objectData.toString()
         dataLen[0] = len(data)
-        os.write(fd, common.prependSize(data))
+        OutOfProcessDownloader.writeAllToFd(fd, common.prependSize(data))
 
     outOfProcessDownloaderPool.getDownloader() \
             .executeAndCallbackWithString(objectStoreUploader,
@@ -310,7 +321,7 @@ def writeMultipartS3UploadPart(s3InterfaceFactory,
 
     def inputCallback(fd):
         data = dataAsNBB.toString()
-        os.write(fd, common.prependSize(data))
+        OutOfProcessDownloader.writeAllToFd(fd, common.prependSize(data))
 
     outOfProcessDownloaderPool.getDownloader() \
             .executeAndCallbackWithString(writer, outputCallback, inputCallback)
@@ -708,8 +719,7 @@ def loadHttpRequestDataset(httpRequest):
 
 def normalComputationResult(result):
     return ForaNative.ComputationResult.Result(
-        result,
-        ForaNative.ImplValContainer()
+        result
         )
 
 

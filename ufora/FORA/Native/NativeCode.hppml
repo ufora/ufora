@@ -39,23 +39,23 @@
 	//NativeCode.  They carry no semantic meaning in the code, but should
 	//describe invariants that the compiler can use to optimize code.
 	NativeExpressionTag =
-	
-	
+
+
 		//just comments
 		Comment of string str
-	
+
 		//indicates that this expression checks whether to kick to the
 		//interpreter. The compiler replaces anything surrounded by
 		//this expression with an actual interpreter check
 	-|	KickToInterpreterCheck of ()
-	
+
 		//Interrupt indicates that this block of code checks whether to
 		//interrupt the current computation.  The optimizer will assume that
 		//it can remove an interrupt block if it can prove that another
 		//block marked interrupt is always executed in a finite number
 		//of instruction cycles
 	-|	Interrupt of ()
-	
+
 		//CallSiteTag and CallSiteInstrumentation are used to mark a particular
 		//call site and the instrumentation associated with it.
 		//In general, the optimizer doesn't do anything with this code.
@@ -67,24 +67,24 @@
 			uint64_t siteId,
 			std::string calleeName
 
-	-|	HomogenousVectorLookup of 
-			NativeExpression vectorRecord, 
+	-|	HomogenousVectorLookup of
+			NativeExpression vectorRecord,
 			NativeExpression index,
 			NativeType type
 
 		//indicates vectorRecord[index][index2].
 		//offsetWithinExpr1 is the byte offset of the second VectorRecord within
 		//vectorRecord[index]
-	-|	HomogenousDoubleVectorStashCheck of 
-			NativeExpression vectorRecord, 
-			NativeExpression stash, 
+	-|	HomogenousDoubleVectorStashCheck of
+			NativeExpression vectorRecord,
+			NativeExpression stash,
 			NativeExpression index,
 			NativeExpression index2,
 			int64_t offsetWithinExpr1
 
-	-|	HomogenousVectorStashCheck of 
+	-|	HomogenousVectorStashCheck of
 			NativeExpression vecExpr,
-			NativeExpression stash, 
+			NativeExpression stash,
 			NativeExpression index
 
 	-|	OnHomogenousVectorLookupBoundsCheckFailure of ()
@@ -94,7 +94,7 @@
 	-|	CallSiteInstrumentation of
 			std::string callerName,
 			uint64_t siteId
-	
+
 		//Refcount indicates that an operation increases or decreases a
 		//refcount (potentially destroying it).  Two sequential operations
 		//that leave a refcount unchanged can be removed, but only if we
@@ -107,7 +107,7 @@
 			//we can create 'pairs' of refcounts
 			NativeExpression opposite
 
-	-|	Generic of 
+	-|	Generic of
 			std::string tagType,
 			ImmutableTreeMap<std::string, NativeExpression> childExpressions
 	{
@@ -122,6 +122,7 @@ and
 			NativeExpression,
 			NativeExpressionTag tag
 	-|	CreateComposite of ImmutableTreeVector<NativeExpression> subs
+	-|	SideEffectfulNoOp of ()
 	-|	DiscardFirst of
 			NativeExpression first,
 			NativeExpression second
@@ -140,7 +141,7 @@ and
 	-|	Store of
 			NativeExpression address,
 			NativeExpression valueToStore
-	-|	Selector of 
+	-|	Selector of
 			NativeExpression condition,
 			NativeExpression ifTrue,
 			NativeExpression ifFalse
@@ -168,7 +169,7 @@ and
 			ImmutableTreeVector<NativeExpression> args,
 			ImmutableTreeVector<bool> passArgByPointer,
 			bool resultPassedInFirstArgByPtr
-			
+
 	// === Valued expressions with flow control: ===
 		//Creates a set of continuations as objects.  Those continuations return
 		//to this exact point. They must all result in 'null' type, or the actual type.
@@ -186,6 +187,22 @@ and
 			NativeExpression expr,
 			NativeExpression within,
 			bool toss
+
+		// Create a mid-execution 'resumption' point, allowing other parts of the native CFG
+		// to jump to this location. The jumping code should provide definitions for all variables
+		// that may be accessible from this location that are not in scope at the jump site. Code that
+		// does not do so should not compile.
+	-|	Resumption of 
+			NativeBlockID block,
+			//the normal executio path
+			NativeExpression normalPath,
+			//expression we resume with
+			NativeExpression overrideIfJump
+
+	-|	JumpToResumption of 
+			NativeBlockID targetBlock,
+			ImmutableTreeMap<NativeVariable, NativeExpression> variableDefinitions
+
 
 	// === Exiting expressions: ===
 		//Creates the implicit continuations and jumps to `f` with the relevant arguments.
@@ -212,6 +229,8 @@ and
 	with
 		Nullable<NativeType>				type				= (this->computeNativeType()),
 		ImmutableTreeSet<NativeVariable>	freeVariables		= (this->computeFreeVariables()),
+		ImmutableTreeSet<NativeBlockID>		resumptions			= (this->computeResumptions()),
+		ImmutableTreeSet<NativeBlockID>		resumptionTargets	= (this->computeResumptionTargets()),
 		ImmutableTreeSet<std::string>		externalBranches	= (this->computeExternalBranches()),
 		ImmutableTreeSet<uword_t>			exits				= (this->computeExits()),
 		uint64_t							complexity			= (this->computeComplexity()),
@@ -227,7 +246,7 @@ and
 						const ImmutableTreeVector<NativeExpression>& element,
 						const NativeExpression& source
 						);
-		
+
 		static NativeExpression If(const NativeExpression& condition,
 		                           const NativeExpression& ifTrue,
 		                           const NativeExpression& ifFalse);
@@ -237,52 +256,38 @@ and
 								   );
 
 		static NativeExpression CallLibraryFunction(
-									std::string functionName, 
-									const NativeType& retType, 
+									std::string functionName,
+									const NativeType& retType,
 									const ImmutableTreeVector<NativeExpression>& expressions
 									);
 
 		static NativeExpression CallLibraryFunction(
-									void* functionPointer, 
-									const NativeType& retType, 
+									void* functionPointer,
+									const NativeType& retType,
 									const ImmutableTreeVector<NativeExpression>& expressions
 									);
-		
-		//Creates a 'for loop'-like structure using an inline function
-		//with access to external variables.
-		static NativeExpression Loop(const NativeVariable& var,
-		                             const NativeExpression& initializer,
-		                             const NativeExpression& condition,
-		                             const NativeExpression& body,
-		                             const NativeExpression& update,
-		                             const NativeExpression& result,
-									 double conditionFrequency = .99
-									 );
-		
-		static NativeExpression Loop(const ImmutableTreeVector<NativeVariable>& var,
-		                             const ImmutableTreeVector<NativeExpression>& initializer,
-		                             const NativeExpression& condition,
-		                             const NativeExpression& body,
-		                             const ImmutableTreeVector<NativeExpression>& update,
-		                             const NativeExpression& result);
-		
+
 		static NativeExpression Alloc(NativeType t, uword_t ct);
-		
+
 		static NativeExpression ConstantUInt64(uint64_t u);
 		static NativeExpression ConstantUInt32(uint32_t u);
+		static NativeExpression ConstantUInt16(uint16_t u);
+		static NativeExpression ConstantUInt8(uint8_t u);
 		static NativeExpression ConstantInt64(int64_t u);
 		static NativeExpression ConstantInt32(int32_t u);
+		static NativeExpression ConstantInt16(int16_t u);
+		static NativeExpression ConstantInt8(int8_t u);
 		static NativeExpression ConstantULong(uword_t u);
 		static NativeExpression ConstantSLong(sword_t u);
 		static NativeExpression ConstantPointer(void* u);
 		static NativeExpression Nothing();
-		
+
 		friend NativeExpression operator>>(const NativeExpression& left,
 		                                   const NativeExpression& right)
 			{
 			return DiscardFirst(left, right);
 			}
-		
+
 		friend NativeExpression operator>>(const Nullable<NativeExpression>& left,
 		                                   const NativeExpression& right)
 			{
@@ -292,14 +297,14 @@ and
 			}
 		//these functions are shorthand for ElementAddress, and assume that
 		//the current expression is a pointer:
-		
+
 		//equivalent to &ptr[offset]
 		NativeExpression elemPtr(uword_t offset) const;
 		//equivalent to &ptr[offset1][offset2]
 		NativeExpression elemPtr(uword_t offset1, uword_t offset2) const;
 		//equivalent to &ptr[offset1][offset2][offset3]
 		NativeExpression elemPtr(uword_t offset1, uword_t offset2, uword_t offset3) const;
-		
+
 		//if we're a pointer, equivalent to elemPtr(offset). doesn't actually load the pointer
 		//otherwise, takes the 'offset'th element.
 		NativeExpression operator[](uword_t offset) const;
@@ -307,15 +312,15 @@ and
 		//given a pointer 'x' to a structure, equivalent to &x->name
 		//given a structure 'x', equivalent to x.name
 		NativeExpression operator[](const std::string& inFieldName) const;
-		
+
 		//Assumes we're a pointer. Equivelent to elemPtr(offset).
 		//doesn't actually load the pointer
 		NativeExpression operator[](NativeExpression offset) const;
-		
+
 		//equivalent to elemPtr(offset1, offset2, ...). assumes we're a pointer
 		NativeExpression operator[](ImmutableTreeVector<NativeExpression> offset) const;
-		
-		
+
+
 		NativeExpression extract(ImmutableTreeVector<uword_t> elts) const;
 		NativeExpression extract(uword_t elts) const;
 		NativeExpression store(NativeExpression val) const;
@@ -330,32 +335,34 @@ and
 
 		NativeExpression isNull() const;
 		NativeExpression isNotNull() const;
-		
+
 		NativeExpression taggedWith(const NativeExpressionTag& t) const;
 		NativeExpression taggedWith(const Nullable<NativeExpressionTag>& t) const;
-		
+
 		Nullable<uint64_t> integerConstant() const;
-		
+
 		Nullable<NativeType>				computeNativeType() const;
 		//A variable is "free" in an expression if the expression's behaviour will
 		//depend on that variable being present in the external calling context.
 		//NOTE: Using a variable in metadata causes it to be free in the
 		//surrounding context.
 		ImmutableTreeSet<NativeVariable>	computeFreeVariables() const;
+		ImmutableTreeSet<NativeBlockID>		computeResumptionTargets() const;
+		ImmutableTreeSet<NativeBlockID>		computeResumptions() const;
 		ImmutableTreeSet<std::string>		computeExternalBranches() const;
 		ImmutableTreeSet<uword_t>			computeExits() const;
 		uint64_t							computeComplexity() const;
 		uint64_t							computeHeight() const;
 		ImmutableTreeSet<NativeBlockID>		computeJumpTargets() const;
 		bool								computeHasSideEffects() const;
-		
+
 		void toString(CPPMLPrettyPrintStream  st) const;
 	}
 and
 	//Describes the relationship of a set of continuations to the context
 	//in which they were created.
 	NativeContinuationMetadataInstruction =
-		-|	TypedForaInstruction of 
+		-|	TypedForaInstruction of
 				CPPMLOpaqueHandle<TypedFora::MetadataInstruction> typedForaInstructionMetadata
 		-|	LocalVariables of ()
 	{
@@ -447,11 +454,11 @@ and
 		ImmutableTreeSet<uword_t> 			exits() const;
 		uint64_t 							complexity() const;
 		uint64_t 							height() const;
-		
+
 		void toString(CPPMLPrettyPrintStream  st) const;
 	}
 and
-	NativeIndividualContinuationMetadata = 
+	NativeIndividualContinuationMetadata =
 		-|	None of ()
 		-| 	ResumeWithResult of bool isException, CPPMLOpaqueHandle<TypedFora::Type> type
 and
@@ -470,13 +477,8 @@ and
 			relativeFrequency() = 1.0;
 			}
 		//Produces a simple 'return' continuation.
-		static NativeContinuation Return(NativeType t, uint64_t ix)
-			{
-			return NativeContinuation(
-				NativeVariable("res", t),
-				NativeExpression::Return(ix, NativeVariable("res", t).expr())
-				);
-			}
+		static NativeContinuation Return(NativeType t, uint64_t ix);
+
 		NativeContinuation 					addTeardown(NativeExpression e) const;
 		bool							 	hasSideEffects() const;
 		ImmutableTreeSet<NativeVariable> 	freeVariables() const;
@@ -485,7 +487,7 @@ and
 		ImmutableTreeSet<uword_t>			exits() const;
 		uint64_t							complexity() const;
 		uint64_t							height() const;
-		
+
 		void toString(CPPMLPrettyPrintStream  st) const;
 	}
 and
@@ -517,9 +519,13 @@ and
 			lassert_dump(!inExpression.type(),
 			             "Can't create a block with a typed expression.")
 			}
-		uword_t size() const { return args().size(); }
-		const NativeVariable& operator[](uword_t ix) const { return args()[ix]; }
 		
+		uword_t size() const { return args().size(); }
+
+		const NativeVariable& operator[](uword_t ix) const { return args()[ix]; }
+
+		ImmutableTreeSet<NativeVariable> freeVariables() const;
+
 		void toString(CPPMLPrettyPrintStream  st) const;
 	}
 and
@@ -530,18 +536,18 @@ and
 		bool toss
 	{
 	public:
-			NativeCFG(	const ImmutableTreeVector<NativeVariable>& inArgs, 
-						const NativeExpression& inExpr, 
+			NativeCFG(	const ImmutableTreeVector<NativeVariable>& inArgs,
+						const NativeExpression& inExpr,
 						string name = "");
 
-			NativeCFG(	const ImmutableTreeVector<NativeType>& inRet, 
-						const ImmutableTreeVector<NativeVariable>& inArgs, 
-						const NativeExpression& inExpr, 
+			NativeCFG(	const ImmutableTreeVector<NativeType>& inRet,
+						const ImmutableTreeVector<NativeVariable>& inArgs,
+						const NativeExpression& inExpr,
 						string name = ""
 						);
-			
-			NativeCFG(	const ImmutableTreeVector<NativeType>& inRet, 
-						const ImmutableTreeMap<NativeBlockID, NativeBlock>& blocks, 
+
+			NativeCFG(	const ImmutableTreeVector<NativeType>& inRet,
+						const ImmutableTreeMap<NativeBlockID, NativeBlock>& blocks,
 						string name = ""
 						);
 
@@ -550,30 +556,30 @@ and
 									) const;	//calls assuming all return values have the same type
 
 			NativeExpression	operator()(
-									const ImmutableTreeVector<NativeExpression>& inExprs, 
+									const ImmutableTreeVector<NativeExpression>& inExprs,
 									const ImmutableTreeVector<NativeContinuation>& conts
 									) const;
-			
+
 			NativeExpression	operator()() const;
-			
+
 			NativeExpression	operator()(	const NativeExpression& e1) const;
-			
-			NativeExpression	operator()(	const NativeExpression& e1, 
+
+			NativeExpression	operator()(	const NativeExpression& e1,
 											const NativeExpression& e2) const;
-			
-			NativeExpression	operator()(	const NativeExpression& e1, 
-											const NativeExpression& e2, 
+
+			NativeExpression	operator()(	const NativeExpression& e1,
+											const NativeExpression& e2,
 											const NativeExpression& e3) const;
-			
-			NativeExpression	operator()(	const NativeExpression& e1, 
-											const NativeExpression& e2, 
-											const NativeExpression& e3, 
+
+			NativeExpression	operator()(	const NativeExpression& e1,
+											const NativeExpression& e2,
+											const NativeExpression& e3,
 											const NativeExpression& e4) const;
 
-			NativeExpression	operator()(	const NativeExpression& e1, 
-											const NativeExpression& e2, 
-											const NativeExpression& e3, 
-											const NativeExpression& e4, 
+			NativeExpression	operator()(	const NativeExpression& e1,
+											const NativeExpression& e2,
+											const NativeExpression& e3,
+											const NativeExpression& e4,
 											const NativeExpression& e5) const;
 
 			NativeType		implicitContinuationArgType() const;
@@ -592,21 +598,23 @@ and
 			const ImmutableTreeVector<NativeVariable>& args(NativeBlockID block) const;
 
 			const NativeBlock& operator[](const NativeBlockID& n)  const;
-			
+
 			uint64_t								complexity() const;
 			uint64_t								height() const;
+			ImmutableTreeSet<NativeBlockID>			resumptions() const;
+			ImmutableTreeSet<NativeBlockID>			resumptionTargets() const;
 			ImmutableTreeSet<string>				externalBranches() const;
 			ImmutableTreeSet<NativeVariable>		freeVariables() const;
 			bool									hasSideEffects() const;
 
 			void	validate() const; //validates the internal structure of the expression
-			
+
 			void toString(CPPMLPrettyPrintStream  st) const;
 	}
 and
-	NativeCFGExpansion = 
-		std::string name, 
-		NativeCFG cfg, 
+	NativeCFGExpansion =
+		std::string name,
+		NativeCFG cfg,
 		bool hasSideEffects
 	;
 
@@ -857,5 +865,5 @@ NativeExpression operator>(const NativeExpression& lhs, const NativeExpression& 
 NativeExpression operator>=(const NativeExpression& lhs, const NativeExpression& rhs);
 NativeExpression operator&&(const NativeExpression& lhs, const NativeExpression& rhs);
 NativeExpression operator||(const NativeExpression& lhs, const NativeExpression& rhs);
-	
+
 

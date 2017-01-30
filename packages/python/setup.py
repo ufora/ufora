@@ -13,6 +13,9 @@
 #   limitations under the License.
 
 from setuptools import setup, find_packages
+from distutils.core import Extension
+import glob
+import numpy
 import os
 import re
 
@@ -31,7 +34,92 @@ def read_package_version():
 
 version = read_package_version()
 
-install_requires = ['futures', 'socketIO-client>=0.6.5', 'numpy', 'wsaccel']
+install_requires = ['futures', 'socketIO-client>=0.6.5', 'numpy', 'wsaccel','websocket-client==0.37.0']
+
+ext_modules = []
+
+extra_compile_args=['-std=c++11']
+
+pythonObjectRehydratorModule = Extension('pyfora.PythonObjectRehydrator',
+                                         language='c++',
+                                         extra_compile_args=extra_compile_args,
+                                         sources=['pyfora/src/pythonObjectRehydratorModule.cpp',
+                                                  'pyfora/src/BinaryObjectRegistry.cpp',
+                                                  'pyfora/src/StringBuilder.cpp',
+                                                  'pyfora/src/PureImplementationMappings.cpp',
+                                                  'pyfora/src/PyObjectUtils.cpp',
+                                                  'pyfora/src/ObjectRegistry.cpp',
+                                                  'pyfora/src/IRToPythonConverter.cpp',
+                                                  'pyfora/src/NamedSingletons.cpp',
+                                                  'pyfora/src/BinaryObjectRegistryHelpers.cpp',
+                                                  'pyfora/src/FreeVariableMemberAccessChain.cpp',
+                                                  'pyfora/src/Json.cpp',
+                                                  'pyfora/src/PyAbortSingletons.cpp',
+                                                  'pyfora/src/ModuleLevelObjectIndex.cpp',
+                                                  'pyfora/src/ScopedPyThreads.cpp',
+                                                  'pyfora/src/PythonObjectRehydrator.cpp'] +
+                                         glob.glob('pyfora/src/TypeDescriptions/*.cpp') +
+                                         glob.glob('pyfora/src/serialization/*.cpp'),
+                                         include_dirs=[numpy.get_include()]
+)
+
+ext_modules.append(pythonObjectRehydratorModule)
+
+stringbuildermodule = Extension('pyfora.StringBuilder',
+                                language='c++',
+                                extra_compile_args=['-std=c++11'],
+                                sources=['pyfora/src/StringBuilder.cpp',
+                                         'pyfora/src/stringbuildermodule.cpp']
+                                )
+ext_modules.append(stringbuildermodule)
+
+binaryObjectRegistryModule = Extension('pyfora.BinaryObjectRegistry',
+                                       language='c++',
+                                       extra_compile_args=extra_compile_args,
+                                       sources=['pyfora/src/BinaryObjectRegistry.cpp',
+                                                'pyfora/src/PyObjectWalker.cpp',
+                                                'pyfora/src/PureImplementationMappings.cpp',
+                                                'pyfora/src/binaryobjectregistrymodule.cpp',
+                                                'pyfora/src/StringBuilder.cpp',
+                                                'pyfora/src/FileDescription.cpp',
+                                                'pyfora/src/PyObjectUtils.cpp',
+                                                'pyfora/src/Exceptions.cpp',
+                                                'pyfora/src/PyAstUtil.cpp',
+                                                'pyfora/src/FreeVariableMemberAccessChain.cpp',
+                                                'pyfora/src/PyAstFreeVariableAnalyses.cpp',
+                                                'pyfora/src/PyforaInspect.cpp',
+                                                'pyfora/src/FreeVariableResolver.cpp',
+                                                'pyfora/src/Ast.cpp',
+                                                'pyfora/src/UnresolvedFreeVariableExceptions.cpp',
+                                                'pyfora/src/BinaryObjectRegistryHelpers.cpp',
+                                                'pyfora/src/Json.cpp',
+                                                'pyfora/src/ModuleLevelObjectIndex.cpp']
+                                       )
+ext_modules.append(binaryObjectRegistryModule)
+
+pyObjectWalkerModule = Extension('pyfora.PyObjectWalker',
+                                 language='c++',
+                                 extra_compile_args=extra_compile_args,
+                                 sources=['pyfora/src/pyobjectwalkermodule.cpp',
+                                          'pyfora/src/PyObjectWalker.cpp',
+                                          'pyfora/src/PureImplementationMappings.cpp',
+                                          'pyfora/src/BinaryObjectRegistry.cpp',
+                                          'pyfora/src/FileDescription.cpp',
+                                          'pyfora/src/StringBuilder.cpp',
+                                          'pyfora/src/PyObjectUtils.cpp',
+                                          'pyfora/src/FreeVariableResolver.cpp',
+                                          'pyfora/src/Exceptions.cpp',
+                                          'pyfora/src/PyAstUtil.cpp',
+                                          'pyfora/src/FreeVariableMemberAccessChain.cpp',
+                                          'pyfora/src/PyAstFreeVariableAnalyses.cpp',
+                                          'pyfora/src/PyforaInspect.cpp',
+                                          'pyfora/src/Ast.cpp',
+                                          'pyfora/src/UnresolvedFreeVariableExceptions.cpp',
+                                          'pyfora/src/BinaryObjectRegistryHelpers.cpp',
+                                          'pyfora/src/Json.cpp',
+                                          'pyfora/src/ModuleLevelObjectIndex.cpp']
+                                 )
+ext_modules.append(pyObjectWalkerModule)
 
 
 setup(
@@ -65,6 +153,7 @@ setup(
     entry_points={
         'console_scripts':
             ['pyfora_aws=pyfora.aws.pyfora_aws:main']
-    }
+    },
+    ext_modules=ext_modules
 )
 

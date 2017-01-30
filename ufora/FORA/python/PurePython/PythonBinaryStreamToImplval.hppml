@@ -1,0 +1,142 @@
+/***************************************************************************
+    Copyright 2016 Ufora Inc.
+
+    Licensed under the Apache License, Version 2.0 (the "License");
+    you may not use this file except in compliance with the License.
+    You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+    Unless required by applicable law or agreed to in writing, software
+    distributed under the License is distributed on an "AS IS" BASIS,
+    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    See the License for the specific language governing permissions and
+    limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include "PythonAst.hppml"
+#include "../../Language/Function.hppml"
+#include "../../../core/PolymorphicSharedPtr.hpp"
+#include "PythonConstantConverter.hppml"
+#include "PythonListConverter.hppml"
+#include "PythonTupleConverter.hppml"
+#include "PythonDictConverter.hppml"
+#include "PythonAstConverter.hppml"
+#include "PyforaSingletonAndExceptionConverter.hppml"
+#include "../../Language/FreeVariableListFromPython.hpp"
+#include "../../VectorDataManager/VectorDataManager.hppml"
+#include "PythonParseResult.hppml"
+
+namespace Fora {
+
+@type FileDescription = std::string path, std::string text;
+
+@type PythonAstStatementOrExpr = 
+   -| Expr of PythonAstExpr e
+   -| Statement of PythonAstStatement s
+   -| None of ()
+   ;
+
+class PythonBinaryStreamToImplval :
+        public PolymorphicSharedPtrBase<PythonBinaryStreamToImplval> {
+public:
+    PythonBinaryStreamToImplval(
+            PolymorphicSharedPtr<VectorDataManager> inVDM,
+            ImplValContainer inPyforaBuiltins,
+            ImplValContainer inForaBuiltins,
+            ImmutableTreeMap<string, string> pythonNameToPyforaName,
+            boost::function<PythonParseResult (std::string)> pyAstParser,
+            MemoryPool* inTargetPool
+            );
+
+    void read(IBinaryStream& stream);
+
+    Nullable<ImplValContainer> getObjectById(int64_t id) const;
+
+protected:
+    void assertHasObject(int64_t object) const;
+
+    Expression replaceUnconvertiblesWithThrows(
+        Expression expr,
+        const map<string, ImplValContainer>& vars
+        ) const;
+
+    Expression replaceNameErrorsWithThrows(
+        Expression expr,
+        const map<string, ImplValContainer>& vars
+        ) const;
+
+    ImplValContainer encodeImplvalAsEmptyObjectMetadata(
+        const ImplValContainer& value
+        ) const;
+
+    PythonAstStatementOrExpr functionClassOrLambdaDefAtLine(
+        const PythonAstModule& module,
+        int64_t line
+        ) const;
+
+    ImplValContainer readPrimitive(IBinaryStream& stream, uint8_t code) const;
+    ImplValContainer readListOfPrimitives(IBinaryStream& stream) const;
+    ImplValContainer readDtypeToTypeInstance(IBinaryStream& stream) const;
+
+    void readPackedHomogeneousData(IBinaryStream& stream, int64_t objectId);
+    void readFile(IBinaryStream& stream, int64_t objectId);
+    void readListOrTuple(IBinaryStream& stream, uint8_t code, int64_t objectId);
+    void readDict(IBinaryStream& stream, int64_t objectId);
+    void readBuiltinExceptionInstance(IBinaryStream& stream, int64_t objectId);
+    void readStacktraceAsJson(IBinaryStream& stream, int64_t objectId);
+    void readNamedSingleton(IBinaryStream& stream, int64_t objectId);
+    void readFunctionOrClass(IBinaryStream& stream, uint8_t code, int64_t objectId);
+    void readClassInstance(IBinaryStream& stream, int64_t objectId);
+    void readInstanceMethod(IBinaryStream& stream, int64_t objectId);
+    void readUnconvertible(IBinaryStream& stream, int64_t objectId);
+    void readPyAbortException(IBinaryStream& stream, int64_t objectId);
+    void readUnresolvedVarWithPosition(IBinaryStream& stream, int64_t objectId);
+
+    ImmutableTreeVector<ImplValContainer>
+    readValuesFromIds(IBinaryStream& stream) const;
+
+    ImplValContainer bindValuesAndEvaluate(
+        const Expression& expr,
+        const std::map<string, ImplValContainer>& arguments
+        );
+
+    ImplValContainer evaluateRootLevelCreateObjectExpression(
+        Expression expr,
+        const ImmutableTreeMap<Symbol, pair<ImplValContainer, Nullable<Symbol>>>& freeVars,
+        bool bindCSTValuesDirectlyInCode
+        ) const;
+
+    void tryToConvertPendingObject(int64_t objectId);
+
+    std::map<int64_t, ImplValContainer> mValues;
+
+    std::map<int64_t, FileDescription> mFiles;
+
+    ImplValContainer mPyforaBuiltins;
+
+    PolymorphicSharedPtr<VectorDataManager> mVDM;
+
+    PolymorphicSharedPtr<PythonAstConverter> mAstConverter;
+
+    PolymorphicSharedPtr<PythonConstantConverter> mConstantConverter;
+
+    PolymorphicSharedPtr<PythonListConverter> mListConverter;
+
+    PolymorphicSharedPtr<PythonTupleConverter> mTupleConverter;
+
+    PolymorphicSharedPtr<PythonDictConverter> mDictConverter;
+
+    PolymorphicSharedPtr<PyforaSingletonAndExceptionConverter> mSingletonAndExceptionConverter;
+
+    boost::function<PythonParseResult (std::string)> mPyAstParser;
+
+    map<hash_type, hash_type> mAlreadyBoundExpressionToValueHashes;
+
+    map<int64_t, pair<Expression, map<std::string, int64_t> > > mPendingObjectConversions;
+
+    MemoryPool* mTargetPool;
+};
+
+}

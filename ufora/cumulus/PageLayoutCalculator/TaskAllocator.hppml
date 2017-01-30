@@ -149,6 +149,7 @@ public:
 			{
 			mTaskCosts.dropTask(taskId);
 			mTaskThreads.erase(taskId);
+			mTaskExternalMemory.erase(taskId);
 			}
 		else
 			{
@@ -183,17 +184,19 @@ public:
 		mTaskCosts.taskDropPage(taskId, page);
 		}
 
-	void setTaskThreads(TaskAllocatorId taskId, int64_t threadcount)
+	void setTaskThreads(TaskAllocatorId taskId, int64_t threadcount, int64_t totalBytesOfExternalMemoryBlocking)
 		{
 		lassert(hasTask(taskId));
 
 		mTaskThreads[taskId] = threadcount;
+		mTaskExternalMemory[taskId] = totalBytesOfExternalMemoryBlocking;
 		}
 
 	void setTaskProperties(
 			TaskAllocatorId taskId,
 			int64_t threadcount,
-			const std::set<Fora::PageId>& pages
+			const std::set<Fora::PageId>& pages,
+			int64_t totalBytesOfExternalMemoryBlocking
 			)
 		{
 		lassert(taskId.type() == TaskType::ThreadGroup || taskId.type() == TaskType::Temporary);
@@ -204,6 +207,7 @@ public:
 		mTaskCosts.touch(taskId);
 
 		mTaskThreads[taskId] = threadcount;
+		mTaskExternalMemory[taskId] = totalBytesOfExternalMemoryBlocking;
 
 		for (auto page: pages)
 			taskAddPage(taskId, page);
@@ -872,6 +876,7 @@ public:
 	bool taskIsUnderallocated(TaskAllocatorId task) const
 		{
 		int64_t totalCores = 0;
+
 		for (auto machine: mTaskCosts.runningTasks().getValues(task))
 			totalCores += machineTaskCores(machine, task);
 
@@ -879,6 +884,17 @@ public:
 			totalCores += machineTaskCores(machine, task);
 
 		if (totalCores * 1.5 < taskThreads(task))
+			return true;
+
+		int64_t totalExternalBytes = 0;
+
+		for (auto machine: mTaskCosts.runningTasks().getValues(task))
+			totalExternalBytes += machineTaskExternalBytes(machine, task);
+
+		for (auto machine: mTaskCosts.loadingTasks().getValues(task))
+			totalExternalBytes += machineTaskExternalBytes(machine, task);
+
+		if (totalExternalBytes < taskBytesOfExternalMemory(task))
 			return true;
 
 		return false;
@@ -912,6 +928,18 @@ public:
 		return std::ceil(cores);
 		}
 
+	int64_t machineTaskExternalBytes(MachineId m, TaskAllocatorId t) const
+		{
+		int64_t liveMachines = mTaskCosts.runningTasks().getValues(t).size() + mTaskCosts.loadingTasks().getValues(t).size();
+		if (liveMachines == 0)
+			return 0;
+
+		return std::min<int64_t>(
+			taskBytesOfExternalMemory(t) / liveMachines,
+			machineMaxBytesOfExternalMemory(m)
+			);
+		}
+
 	int64_t machineTaskCores(MachineId m, TaskAllocatorId t) const
 		{
 		int64_t liveMachines = mTaskCosts.runningTasks().getValues(t).size() + mTaskCosts.loadingTasks().getValues(t).size();
@@ -925,6 +953,16 @@ public:
 				),
 			machineMaxCoreCount(m)
 			);
+		}
+
+	int64_t taskBytesOfExternalMemory(TaskAllocatorId task) const
+		{
+		auto it = mTaskExternalMemory.find(task);
+
+		if (it != mTaskExternalMemory.end())
+			return it->second;
+
+		return 0;
 		}
 
 	int64_t taskThreads(TaskAllocatorId task) const
@@ -945,6 +983,11 @@ public:
 			return it->second;
 
 		return 0;
+		}
+
+	int64_t machineMaxBytesOfExternalMemory(MachineId m) const
+		{
+		return machineMaxMemory(m) * mMaxFractionOfBoxToTasks;
 		}
 
 	void requestPageAdd(MachineId machine, Fora::PageId page)
@@ -1046,6 +1089,8 @@ private:
 	std::set<TaskAllocatorId> mKnownTasks;
 
 	std::map<TaskAllocatorId, int64_t> mTaskThreads;
+
+	std::map<TaskAllocatorId, int64_t> mTaskExternalMemory;
 
 	std::map<TaskAllocatorId, int64_t> mAccumulatorTargetBytecounts;
 

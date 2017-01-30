@@ -14,14 +14,13 @@
 
 
 import collections
-
-
+import numpy
 
 NoneType = type(None)
+primitiveTypes = (NoneType, int, float, str, bool)
 
 def isPrimitive(pyObject):
-    return isinstance(pyObject, (NoneType, int, float, str, bool))
-
+    return isinstance(pyObject, primitiveTypes)
 
 def type_description(typename, field_names):
     T = collections.namedtuple(typename, field_names + " typeName")
@@ -30,6 +29,46 @@ def type_description(typename, field_names):
     T.__new__.__defaults__ = tuple(prototype)
     return T
 
+def isValidPrimitiveDtypeElement(elt):
+    return elt in ('<f8', '<i8', '|b1')
+
+def dtypeToPrimitive(dtype):
+    #map dtype for primitives and packed-tuples-of-primitives to a python primitive
+    descr = dtype.descr
+
+    if len(descr) == 1 and descr[0][0] == '' and isValidPrimitiveDtypeElement(descr[0][1]):
+        return descr[0][1]
+
+    res = []
+    for elt in descr:
+        if len(elt) > 2:
+            return None
+        if isinstance(elt[1], str):
+            if not isValidPrimitiveDtypeElement(elt[1]):
+                return None
+            prim = elt[1]
+        else:
+            prim = dtypeToPrimitive(elt[1])
+        if prim is None:
+            return None
+        res.append( prim )
+
+    return tuple(res)
+
+def primitiveToDtypeArg(primitive):
+    if primitive is None:
+        return primitive
+    if isinstance(primitive, str):
+        return primitive
+    return [("", primitiveToDtypeArg(p)) for p in primitive]
+
+def primitiveToDtype(primitive):
+    primitive = primitiveToDtypeArg(primitive)
+
+    if primitive is None:
+        return None
+
+    return numpy.dtype(primitive)
 
 def fromDict(value_dict):
     return globals()[value_dict["typeName"]](**value_dict)
@@ -110,5 +149,19 @@ InstanceMethod = type_description(
     )
 Unconvertible = type_description(
     'Unconvertible',
-    ''
+    'module_path'
     )
+
+#data stored as a numpy-array-like string
+PackedHomogenousData = type_description(
+    'PackedHomogenousData',
+    'dtype, dataAsBytes'
+    )
+
+HomogenousListAsNumpyArray = type_description("HomogenousListAsNumpyArray", "array")
+
+StackTraceAsJson = type_description("StackTraceAsJson", "trace")
+
+PyAbortException = type_description("PyAbortException", "typename, argsId")
+
+UnresolvedVarWithPosition = type_description("UnresolvedVarWithPosition", "varname, lineno, col_offset")

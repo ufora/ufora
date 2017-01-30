@@ -1,0 +1,138 @@
+/***************************************************************************
+    Copyright 2015 Ufora Inc.
+
+    Licensed under the Apache License, Version 2.0 (the "License");
+    you may not use this file except in compliance with the License.
+    You may obtain a copy of the License at
+
+        http://www.apache.org/licenses/LICENSE-2.0
+
+    Unless required by applicable law or agreed to in writing, software
+    distributed under the License is distributed on an "AS IS" BASIS,
+    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    See the License for the specific language governing permissions and
+    limitations under the License.
+****************************************************************************/
+#pragma once
+
+#include "../../core/IntegerTypes.hpp"
+#include "../MachineId.hppml"
+#include "../CumulusCheckpointPolicy.hppml"
+#include "GlobalScheduler.hppml"
+#include "GlobalSchedulerEvent.hppml"
+#include "GlobalSchedulerImplKernel.hppml"
+
+namespace Cumulus {
+
+namespace SystemwideComputationScheduler {
+
+class GlobalSchedulerSimulator : public PolymorphicSharedPtrBase<GlobalSchedulerSimulator> {
+public:
+	GlobalSchedulerSimulator(bool validateResponses = true) :
+			mEventsProcessed(0),
+			mTerminatedBadly(false),
+			mValidateResponses(validateResponses)
+		{
+		}
+
+	void handleEvent(GlobalSchedulerEvent inEvent)
+		{
+		if (mTerminatedBadly)
+			return;
+
+		try {
+			handleEvent_(inEvent);
+			}
+		catch(std::logic_error& e)
+			{
+			LOG_ERROR << "Simulation terminated: " << e.what();
+			mTerminatedBadly = true;
+			}
+		catch(...)
+			{
+			LOG_ERROR << "Simulation terminated due to unknown error.";
+			mTerminatedBadly = true;
+			}
+		}
+
+
+	bool finishedSuccessfully()
+		{
+		return !mTerminatedBadly;
+		}
+
+private:
+	void handleEvent_(GlobalSchedulerEvent inEvent)
+		{
+		mEventsProcessed++;
+
+		if (!mKernel)
+			{
+			lassert(inEvent.isInitialized());
+
+			SchedulerInitializationParameters params = inEvent.getInitialized().params();
+
+			mKernel.reset(
+				new GlobalSchedulerImplKernel(
+					params.vdmMaxPageSizeInBytes(),
+					params.vdmMemoryLimitInBytes(),
+					params.ownMachineId(),
+					params.activeThreadCount(),
+					CumulusCheckpointPolicy::None(),
+					boost::function0<void>(
+						[&]() { }
+						),
+					boost::function2<void, ComputationId, CheckpointRequest>(
+						[&](ComputationId id, CheckpointRequest checkpoint) { }
+						),
+					boost::function1<void, CumulusComponentMessageCreated>(
+						[&](CumulusComponentMessageCreated msg) { }
+						)
+					)
+				);
+			}
+		else
+			{
+			@match GlobalSchedulerEvent(inEvent)
+				-|	Initialized(_) ->> {
+						}
+				-|	OutTriggerComputationStatusUpdate(_) ->> {}
+				-|	OutCumulusComponentMessageCreated(_) ->> {}
+				-|	InCheckCheckpointsAndStatuses(curTime) ->> {
+						mKernel->checkCheckpointsAndStatuses(curTime);
+						}
+				-| 	InPageEvent(event, machine) ->> {
+						mKernel->consumePageEvent(event, machine);
+						}
+				-|	InPageNoLongerReferencedAcrossEntireSystem(page) ->> {
+						mKernel->pageNoLongerReferencedAcrossSystem(page);
+						}
+				-|	InAddMachine(machine) ->> {
+						mKernel->addMachine(machine);
+						}
+				-|	InTriggerFullCheckpointsOnOutstandingComputations(curTime) ->> {
+						mKernel->triggerFullCheckpointsOnOutstandingComputations(curTime);
+						}
+				-|	InCumulusComponentMessage(msg, source, compType, curTime) ->> {
+						mKernel->handleCumulusComponentMessage(msg, source, compType, curTime);
+						}
+				-|  RecomputePageLayout() ->> {
+						mKernel->recomputePageLayout();
+						}
+			}
+		}
+
+	boost::shared_ptr<GlobalSchedulerImplKernel> mKernel;
+
+	bool mTerminatedBadly;
+	
+	std::vector<GlobalSchedulerEvent> mWrittenEvents;
+
+	long mEventsProcessed;
+
+	bool mValidateResponses;
+};
+
+
+}
+}

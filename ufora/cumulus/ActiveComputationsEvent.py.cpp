@@ -17,7 +17,7 @@
 
 #include <stdint.h>
 #include <boost/python.hpp>
-#include "../FORA/python/FORAPythonUtil.hppml"
+#include "../core/python/ValueLikeCPPMLWrapper.hppml"
 #include "../native/Registrar.hpp"
 #include "../core/python/CPPMLWrapper.hpp"
 #include "../core/containers/ImmutableTreeVector.py.hpp"
@@ -37,14 +37,11 @@ public:
 			using namespace boost::python;
 
 			object cls =
-				FORAPythonUtil::exposeValueLikeCppmlType<ActiveComputationsEvent>()
+				ValueLikeCPPMLWrapper::exposeValueLikeCppmlType<ActiveComputationsEvent>()
 					.class_()
 				;
 
 			PythonWrapper<ImmutableTreeVector<ActiveComputationsEvent> >::exportPythonInterface("ActiveComputationsEvent")
-				.def("__getstate__", &FORAPythonUtil::serializeEntireObjectGraph<ImmutableTreeVector<ActiveComputationsEvent> >)
-				.def("__setstate__", &FORAPythonUtil::deserializeEntireObjectGraph<ImmutableTreeVector<ActiveComputationsEvent> >)
-				.enable_pickling()
 				;
 
 			def("ActiveComputationsEvent", cls);

@@ -16,7 +16,7 @@
 #include "Function.hppml"
 
 #include <stdint.h>
-#include "../python/FORAPythonUtil.hppml"
+#include "../../core/python/ValueLikeCPPMLWrapper.hppml"
 #include <boost/python.hpp>
 #include "../../native/Registrar.hpp"
 #include "../../core/python/CPPMLWrapper.hpp"
@@ -107,12 +107,12 @@ public:
 			using namespace boost::python;
 
 			Ufora::python::CPPMLWrapper<Function>(true).class_()
-				.def("__str__", &FORAPythonUtil::scopedPrettyPrinter<Function>)
+				.def("__str__", &ValueLikeCPPMLWrapper::scopedPrettyPrinter<Function>)
 				.def("__len__", &functionLen)
 				.def("__getitem__", &functionGetItem)
-				.add_property("hash", &FORAPythonUtil::scopedHashValue<Function>)
-				.def("__hash__", &FORAPythonUtil::hasher<Function>)
-				.def("__cmp__", &FORAPythonUtil::comparer<Function>)
+				.add_property("hash", &ValueLikeCPPMLWrapper::scopedHashValue<Function>)
+				.def("__hash__", &ValueLikeCPPMLWrapper::hasher<Function>)
+				.def("__cmp__", &ValueLikeCPPMLWrapper::comparer<Function>)
                 .def("getItemPrefix", &functionGetArgPrefix)
 				.def("toCFG", &functionToCFGBasic)
 				.enable_pickling()

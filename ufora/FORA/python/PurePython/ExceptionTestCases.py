@@ -517,76 +517,128 @@ class ExceptionTestCases(object):
     def test_free_vars_error_msg1(self):
         def f():
             return x
+
         try:
-            self.equivalentEvaluationTest(f)
+            with self.create_executor() as fora:
+                with fora.remotely:
+                    f()
             self.assertTrue(False)
-        except pyfora.PythonToForaConversionError as e:
-            pattern = ".*free variable 'x'.*\n" \
-                    + ".*, in f\n" \
-                    + "\\s*return x"
-            self.assertTrue(re.match(pattern, str(e)) is not None)
+        except NameError as e:
+            pattern = "global name 'x' is not defined"
+            self.assertIsNotNone(re.match(pattern, str(e)), str(e))
 
     def test_free_vars_error_msg2(self):
         def f():
             return x.y.z
+
         try:
             self.equivalentEvaluationTest(f)
             self.assertTrue(False)
-        except pyfora.PythonToForaConversionError as e:
-            pattern = ".*free variable 'x'.*\n" \
-                    + ".*, in f\n" \
-                    + "\\s*return x\\.y\\.z"
-            self.assertTrue(re.match(pattern, str(e)) is not None)
+        except pyfora.ComputationError as e:
+            pattern = "global name 'x' is not defined"
+            remoteException = e.remoteException
+            self.assertIsNotNone(re.match(pattern, str(remoteException)), str(remoteException))
 
     def test_free_vars_error_msg3(self):
         class C20:
-            def f():
+            def __init__(self, arg):
+                self.m = arg
+            def f(self):
                 return x.y.z
 
-        try:
-            self.equivalentEvaluationTest(lambda: C20())
-            self.assertTrue(False)
-        except pyfora.PythonToForaConversionError as e:
-            pattern = ".*free variable 'x'.*\n" \
-                    + ".*, in test_free_vars_error_msg3\n" \
-                    + "\\s*self\\.equivalentEvaluationTest.*\n" \
-                    + ".*, in f\n" \
-                    + "\\s*return x\\.y\\.z"
-            self.assertTrue(re.match(pattern, str(e)) is not None)
+        with self.create_executor() as fora:
+            try:
+                with fora.remotely:
+                    C20(4).f()
+                self.assertTrue(False)
+            except NameError as e:
+                pattern = "global name 'x' is not defined"
+                self.assertIsNotNone(re.match(pattern, str(e)), str(e))
 
     def test_free_vars_error_msg4(self):
         class C21:
-            def f2():
+            def f2(self):
                 x = 42
                 return x
-            def f3():
+            def f3(self):
                 return x
+
         try:
-            self.equivalentEvaluationTest(lambda: C21())
-            self.assertTrue(False)
-        except pyfora.PythonToForaConversionError as e:
-            pattern = ".*free variable 'x'.*\n" \
-                    + ".*, in test_free_vars_error_msg4\n" \
-                    + "\\s*self\\.equivalentEvaluationTest.*\n" \
-                    + ".*, in f3\n" \
-                    + "\\s*return x"
-            self.assertTrue(re.match(pattern, str(e)) is not None)
+            res = self.evaluateWithExecutor(lambda: C21().f3())
+            self.assertTrue(False, res)
+        except pyfora.ComputationError as e:
+            pattern = "global name 'x' is not defined"
+            remoteException = e.remoteException
+            self.assertIsNotNone(
+                re.match(pattern, str(remoteException)), str(remoteException)
+                )
 
     def test_free_vars_error_msg5(self):
         def f():
             return g()
         def g():
             return x.y.z
+
         try:
             self.equivalentEvaluationTest(f)
             self.assertTrue(False)
-        except pyfora.PythonToForaConversionError as e:
-            pattern = ".*free variable 'x'.*\n" \
-                    + ".*, in f\n" \
-                    + "\\s*return g\\(\\)\n" \
-                    + ".*, in g\n" \
-                    + "\\s*return x\\.y\\.z"
-            self.assertTrue(re.match(pattern, str(e)) is not None)
+        except pyfora.ComputationError as e:
+            pattern = "global name 'x' is not defined"
+            remoteException = e.remoteException
+            self.assertIsNotNone(
+                re.match(pattern, str(remoteException)), str(remoteException)
+                )
+
+    def test_free_vars_error_msg6(self):
+        def f():
+            if True:
+                return x(3)
+            else:
+                return x(4)
+
+        try:
+            with self.create_executor() as e:
+                with e.remotely:
+                    f()
+            self.assertTrue(False)
+        except NameError as e:
+            pattern = "global name 'x' is not defined"
+            self.assertIsNotNone(re.match(pattern, str(e)), str(e))
+
+    def test_free_vars_error_msg7(self):
+        def f():
+            if True:
+                return x(3)
+            else:
+                x = 8
+                return x(4)
+
+        try:
+            with self.create_executor() as e:
+                with e.remotely:
+                    f()
+            self.assertTrue(False)
+        except UnboundLocalError as e:
+            pattern = "local variable 'x' referenced before assignment"
+            self.assertIsNotNone(
+                re.match(pattern, str(e)), str(e)
+                )
+
+    def test_free_vars_error_msg8(self):
+        def f():
+            if 1:
+                return x * 3
+            else:
+                return x / 4
+
+        try:
+            with self.create_executor() as e:
+                with e.remotely:
+                    f()
+            self.assertTrue(False)
+        except NameError as e:
+            pattern = "global name 'x' is not defined"
+            self.assertIsNotNone(re.match(pattern, str(e)), str(e))
 
     def test_with_block_free_vars_error_msg1(self):
         try:
@@ -594,27 +646,22 @@ class ExceptionTestCases(object):
                 with fora.remotely.downloadAll():
                     missing_function()
             self.assertTrue(False)
-        except pyfora.PythonToForaConversionError as e:
-            pattern = ".*free variable 'missing_function'.*\n" \
-                    + ".*, in test_with_block_free_vars_error_msg1\n" \
-                    + "\\s*missing_function\\(\\).*"
-            self.assertTrue(re.match(pattern, str(e)) is not None)
+        except NameError as e:
+            pattern = "global name 'missing_function' is not defined"
+            self.assertIsNotNone(re.match(pattern, str(e)))
 
     def test_with_block_free_vars_error_msg2(self):
         def foo():
             return z
+
         try:
             with self.create_executor() as fora:
                 with fora.remotely:
                     foo()
             self.assertTrue(False)
-        except pyfora.PythonToForaConversionError as e:
-            pattern = ".*free variable 'z'.*\n" \
-                    + ".*, in test_with_block_free_vars_error_msg2\n" \
-                    + "\\s*foo\\(\\)\n" \
-                    + ".*, in foo\n" \
-                    + "\\s*return z"
-            self.assertTrue(re.match(pattern, str(e)) is not None)
+        except NameError as e:
+            pattern = "global name 'z' is not defined"
+            self.assertTrue(re.match(pattern, str(e), re.DOTALL) is not None)
 
     def test_zero_division_should_throw(self):
         def f1():
@@ -669,9 +716,8 @@ class ExceptionTestCases(object):
             def f():
                 return socket.this_doesnt_exist
 
-            with self.assertRaises(pyfora.PythonToForaConversionError):
-                executor.submit(f)
-
+            with self.assertRaises(pyfora.ComputationError):
+                executor.submit(f).result().toLocal().result()
 
     def test_invalid_apply(self):
         with self.create_executor() as executor:
@@ -829,7 +875,7 @@ class ExceptionTestCases(object):
             return thisVariableDoesntExist
 
         with self.create_executor() as fora:
-            with self.assertRaises(pyfora.Exceptions.PythonToForaConversionError):
+            with self.assertRaises(NameError):
                 with fora.remotely:
                     result = f()
 

@@ -1,0 +1,1195 @@
+/***************************************************************************
+    Copyright 2016 Ufora Inc.
+
+    Licensed under the Apache License, Version 2.0 (the "License");
+    you may not use this file except in compliance with the License.
+    You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+    Unless required by applicable law or agreed to in writing, software
+    distributed under the License is distributed on an "AS IS" BASIS,
+    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    See the License for the specific language governing permissions and
+    limitations under the License.
+****************************************************************************/
+
+#include "PythonBinaryStreamToImplval.hppml"
+#include "PyListBuilder.hppml"
+#include "../../../core/Logging.hpp"
+#include "../../../core/Json.hppml"
+#include "../../../core/cppml/ExtractAllObjectsMatchingPredicate.hppml"
+#include "../../Language/RebindFreeMemberAccesses.hppml"
+#include "../../Language/RebindFree.hppml"
+#include "../../Core/ClassMediator.hppml"
+#include "../../Language/ClassMediatorBindings.hppml"
+#include "../../Core/MemoryPool.hpp"
+#include "../../TypedFora/ABI/ImplValVisitor.hppml"
+#include "../../TypedFora/ABI/ContainsNonemptyVectorsVisitor.hppml"
+#include "PythonBinaryStreamCommon.hppml"
+#include "PythonConstantType.hppml"
+
+namespace Fora {
+
+PythonBinaryStreamToImplval::PythonBinaryStreamToImplval(
+            PolymorphicSharedPtr<VectorDataManager> inVDM,
+            ImplValContainer inPyforaBuiltins,
+            ImplValContainer inForaBuiltins,
+            ImmutableTreeMap<string, string> pythonNameToPyforaName,
+            boost::function<PythonParseResult (std::string)> pyAstParser,
+            MemoryPool* inTargetPool
+            ) :
+        mVDM(inVDM),
+        mPyforaBuiltins(inPyforaBuiltins),
+        mPyAstParser(pyAstParser),
+        mTargetPool(inTargetPool)
+    {
+    mConstantConverter.reset(
+        new PythonConstantConverter(
+            emptyTreeMap() + 
+                PythonConstantType::String() + *PythonBinaryStreamCommon::getMember(mPyforaBuiltins, "PyString") + 
+                PythonConstantType::Int() + *PythonBinaryStreamCommon::getMember(mPyforaBuiltins, "PyInt") + 
+                PythonConstantType::Float() + *PythonBinaryStreamCommon::getMember(mPyforaBuiltins, "PyFloat") + 
+                PythonConstantType::None() + *PythonBinaryStreamCommon::getMember(mPyforaBuiltins, "PyNone") + 
+                PythonConstantType::Boolean() + *PythonBinaryStreamCommon::getMember(mPyforaBuiltins, "PyBool"),
+            mTargetPool
+            )
+        );
+    mListConverter.reset(
+        new PythonListConverter(
+            *PythonBinaryStreamCommon::getMember(mPyforaBuiltins, "PyList"),
+            inTargetPool
+            )
+        );
+    mDictConverter.reset(
+        new PythonDictConverter(
+            *PythonBinaryStreamCommon::getMember(mPyforaBuiltins, "PyDict")
+            )
+        );
+    mTupleConverter.reset(
+        new PythonTupleConverter(
+            *PythonBinaryStreamCommon::getMember(mPyforaBuiltins, "PyTuple")
+            )
+        );
+    mSingletonAndExceptionConverter.reset(
+        new PyforaSingletonAndExceptionConverter(
+            mPyforaBuiltins,
+            pythonNameToPyforaName
+            )
+        );
+
+    ImmutableTreeMap<Symbol, pair<ImplValContainer, Nullable<Symbol>>>
+        builtinSymbolMapping;
+
+    for (const auto& name: PythonBinaryStreamCommon::getObjectMembers(mPyforaBuiltins))
+        {
+        auto res = ImplValContainerUtilities::objectGetMember(mPyforaBuiltins, name);
+        if (res)
+            builtinSymbolMapping = builtinSymbolMapping + name + *res;
+        }
+
+    for (const auto& name: PythonBinaryStreamCommon::getObjectMembers(inForaBuiltins))
+        {
+        auto res = ImplValContainerUtilities::objectGetMember(inForaBuiltins, name);
+        if (res)
+            builtinSymbolMapping = builtinSymbolMapping + name + *res;
+        }
+        
+
+    builtinSymbolMapping = builtinSymbolMapping + 
+        Symbol("builtin") + make_pair(inForaBuiltins, Nullable<Symbol>()) + 
+        Symbol("purePython") + make_pair(mPyforaBuiltins, Nullable<Symbol>())
+        ;
+
+    mAstConverter.reset(
+        new PythonAstConverter(
+            mConstantConverter,
+            mListConverter,
+            mTupleConverter,
+            mDictConverter,
+            mPyforaBuiltins,
+            builtinSymbolMapping
+            )
+        );
+    }
+
+
+ImplValContainer PythonBinaryStreamToImplval::readListOfPrimitives(
+        IBinaryStream& stream
+        ) const
+    {
+    int64_t count;
+    stream >> count;
+
+    PyListBuilder listBuilder(mConstantConverter, mListConverter, mTargetPool);
+
+    for (int64_t k = 0; k < count; k++)
+        {
+        uint8_t subcode;
+        stream >> subcode;
+
+        switch (subcode)
+            {
+            case PythonBinaryStreamCommon::CODE_NONE:
+                {
+                listBuilder.appendNone();
+                break;
+                }
+            case PythonBinaryStreamCommon::CODE_INT:
+                {
+                int64_t value;
+                stream >> value;
+                listBuilder.appendInt(value);
+                break;
+                }
+            case PythonBinaryStreamCommon::CODE_FLOAT:
+                {
+                double value;
+                stream >> value;
+                listBuilder.appendFloat(value);
+                break;
+                }
+            case PythonBinaryStreamCommon::CODE_BOOL:
+                {
+                uint8_t value;
+                stream >> value;
+                listBuilder.appendBool(value);
+                break;
+                }
+            case PythonBinaryStreamCommon::CODE_STR:
+                {
+                std::string value;
+                stream >> value;
+                listBuilder.appendString(value);
+                break;
+                }
+            default:
+                {
+                ImplValContainer value = readPrimitive(stream, subcode);
+                listBuilder.appendPrimitive(subcode, value);
+                break;
+                }
+            }
+        }
+    return listBuilder.buildList();
+    }
+
+
+ImplValContainer PythonBinaryStreamToImplval::readPrimitive(
+        IBinaryStream& stream,
+        uint8_t code
+        ) const
+    {
+    switch (code)
+        {
+        case PythonBinaryStreamCommon::CODE_NONE:
+            {
+            return mConstantConverter->noneValue();
+            }
+        case PythonBinaryStreamCommon::CODE_INT:
+            {
+            int64_t value;
+            stream >> value;
+            return mConstantConverter->convertInt(value);
+            }
+        case PythonBinaryStreamCommon::CODE_LONG:
+            {
+            std::string value;
+            stream >> value;
+            lassert_dump(false, "can't convert 'long' yet");
+            }
+        case PythonBinaryStreamCommon::CODE_FLOAT:
+            {
+            double value;
+            stream >> value;
+            return mConstantConverter->convertFloat(value);
+            }
+        case PythonBinaryStreamCommon::CODE_BOOL:
+            {
+            uint8_t value;
+            stream >> value;
+            return mConstantConverter->convertBoolean(value);
+            }
+        case PythonBinaryStreamCommon::CODE_STR:
+            {
+            std::string value;
+            stream >> value;
+            return mConstantConverter->convertString(value);
+            }
+        case PythonBinaryStreamCommon::CODE_LIST_OF_PRIMITIVES:
+            {
+            return readListOfPrimitives(stream);
+            }
+        default:
+            {
+            lassert_dump(false, 
+                "invalid code " << (int)code <<
+                " passed. Should be a code for a primitive."
+                );
+            }
+        }
+    }
+
+namespace {
+
+PythonBinaryStreamCommon::DtypePrimitive readDtypeToTypePrimitive(
+        IBinaryStream& stream
+        )
+    {
+    BinaryStreamDeserializer deserializer(stream);
+    
+    uint8_t code;
+    deserializer >> code;
+
+    if (code == PythonBinaryStreamCommon::CODE_INT)
+        {
+        int64_t i;
+        stream >> i;
+        return PythonBinaryStreamCommon::DtypePrimitive::Int(i);
+        }
+    if (code == PythonBinaryStreamCommon::CODE_STR)
+        {
+        std::string s;
+        stream >> s;
+        return PythonBinaryStreamCommon::DtypePrimitive::Str(s);
+        }
+    if (code == PythonBinaryStreamCommon::CODE_TUPLE ||
+        code == PythonBinaryStreamCommon::CODE_LIST)
+        {
+        int32_t count;
+        stream >> count;
+        ImmutableTreeVector<PythonBinaryStreamCommon::DtypePrimitive> prims;
+        for (long k = 0; k < count; k++)
+            prims = prims + readDtypeToTypePrimitive(stream);
+        return PythonBinaryStreamCommon::DtypePrimitive::Tuple(prims);
+        }
+
+    lassert_dump(false, "Unknown code: " << (int)code);
+    }
+
+}
+
+ImplValContainer PythonBinaryStreamToImplval::readDtypeToTypeInstance(
+        IBinaryStream& stream
+        ) const
+    {
+    typedef PythonBinaryStreamCommon::DtypePrimitive DtypePrimitive;
+
+    boost::function<ImplValContainer (DtypePrimitive)> convert = 
+        [&](DtypePrimitive arg) -> ImplValContainer {
+        @match DtypePrimitive(arg)
+            -| Str(i) ->> {
+                if (i == "<f8")
+                    return mConstantConverter->convertFloat(0);
+                if (i == "<i8")
+                    return mConstantConverter->convertInt(0);
+                if (i == "|b1")
+                    return mConstantConverter->convertBoolean(0);
+                lassert_dump(false, "Unknown field in dtype: " << i);
+                }
+            -| Tuple(elts) ->> {
+                if (elts.size() == 2 && elts[0].isStr())
+                    return convert(elts[1]);
+
+                ImmutableTreeVector<ImplValContainer> instances =
+                    mapITV(elts, convert);
+
+                return mTupleConverter->createTuple(instances);
+                }
+        };
+
+    return convert(readDtypeToTypePrimitive(stream));
+    }
+
+ImmutableTreeVector<ImplValContainer> PythonBinaryStreamToImplval::readValuesFromIds(
+        IBinaryStream& stream
+        ) const
+    {
+    BinaryStreamDeserializer deserializer(stream);
+
+    ImmutableTreeVector<ImplValContainer> elts;
+
+    int64_t count;
+    stream >> count;
+
+    for (long k = 0; k < count; k++)
+        {
+        int64_t id;
+        stream >> id;
+
+        auto it = mValues.find(id);
+
+        lassert_dump(
+            it != mValues.end(), 
+            "can't handle mutual recursion in data-structures, "
+            "only in functions/classes"
+            );
+
+        elts = elts + it->second;
+        }
+
+    return elts;
+    }
+
+void PythonBinaryStreamToImplval::assertHasObject(int64_t object) const
+    {
+    lassert(mValues.find(object) != mValues.end());
+    }
+
+void PythonBinaryStreamToImplval::readPackedHomogeneousData(IBinaryStream& stream, int64_t objectId)
+    {
+    Type t = readDtypeToTypeInstance(stream).type();
+    std::string data;
+    stream >> data;
+
+    mValues[objectId] = mListConverter->createListOfPrimitives(
+        (const uint8_t*)&data[0],
+        data.size() / t.size(),
+        t);
+    }
+
+void PythonBinaryStreamToImplval::readFile(IBinaryStream& stream, int64_t objectId)
+    {
+    std::string path;
+    std::string text;
+
+    stream >> path >> text;
+
+    mFiles[objectId] = FileDescription(path, text);
+    }
+
+void PythonBinaryStreamToImplval::readListOrTuple(IBinaryStream& stream, uint8_t code, int64_t objectId)
+    {
+    ImmutableTreeVector<ImplValContainer> elts = readValuesFromIds(stream);
+
+    if (code == PythonBinaryStreamCommon::CODE_TUPLE) {
+        mValues[objectId] = mTupleConverter->createTuple(elts);
+        }
+    else if (code == PythonBinaryStreamCommon::CODE_LIST) {
+        mValues[objectId] = mListConverter->createList(elts, mVDM);
+        }
+    else {
+        lassert_dump(false, "invalid code in readListOrTuple: " << (int) code);
+        }
+    }
+
+void PythonBinaryStreamToImplval::readDict(IBinaryStream& stream, int64_t objectId)
+    {
+    ImmutableTreeVector<ImplValContainer> keys = readValuesFromIds(stream);
+    ImmutableTreeVector<ImplValContainer> vals = readValuesFromIds(stream);
+
+    mValues[objectId] = mDictConverter->createDict(keys, vals);
+    }
+
+void PythonBinaryStreamToImplval::readBuiltinExceptionInstance(IBinaryStream& stream, int64_t objectId)
+    {
+    std::string exceptionTypeName;
+    int64_t argsId;
+
+    stream >> exceptionTypeName >> argsId;
+
+    assertHasObject(argsId);
+
+    mValues[objectId] = 
+        *mSingletonAndExceptionConverter->instantiateException(
+            exceptionTypeName,
+            mValues[argsId]);
+    }
+
+void PythonBinaryStreamToImplval::readStacktraceAsJson(IBinaryStream& stream, int64_t objectId)
+    {
+    std::string stacktrace;
+    stream >> stacktrace;
+
+    //we convert the json back to a Fora stacktrace, but we can't replicate
+    //all the information normally contained in parsed FORA code because the 
+    //stacktrace doesn't have column information. This is OK because we're just
+    //going to convert it back to python again.
+
+    auto json = Ufora::Json::parse(stacktrace);
+
+    try {
+        @match Ufora::Json(json)
+            -| Null() ->> {
+            mValues[objectId] = 
+                ImplValContainerUtilities::createStackTrace(
+                    ForaStackTrace());
+            }
+        -| Array(terms) ->> {
+            ImmutableTreeVector<CodeLocation> result;
+            for (const auto& t: terms)
+                @match Ufora::Json(t)
+                    -| Object(pathAndRange) ->> {
+                    ImmutableTreeVector<std::string> path;
+                    int64_t lineNo;
+
+                    @match Ufora::Json(*pathAndRange["path"])
+                        -| Array(someStrings) ->> {
+                        path = mapITV(someStrings, [&](Ufora::Json j) -> std::string {
+                                @match Ufora::Json(j)
+                                    -| String(s) ->> {return s;}
+                                });
+                        }
+
+                    @match Ufora::Json(*pathAndRange["range"])
+                        -| Object(startAndStop) ->> {
+                        @match Ufora::Json(*startAndStop["start"])
+                            -| Object(lineAndCol) ->> {
+                            @match Ufora::Json(*lineAndCol["line"])
+                                -| Number(aValue) ->> {
+                                lineNo = aValue;
+                                }
+                            }
+                        }
+
+                    CodeLocation loc(
+                        CodeDefinitionPoint::External(path),
+                        SimpleParseRange(
+                            SimpleParsePosition(lineNo,0),
+                            SimpleParsePosition(lineNo,0)
+                            )
+                        );
+
+                    result = result + loc;
+                    }
+
+            mValues[objectId] = 
+                ImplValContainerUtilities::createStackTrace(
+                    ForaStackTrace(result));
+            }
+        }
+    catch(...)
+        {
+        LOG_ERROR << "Invalid json found while converting stacktrace: " << json;
+        throw;
+        }
+    }
+
+void PythonBinaryStreamToImplval::readNamedSingleton(IBinaryStream& stream, int64_t objectId)
+    {
+    std::string singletonName;
+
+    stream >> singletonName;
+
+    mValues[objectId] = *mSingletonAndExceptionConverter->convertSingleton(
+        singletonName);
+    }
+
+void PythonBinaryStreamToImplval::readClassInstance(IBinaryStream& stream, int64_t objectId)
+    {
+    int64_t idOfClass;
+    stream >> idOfClass;
+
+    assertHasObject(idOfClass);
+
+    map<std::string, int64_t> chains;
+
+    stream >> chains;
+
+    ImplValContainer classIVC = mValues[idOfClass];
+
+    if (PythonBinaryStreamCommon::isUnconvertibleValueTuple(classIVC))
+        mValues[objectId] = classIVC;
+    else
+        {
+        ImmutableTreeVector<ImplValContainer> vals;
+        ImmutableTreeVector<Nullable<Symbol> > names;
+
+        for (const auto& kv: chains)
+            {
+            vals = vals + mValues[kv.second];
+            names = names + (null() << Symbol(kv.first));
+            }
+                
+        ImplValContainer classArgs =
+            ImplValContainerUtilities::createTuple(vals, names);
+
+        ImplValContainer symbolCreateInstance =
+            ImplValContainerUtilities::createSymbol(Symbol("CreateInstance"));
+
+        mValues[objectId] = *PythonBinaryStreamCommon::simulateApply(
+            classIVC,
+            symbolCreateInstance,
+            classArgs);
+        }
+    }
+
+void PythonBinaryStreamToImplval::readInstanceMethod(IBinaryStream& stream, int64_t objectId)
+    {
+    int64_t instanceId;
+    std::string methodName;
+
+    stream >> instanceId >> methodName;
+
+    assertHasObject(instanceId);
+
+    mValues[objectId] = *PythonBinaryStreamCommon::simulateApply(
+        mValues[instanceId], 
+        ImplValContainerUtilities::createSymbol(Symbol::Member()),
+        ImplValContainerUtilities::createSymbol(Symbol(methodName))
+        );
+    }
+
+void PythonBinaryStreamToImplval::readFunctionOrClass(IBinaryStream& stream, uint8_t code, int64_t objectId)
+    {
+    int64_t fileId;
+    int32_t lineNo;
+    map<std::string, int64_t> chains;
+            
+    stream >> fileId >> lineNo >> chains;
+
+    //if we are a class, we need to convert our list of base class instances back to
+    //valid free variable access chains
+    ImmutableTreeVector<ImmutableTreeVector<std::string> > dottedBaseClassIds;
+    if (code == PythonBinaryStreamCommon::CODE_CLASS)
+        {
+        map<int64_t, std::string> chainsInReverse;
+        for (const auto& kv: chains)
+            chainsInReverse[kv.second] = kv.first;
+
+        int64_t idCount;
+        stream >> idCount;
+
+        for (long k = 0; k < idCount; k++)
+            {
+            int64_t baseId;
+            stream >> baseId;
+
+            lassert(chainsInReverse.find(baseId) != chainsInReverse.end());
+
+            dottedBaseClassIds = dottedBaseClassIds +
+                PythonBinaryStreamCommon::splitOnDot<string>(
+                    chainsInReverse[baseId]);
+            }
+        }
+
+    lassert(mFiles.find(fileId) != mFiles.end());
+
+    auto result = mPyAstParser(mFiles[fileId].text());
+
+    lassert(result.isResult());
+
+    PythonAstStatementOrExpr parseResult;
+
+    @match PythonParseResult(result)
+        -| Result(module) ->> {
+        parseResult = functionClassOrLambdaDefAtLine(module, lineNo);
+        }
+
+    lassert_dump(!parseResult.isNone(), 
+        "couldn't find an object defined at line " <<
+        lineNo << " of " << mFiles[fileId].path());
+
+    ImplValContainer newMetadata = ImplValContainerUtilities::createTuple(
+        emptyTreeVec() + 
+        encodeImplvalAsEmptyObjectMetadata(
+                ImplValContainerUtilities::createString(
+                    String(mFiles[fileId].text(), mTargetPool)
+                    )
+                ) +
+            ImplValContainerUtilities::createString(
+                String(mFiles[fileId].path(), mTargetPool)
+                ) + 
+            ImplValContainer(CSTValue((int64_t)parseResult.getStatement().s().extent().start().line()))
+            ,
+        emptyTreeVec() + 
+            (null() << Symbol("sourceText")) + 
+            (null() << Symbol("sourcePath")) + 
+            (null() << Symbol("sourceLine"))
+        );
+
+    Expression createFuncExpr;
+    @match PythonAstStatementOrExpr(parseResult)
+        -| Statement(FunctionDef(name, args, body)) ->> {
+        createFuncExpr =
+            mAstConverter->withObjectMetadata(newMetadata)->
+                convertPythonAstFunctionDefToFora(
+                    parseResult.getStatement().s().getFunctionDef(),
+                    parseResult.getStatement().s().extent()
+                    );        
+        }
+    -| Statement(ClassDef(name, args, body)) ->> {
+        createFuncExpr =
+            mAstConverter->withObjectMetadata(newMetadata)
+                ->convertPythonAstClassDefToFora(
+                    parseResult.getStatement().s().getClassDef(),
+                    parseResult.getStatement().s().extent(),
+                    dottedBaseClassIds
+                    );
+        }
+    -| Expr(Lambda(args, body)) ->> {
+        createFuncExpr =
+            mAstConverter->withObjectMetadata(newMetadata)
+                ->convertPythonAstLambdaToFora(
+                    args, 
+                    body, 
+                    parseResult.getExpr().e().extent()
+                    );
+        }
+
+    createFuncExpr = PythonBinaryStreamCommon::rebindChains(
+        createFuncExpr,
+        chains);
+
+    bool allDefined = true;
+    for (const auto& kv: chains)
+        if (mValues.find(kv.second) == mValues.end())
+            {
+            allDefined = false;
+            break;
+            }
+
+    if (allDefined)
+        {
+        map<std::string, ImplValContainer> chainResolutions;
+
+        for (const auto& kv: chains)
+            chainResolutions[kv.first] = mValues[kv.second];
+
+        createFuncExpr = replaceUnconvertiblesWithThrows(
+            createFuncExpr,
+            chainResolutions);
+
+        createFuncExpr = replaceNameErrorsWithThrows(
+            createFuncExpr,
+            chainResolutions);
+
+        mValues[objectId] = bindValuesAndEvaluate(
+            createFuncExpr,
+            chainResolutions);
+        }
+    else
+        {
+        mPendingObjectConversions[objectId].first = createFuncExpr;
+        mPendingObjectConversions[objectId].second = chains;
+                
+        tryToConvertPendingObject(objectId);
+        }
+    }
+
+void PythonBinaryStreamToImplval::readUnconvertible(IBinaryStream& stream, int64_t objectId)
+    {
+    uint8_t hasModulePath;
+    stream >> hasModulePath;
+
+    ImplValContainer payload;
+    if (hasModulePath)
+        {
+        int32_t count = 0;
+        stream >> count;
+
+        ImmutableTreeVector<ImplValContainer> vals;
+        for (long k = 0; k < count; k++)
+            {
+            std::string pathElt;
+            stream >> pathElt;
+
+            vals = vals + ImplValContainerUtilities::createString(
+                String(pathElt, mTargetPool)
+                );
+            }
+        payload = ImplValContainerUtilities::createTuple(vals);
+        }
+
+    mValues[objectId] = ImplValContainerUtilities::createTuple(
+        emptyTreeVec() + payload,
+        emptyTreeVec() + Nullable<Symbol>(Symbol("PyforaUnconvertibleValue"))
+        );
+    }
+
+void PythonBinaryStreamToImplval::readPyAbortException(IBinaryStream& stream, int64_t objectId)
+    {
+    std::string exceptionTypeName;
+    int64_t argsId;
+
+    stream >> exceptionTypeName >> argsId;
+
+    assertHasObject(argsId);
+
+    mValues[objectId] = *mSingletonAndExceptionConverter
+        ->instantiateException(exceptionTypeName,
+            mValues[argsId]);
+    }
+
+void PythonBinaryStreamToImplval::read(IBinaryStream& stream)
+    {
+    BinaryStreamDeserializer deserializer(stream);
+
+    while (true)
+        {
+        int64_t objectId;
+        stream >> objectId;
+
+        if (objectId == -1)
+            {
+            lassert_dump(
+                mPendingObjectConversions.size() == 0, 
+                "stream didn't contain definitions for all recursive objects"
+                );
+            
+            return;
+            }
+
+        uint8_t code;
+        stream >> code;
+
+        if (code >= PythonBinaryStreamCommon::CODE_NONE &&
+            code <= PythonBinaryStreamCommon::CODE_LIST_OF_PRIMITIVES)
+            {
+            mValues[objectId] = readPrimitive(stream, code);
+            }
+        else if (code == PythonBinaryStreamCommon::CODE_TUPLE ||
+                 code == PythonBinaryStreamCommon::CODE_LIST)
+            {
+            readListOrTuple(stream, code, objectId);
+            }
+        else if (code == PythonBinaryStreamCommon::CODE_FUNCTION ||
+                 code == PythonBinaryStreamCommon::CODE_CLASS)
+            {
+            readFunctionOrClass(stream, code, objectId);
+            }
+        else {
+            switch(code)
+                {
+                case PythonBinaryStreamCommon::CODE_PACKED_HOMOGENOUS_DATA:
+                    readPackedHomogeneousData(stream, objectId);
+                    break;
+                case PythonBinaryStreamCommon::CODE_FILE:
+                    readFile(stream, objectId);
+                    break;
+                case PythonBinaryStreamCommon::CODE_DICT:
+                    readDict(stream, objectId);
+                    break;
+                case PythonBinaryStreamCommon::CODE_BUILTIN_EXCEPTION_INSTANCE:
+                    readBuiltinExceptionInstance(stream, objectId);
+                    break;
+                case PythonBinaryStreamCommon::CODE_STACKTRACE_AS_JSON:
+                    readStacktraceAsJson(stream, objectId);
+                    break;
+                case PythonBinaryStreamCommon::CODE_NAMED_SINGLETON:
+                    readNamedSingleton(stream, objectId);
+                    break;
+                case PythonBinaryStreamCommon::CODE_CLASS_INSTANCE:
+                    readClassInstance(stream, objectId);
+                    break;
+                case PythonBinaryStreamCommon::CODE_INSTANCE_METHOD:
+                    readInstanceMethod(stream, objectId);
+                    break;
+                case PythonBinaryStreamCommon::CODE_UNCONVERTIBLE:
+                    readUnconvertible(stream, objectId);
+                    break;
+                case PythonBinaryStreamCommon::CODE_PY_ABORT_EXCEPTION:
+                    readPyAbortException(stream, objectId);
+                    break;
+                case PythonBinaryStreamCommon::CODE_UNRESOLVED_SYMBOL:
+                    readUnresolvedVarWithPosition(stream, objectId);
+                    break;
+                default:
+                    lassert_dump(false, "Invalid code " << (int)code << " encountered");
+                }
+            }
+        }
+    }
+
+void PythonBinaryStreamToImplval::tryToConvertPendingObject(int64_t objectId)
+    {
+    std::set<int64_t> reachableObjects;
+    std::set<int64_t> toCheck;
+
+    toCheck.insert(objectId);
+
+    while (toCheck.size())
+        {
+        int64_t check = *toCheck.begin();
+        toCheck.erase(check);
+
+        //if we reach an object with neither a definition nor a value, we are not going
+        //to be able to convert.
+        if (mPendingObjectConversions.find(check) == mPendingObjectConversions.end()
+            && mValues.find(check) == mValues.end())
+            return;
+
+        if (mValues.find(check) == mValues.end())
+            {
+            if (reachableObjects.find(check) == reachableObjects.end())
+                {
+                reachableObjects.insert(check);
+                for (const auto& downstreamNameAndId: mPendingObjectConversions[check].second)
+                    toCheck.insert(downstreamNameAndId.second);
+                }
+            }
+        }
+
+    //each value in 'reachableObjects' is now part of our object graph
+    //we need to bind these into a single recursive object frame. E.g. if we have f1 and f2
+    //that each refer to each other, we're going to produce 
+    // object { f1: ..., f2: ... }
+    //which implements the mutual recursion.
+
+    map<int64_t, Expression> createObjectExpressions;
+    map<int64_t, map<std::string, int64_t> > objectMappings;
+
+    for (const auto& id: reachableObjects)
+        {
+        createObjectExpressions[id] = mPendingObjectConversions[id].first;
+        objectMappings[id] = mPendingObjectConversions[id].second;
+        mPendingObjectConversions.erase(id);
+        }
+
+    //now we need to create a flattened version of the object mappings. It's possible
+    //that two objects refer to different already-defined objects with the same name,
+    //in which case we need to disambiguate. Secondly, we need to give names to 
+    //each of the recursive objects.    
+    map<int64_t, std::string> recursiveNames;
+
+    for (const auto& idAndExpr: createObjectExpressions)
+        recursiveNames[idAndExpr.first] = "recursive." + hashToString(idAndExpr.second.hash());
+
+    map<std::string, std::set<int64_t> > timesNameIsSeen;
+    for (const auto& idAndMapping: objectMappings)
+        for (const auto& nameAndId: idAndMapping.second)
+            timesNameIsSeen[nameAndId.first].insert(nameAndId.second);
+
+    map<std::string, int> finalMappings;
+
+    ObjectDefinitionBody body;
+
+    for (int64_t id: reachableObjects)
+        {
+        map<string, string> toRename;
+
+        //for each expression, rename any symbols that are not unique
+        auto& mappings = objectMappings[id];
+
+        map<string, int64_t> newNames;
+
+        for (const auto& nameAndId: mappings)
+            if (recursiveNames.find(nameAndId.second) != recursiveNames.end())
+                toRename[nameAndId.first] = recursiveNames[nameAndId.second];
+                else
+            if (timesNameIsSeen[nameAndId.first].size() > 1)
+                {
+                toRename[nameAndId.first] = recursiveNames[id] + nameAndId.first;
+                finalMappings[recursiveNames[id] + nameAndId.first] = nameAndId.second;
+                }
+            else
+                {
+                //names that are not referring to recursive objects and that are unique
+                //can stick around unmodified
+                finalMappings[nameAndId.first] = nameAndId.second;
+                }
+
+        ImmutableTreeMap<Symbol, Expression> toRenameExprs;
+        for (const auto& kv: toRename)
+            toRenameExprs = toRenameExprs +
+                Symbol(kv.first) + Expression::Variable(Symbol(kv.second));
+
+        body = ObjectDefinitionBody::Term(
+            ObjectDefinitionTermWithMetadata(
+                ObjectDefinitionTerm::Member(
+                    recursiveNames[id],
+                    rebindFreeAs(createObjectExpressions[id], toRenameExprs),
+                    1
+                    ),
+                CSTValue()
+                ),
+            body
+            );
+        }
+
+    map<string, ImplValContainer> varMapping;
+
+    for (const auto& kv: finalMappings)
+        varMapping[kv.first] = mValues[kv.second];
+
+    ImplValContainer value = 
+        bindValuesAndEvaluate(
+            Expression::CreateObject(
+                "<recursive_frame>",
+                ObjectDefinition(
+                    body,
+                    null(),
+                    null()
+                    ),
+                CSTValue()
+                ),
+            varMapping
+            );
+
+    for (int64_t id: reachableObjects)
+        mValues[id] = *PythonBinaryStreamCommon::simulateApply(
+            value, 
+            ImplValContainerUtilities::createSymbol(Symbol::Member()),
+            ImplValContainerUtilities::createSymbol(Symbol(recursiveNames[id]))
+            );
+    }
+
+ImplValContainer PythonBinaryStreamToImplval::evaluateRootLevelCreateObjectExpression(
+        Expression expr,
+        const ImmutableTreeMap<Symbol, pair<ImplValContainer, Nullable<Symbol>>>& freeVars,
+        bool bindCSTValuesDirectlyInCode
+        ) const
+    {
+    ImmutableTreeMap<Symbol, pair<ImplValContainer, Nullable<Symbol>>> freeVarsToBind;
+
+    ImmutableTreeMap<Symbol, LexicalBinding> constantLexicalBindings;
+
+    for (long k = 0; k < freeVars.size(); k++)
+        {
+        pair<ImplValContainer, Nullable<Symbol>> p = freeVars.pairAtPosition(k).second;
+
+        if (p.first.isCST() && !p.second)
+            {
+            //verify that there are no vectors within this object
+            ContainsNonemptyVectorsVisitor visitor;
+
+            ImplValVisitor<ContainsNonemptyVectorsVisitor> ivVisitor(visitor);
+
+            ivVisitor.visit(p.first.type(), (uint8_t*)p.first.data(), 1, 0);
+
+            if (!visitor.contains() && bindCSTValuesDirectlyInCode)
+                {
+                constantLexicalBindings = constantLexicalBindings +
+                    freeVars.pairAtPosition(k).first +
+                    LexicalBinding::Constant(CSTValue(p.first))
+                    ;
+                }
+            else
+                freeVarsToBind = freeVarsToBind + freeVars.pairAtPosition(k);
+            }
+        else
+            freeVarsToBind = freeVarsToBind + freeVars.pairAtPosition(k);
+        }
+
+    expr = expr.unwrapCodeLocationTags();
+
+    if (expr.isCreateObject())
+        {
+        return Fora::Language::bindFunctionWithValues(
+            ClassMediator::Object(
+                expr.getCreateObject().name(),
+                expr.getCreateObject().body(),
+                LexicalBindingMap(constantLexicalBindings),
+                CSTValue()
+                ),
+            freeVarsToBind,
+            expr.getCreateObject().objectMetadata()
+            );
+        }
+
+    if (expr.isCreateFunction())
+        {
+        return Fora::Language::bindFunctionWithValues(
+            ClassMediator::Function(
+                expr.getCreateFunction().name(),
+                expr.getCreateFunction().predicate(),
+                LexicalBindingMap(constantLexicalBindings),
+                CSTValue()
+                ),
+            freeVarsToBind,
+            expr.getCreateFunction().objectMetadata()
+            );
+        }
+
+    if (expr.isCreateClass())
+        {
+        return Fora::Language::bindFunctionWithValues(
+            ClassMediator::Class(
+                expr.getCreateClass().name(),
+                expr.getCreateClass().body(),
+                LexicalBindingMap(constantLexicalBindings),
+                CSTValue()
+                ),
+            freeVarsToBind,
+            expr.getCreateClass().classMetadata()
+            );
+        }
+
+    lassert_dump(false, prettyPrintString(expr));
+    }
+
+
+ImplValContainer PythonBinaryStreamToImplval::bindValuesAndEvaluate(
+        const Expression& expr,
+        const std::map<string, ImplValContainer>& arguments
+        )
+    {
+    for (const auto& v: expr.freeVariables())
+        {
+        lassert_dump(arguments.find(v.toString()) != arguments.end(),
+            "Expected to find a definition provided for " << v.toString()
+            );
+        }
+
+    /*we need to determine whether we should bind the free variables in this expression as constants
+    inline in the code, or as class members. Binding them as constants speeds up the compiler,
+    but if we have the same function bound repeatedly with many constants, we'll end up
+    producing far too much code. This algorithm binds as constants the _First_ time we bind
+    a given expression with given arguments, and as members any future set of times. This
+    should cause it to bind modules and classes that don't have any data flowing through them
+    as constants, and closures and functions we're calling repeatedly using class members.*/
+
+    bool shouldMapArgsAsConstants = true;
+
+    hash_type inputExprHash = hashValue(expr);
+    hash_type argumentsHash = hashValue(arguments);
+
+    auto it = mAlreadyBoundExpressionToValueHashes.find(inputExprHash);
+
+    if (it == mAlreadyBoundExpressionToValueHashes.end())
+        mAlreadyBoundExpressionToValueHashes[inputExprHash] = argumentsHash;
+    else
+        if (it->second != argumentsHash)
+            shouldMapArgsAsConstants = false;
+
+    ImmutableTreeMap<Symbol, pair<ImplValContainer, Nullable<Symbol> > > freeVars;
+
+    for (const auto& kv: arguments)
+        freeVars = freeVars + Symbol(kv.first) + make_pair(kv.second, Nullable<Symbol>());
+
+    return evaluateRootLevelCreateObjectExpression(
+        expr,
+        freeVars,
+        shouldMapArgsAsConstants
+        );
+    }
+
+ImplValContainer PythonBinaryStreamToImplval::encodeImplvalAsEmptyObjectMetadata(
+        const ImplValContainer& value
+        ) const
+    {
+    ClassMediator mediator = ClassMediator::Object(
+        ObjectDefinition(),
+        LexicalBindingMap(),
+        CSTValue(value)
+        );
+
+    return ImplValContainer(
+        CSTValue::blankOf(
+            Type::Class(
+                emptyTreeVec(), 
+                ClassBody(
+                    CPPMLOpaqueHandle<ClassMediator>(mediator), 
+                    ClassMediatorResumption::Entry()
+                    )
+                )
+            )
+        );
+    }
+
+Nullable<ImplValContainer> PythonBinaryStreamToImplval::getObjectById(int64_t id) const
+    {
+    auto it = mValues.find(id);
+    
+    if (it != mValues.end())
+        return null() << it->second;
+
+    return null();
+    }
+
+Expression PythonBinaryStreamToImplval::replaceUnconvertiblesWithThrows(
+        Expression expr,
+        const map<string, ImplValContainer>& vars
+        ) const
+    {
+    ImmutableTreeVector<Symbol> varNamesVec;
+
+    for (const auto& kv: vars)
+        if (PythonBinaryStreamCommon::isUnconvertibleValueTuple(kv.second))
+            varNamesVec = varNamesVec + Symbol(kv.first);
+
+    if (varNamesVec.size())
+        return mAstConverter->replaceSymbolsWithCheckValidityExpressions(
+                expr, 
+                varNamesVec
+                );
+    return expr;
+    }
+
+
+Expression PythonBinaryStreamToImplval::replaceNameErrorsWithThrows(
+        Expression expr,
+        const map<string, ImplValContainer>& vars
+        ) const
+    {
+    ImmutableTreeVector<Symbol> varNamesVec;
+
+    for (const auto& kv: vars)
+        if (PythonBinaryStreamCommon::isNameErrorTuple(kv.second))
+            varNamesVec = varNamesVec + Symbol(kv.first);
+
+    if (varNamesVec.size())
+        return mAstConverter->replaceSymbolsWithCheckValidityExpressions(
+                expr, 
+                varNamesVec
+                );
+    return expr;
+    }
+
+
+PythonAstStatementOrExpr PythonBinaryStreamToImplval::functionClassOrLambdaDefAtLine(
+        const PythonAstModule& module,
+        int64_t line
+        ) const
+    {
+    auto matches = extractAllObjectsMatchingPredicate(
+        module,
+        boost::function1<bool, PythonAstStatement>(
+            [&](PythonAstStatement e) {
+                return (e.isFunctionDef() || e.isClassDef()) &&
+                    e.extent().start().line() == line;
+                }
+            )
+        );
+
+    if (matches.size())
+        return PythonAstStatementOrExpr::Statement(matches[0]);
+
+    auto matches2 = extractAllObjectsMatchingPredicate(
+        module,
+        boost::function1<bool, PythonAstExpr>(
+            [&](PythonAstExpr e) {
+                return (e.isLambda()) && e.extent().start().line() == line;
+                }
+            )
+        );
+
+    if (matches2.size())
+        return PythonAstStatementOrExpr::Expr(matches2[0]);
+
+    return PythonAstStatementOrExpr::None();
+    }
+
+
+void PythonBinaryStreamToImplval::readUnresolvedVarWithPosition(
+        IBinaryStream& stream,
+        int64_t objectId)
+    {
+    std::string varname;
+    stream >> varname;
+    
+    int64_t lineno, col_offset;
+    stream >> lineno;
+    stream >> col_offset;
+    
+    ImplValContainer payload;
+        {
+        ImmutableTreeVector<ImplValContainer> vals;
+
+        vals = vals + ImplValContainerUtilities::createString(
+            String(varname, mTargetPool)
+            );
+        vals = vals + ImplValContainerUtilities::createSignedInteger(lineno);
+        vals = vals + ImplValContainerUtilities::createSignedInteger(col_offset);
+        
+        payload = ImplValContainerUtilities::createTuple(vals);
+        }
+    
+    mValues[objectId] = ImplValContainerUtilities::createTuple(
+        emptyTreeVec() + payload,
+        emptyTreeVec() + Nullable<Symbol>(Symbol("PyforaNameError"))
+        );
+    }
+
+
+}

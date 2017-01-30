@@ -21,7 +21,9 @@ class VisitDone(Exception):
     pass
 
 def isScopeNode(pyAstNode):
-    if isinstance(pyAstNode, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.Lambda, ast.GeneratorExp)):
+    """Return true iff argument is a scoped node."""
+    if isinstance(pyAstNode, (ast.Module, ast.ClassDef,
+                              ast.FunctionDef, ast.Lambda, ast.GeneratorExp)):
         return True
     else:
         return False
@@ -50,6 +52,11 @@ class InScopeSaveRestoreValue(object):
 class ScopedSaveRestoreComputedValue(object):
     """ Generic Context Manager for GenericScopedVisitors."""
     def __init__(self, valueGetter, valueSetter, valueComputer):
+        """
+        valueGetter: function that returns the current value
+        valueSetter: function that takes a value and sets it as current
+        valueComputer: function that takes (node, old_value) and computes new value
+        """
         self.valueGetter = valueGetter
         self.valueSetter = valueSetter
         self.valueComputer = valueComputer
@@ -66,47 +73,68 @@ class ScopedSaveRestoreComputedValue(object):
 
 ##########################################################################
 # Visitor Base Classes
-class NodeVisitorBase(ast.NodeVisitor):
-    """Extends ast.NodeVisitor.generic_visit to also visit lists of ast.Node."""
+class SemanticOrderNodeTransvisitor(ast.NodeTransformer):
+    """Modifies ast.NodeTransformer visitation order and enables to visit lists of ast.Node.
+
+    It is called a 'transvisitor' because it implements a transformer but only
+    performs a visit (i.e., it should not modify the AST). This implementation
+    detail is exposed to the user because they must be aware of it to correctly
+    implement a derived class.
+    """
     def generic_visit(self, node):
         if isinstance(node, list):
-            self._generic_visit_list(node)
+            return self._generic_visit_list(node)
         else:
-            super(NodeVisitorBase, self).generic_visit(node)
+            return super(SemanticOrderNodeTransvisitor, self).generic_visit(node)
 
     def _generic_visit_list(self, node):
+        res = []
+        modified = False
         for item in node:
             if isinstance(item, ast.AST):
-                self.visit(item)
+                new_item = self.visit(item)
+                res.append(new_item)
+                if new_item is not item:
+                    modified = True
+        if not modified:
+            return node
+        else:
+            return res
 
     # For assignments, visit RHS first
     def visit_Assign(self, node):
-        self.visit(node.value)
-        self.visit(node.targets)
+        node.value = self.visit(node.value)
+        node.targets = self.visit(node.targets)
+        return node
 
     def visit_AugAssign(self, node):
-        self.visit(node.value)
-        self.visit(node.target)
+        node.value = self.visit(node.value)
+        node.op = self.visit(node.op)
+        node.target = self.visit(node.target)
+        return node
 
     def visit_ListComp(self, node):
-        self.visit(node.generators)
-        self.visit(node.elt)
+        node.generators = self.visit(node.generators)
+        node.elt = self.visit(node.elt)
+        return node
 
     def visit_SetComp(self, node):
-        self.visit(node.generators)
-        self.visit(node.elt)
+        node.generators = self.visit(node.generators)
+        node.elt = self.visit(node.elt)
+        return node
 
     def visit_GeneratorExp(self, node):
-        self.visit(node.generators)
-        self.visit(node.elt)
+        node.generators = self.visit(node.generators)
+        node.elt = self.visit(node.elt)
+        return node
 
     def visit_DictComp(self, node):
-        self.visit(node.generators)
-        self.visit(node.key)
-        self.visit(node.value)
+        node.generators = self.visit(node.generators)
+        node.key = self.visit(node.key)
+        node.value = self.visit(node.value)
+        return node
 
-
-class GenericInScopeVisitor(NodeVisitorBase):
+class GenericInScopeTransvisitor(SemanticOrderNodeTransvisitor):
     """Shallow visitor that does not descend into sub-scopes.
 
     It is initialized with the root of the AST to visit, which must be
@@ -129,7 +157,7 @@ class GenericInScopeVisitor(NodeVisitorBase):
         return self._isInDefinition
     def _setIsInDefinition(self, value):
         self._isInDefinition = value
-    def _isInDefinitionMgr(self, newValue = True):
+    def _isInDefinitionMgr(self, newValue=True):
         self._isInDefinitionValueManager.newValue = newValue
         return self._isInDefinitionValueManager
 
@@ -162,49 +190,54 @@ class GenericInScopeVisitor(NodeVisitorBase):
     #     defined in the imported module, except those beginning with an underscore.
     #     This form may only be used at the module level.
 
-    def visit_Module(self, _):
-        return
+    def visit_Module(self, node):
+        return node
 
-    def visit_FunctionDef(self, _):
-        return
+    def visit_FunctionDef(self, node):
+        return node
 
-    def visit_ClassDef(self, _):
-        return
+    def visit_ClassDef(self, node):
+        return node
 
-    def visit_Lambda(self, _):
-        return
+    def visit_Lambda(self, node):
+        return node
 
-    def visit_GeneratorExp(self, _):
-        return
+    def visit_GeneratorExp(self, node):
+        return node
 
     def visit_Assign(self, node):
-        self.visit(node.value)
+        node.value = self.visit(node.value)
         with self._isInDefinitionMgr():
-            self.visit(node.targets)
+            node.targets = self.visit(node.targets)
+        return node
 
     def visit_AugAssign(self, node):
-        self.visit(node.value)
+        node.value = self.visit(node.value)
         with self._isInDefinitionMgr():
-            self.visit(node.target)
+            node.target = self.visit(node.target)
+        return node
 
     def visit_For(self, node):
         with self._isInDefinitionMgr():
-            self.visit(node.target)
-        self.visit(node.iter)
-        self.visit(node.body)
-        self.visit(node.orelse)
+            node.target = self.visit(node.target)
+        node.iter = self.visit(node.iter)
+        node.body = self.visit(node.body)
+        node.orelse = self.visit(node.orelse)
+        return node
 
     # With(expr context_expr, expr? optional_vars, stmt* body)
     def visit_With(self, node):
-        self.visit(node.context_expr)
+        node.context_expr = self.visit(node.context_expr)
         with self._isInDefinitionMgr():
             if node.optional_vars is not None:
-                self.visit(node.optional_vars)
-        self.visit(node.body)
+                node.optional_vars = self.visit(node.optional_vars)
+        node.body = self.visit(node.body)
+        return node
 
     def visit_Attribute(self, node):
         with self._isInDefinitionMgr(False):
-            self.visit(node.value)
+            node.value = self.visit(node.value)
+        return node
 
     def visit_Global(self, _):
         raise Exceptions.PythonToForaConversionError(
@@ -213,33 +246,36 @@ class GenericInScopeVisitor(NodeVisitorBase):
     # ExceptHandler(expr? type, expr? name, stmt* body)
     def visit_ExceptHandler(self, node):
         if node.type is not None:
-            self.visit(node.type)  # we probably don't need to visit it
+            node.type = self.visit(node.type)  # we probably don't need to visit it
         if node.name is not None:
             with self._isInDefinitionMgr():
-                self.visit(node.name)
-        self.visit(node.body)
+                node.name = self.visit(node.name)
+        node.body = self.visit(node.body)
+        return node
 
     # arguments = (expr* args, identifier? vararg, identifier? kwarg, expr* defaults)
     def visit_arguments(self, node):
-        self.visit(node.defaults)
+        node.defaults = self.visit(node.defaults)
         with self._isInDefinitionMgr():
-            self.visit(node.args)
+            node.args = self.visit(node.args)
+        return node
 
     # comprehension = (expr target, expr iter, expr* ifs)
     def visit_comprehension(self, node):
         with self._isInDefinitionMgr():
-            self.visit(node.target)
-        self.visit(node.iter)
-        self.visit(node.ifs)
+            node.target = self.visit(node.target)
+        node.iter = self.visit(node.iter)
+        node.ifs = self.visit(node.ifs)
+        return node
 
 
-class GenericScopedVisitor(NodeVisitorBase):
+class GenericScopedTransvisitor(SemanticOrderNodeTransvisitor):
     """
-    Base class for two-pass visitors. 
-    
-    Before entering a new scope, update a value (e.g., bound values) by running a 
+    Base class for two-pass transformers.
+
+    Before entering a new scope, update a value (e.g., bound values) by running a
     visitor on the new scope and possibly taking account of the old value. Upon
-    returning back to the outer scope, restore the value. All of this happens 
+    returning back to the outer scope, restore the value. All of this happens
     through a context manager, for example the class ScopedSaveRestoreComputedValue
     provided above.
     """
@@ -252,32 +288,35 @@ class GenericScopedVisitor(NodeVisitorBase):
     # VISITORS
     def visit_Module(self, node):
         with self._getScopeMgr(node):
-            self.visit(node.body)
+            node.body = self.visit(node.body)
+            return node
 
     def visit_FunctionDef(self, node):
         node.args.lineno = node.lineno
         node.args.col_offset = node.col_offset
-        self.visit(node.args.defaults)
+        node.args.defaults = self.visit(node.args.defaults)
+
         with self._getScopeMgr(node):
-            self.visit(node.body)
-            self.visit(node.decorator_list)
+            node.body = self.visit(node.body)
+            node.decorator_list = self.visit(node.decorator_list)
+            return node
 
     def visit_Lambda(self, node):
         node.args.lineno = node.lineno
         node.args.col_offset = node.col_offset
-        self.visit(node.args.defaults)
+        node.args.defaults = self.visit(node.args.defaults)
         with self._getScopeMgr(node):
-            self.visit(node.body)
+            node.body = self.visit(node.body)
+            return node
 
     def visit_GeneratorExp(self, node):
         with self._getScopeMgr(node):
-            self.visit(node.generators)
-            self.visit(node.elt)
+            node.generators = self.visit(node.generators)
+            node.elt = self.visit(node.elt)
+            return node
 
     def visit_ClassDef(self, node):
-        self.visit(node.bases)
-        # Because we don't currently distinguish between self.m and m,
-        # for now we skip collecting class member names with the
-        # scoped visitor controlled by the context manager
-        self.visit(node.body)
-        self.visit(node.decorator_list)
+        node.bases = self.visit(node.bases)
+        node.body = self.visit(node.body)
+        node.decorator_list = self.visit(node.decorator_list)
+        return node

@@ -17,7 +17,7 @@
 
 #include <stdint.h>
 #include <boost/python.hpp>
-#include "../../FORA/python/FORAPythonUtil.hppml"
+#include "../../core/python/ValueLikeCPPMLWrapper.hppml"
 #include "../../native/Registrar.hpp"
 #include "../../core/python/CPPMLWrapper.hpp"
 #include "../../core/containers/ImmutableTreeVector.py.hpp"
@@ -38,14 +38,11 @@ public:
 			using namespace boost::python;
 
 			object cls =
-				FORAPythonUtil::exposeValueLikeCppmlType<LocalSchedulerEvent>()
+				ValueLikeCPPMLWrapper::exposeValueLikeCppmlType<LocalSchedulerEvent>()
 					.class_()
 				;
 
 			PythonWrapper<ImmutableTreeVector<LocalSchedulerEvent> >::exportPythonInterface("LocalSchedulerEvent")
-				.def("__getstate__", &FORAPythonUtil::serializeEntireObjectGraph<ImmutableTreeVector<LocalSchedulerEvent> >)
-				.def("__setstate__", &FORAPythonUtil::deserializeEntireObjectGraph<ImmutableTreeVector<LocalSchedulerEvent> >)
-				.enable_pickling()
 				;
 
 			def("LocalSchedulerEvent", cls);

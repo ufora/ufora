@@ -53,12 +53,6 @@ class JsonTest(unittest.TestCase):
         self.assertTrue("\n" in str(x))
         self.assertTrue("\n" not in repr(x), repr(x))
 
-    def test_json_serialization(self):
-        j1 = Json.Json([1,2,3,4])
-        j2 = pickle.loads(pickle.dumps(j1))
-
-        self.assertEqual(j1, j2)
-
     def test_json_ordering(self):
         self.assertTrue(Json.Json([1]) < Json.Json([1,1]))
         self.assertTrue(Json.Json([1]) > Json.Json([0,1]))

@@ -65,6 +65,14 @@ class WithBlockExecutors_test(unittest.TestCase):
                 res = func()
             self.assertEqual(res.toLocal().result(), func())
 
+    def test_downloading_with_closed_executor_is_exception(self):
+        with self.assertRaises(Exceptions.PyforaError):
+            with self.create_executor(allowCached = False) as fora:
+                with fora.remotely:
+                    b = 10
+
+            result = b.toLocal().result()
+
     def test_with_block_assignment_1(self):
         with self.create_executor() as fora:
             x = 5
@@ -116,6 +124,8 @@ class WithBlockExecutors_test(unittest.TestCase):
             t0 = time.time()
             while len(messages) < 4 and time.time() - t0 < 10:
                 time.sleep(1.0)
+
+        messages = sorted(messages)
 
         self.assertEqual(len(messages), 4)
         self.assertEqual(messages[0][:2], "1 ")
@@ -257,6 +267,15 @@ class WithBlockExecutors_test(unittest.TestCase):
             self.assertIsInstance(smallString, str)
             self.assertIsInstance(largeString, RemotePythonObject.ComputedRemotePythonObject)
 
+    def test_with_block_on_recursive_lists_fails(self):
+        l = [1,2,3]
+        l.append(l)
+
+        fora = self.create_executor()
+        with fora:
+            with self.assertRaises(Exceptions.PythonToForaConversionError):
+                with fora.remotely.remoteAll():
+                    x = l[0]
 
     def test_with_block_exception_in_with_block(self):
         fora = self.create_executor()

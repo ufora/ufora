@@ -41,7 +41,7 @@ public:
 			fclose(mFile);
 		}
 
-	void write(uword_t inByteCount, void *inData)
+	void write(uword_t inByteCount, const void* inData)
 		{
 		mPosition += inByteCount;
 		::fwrite(inData, 1, inByteCount, mFile);

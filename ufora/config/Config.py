@@ -139,20 +139,30 @@ class Config(object):
         self.maxMemoryMB = long(self.getConfigValue("FORA_MAX_MEM_MB",
                                                     (psutil.virtual_memory().total * 0.90) / (1024 ** 2),
                                                     checkEnviron=True))
+        
         self.cumulusTrackTcmalloc = parseBool(self.getConfigValue("CUMULUS_TRACK_TCMALLOC",
                                                                   default=True,
                                                                   checkEnviron=True))
         self.setCumulusMemoryBounds(self.cumulusTrackTcmalloc)
 
         # Cumulus options
-        self.cumulusMaxRamCacheMB = self.maxMemoryMB - \
-            long(linearInRange(8000, self.cumulusOverflowBufferMbLower,
-                               60000, self.cumulusOverflowBufferMbUpper,
-                               self.maxMemoryMB))
-        self.cumulusVectorRamCacheMB = self.cumulusMaxRamCacheMB - \
-            long(linearInRange(7000, self.vdmOverflowBufferMbLower,
-                               25000, self.vdmOverflowBufferMbUpper,
-                               self.cumulusMaxRamCacheMB))
+        self.cumulusMaxRamCacheMB = long(self.getConfigValue(
+                "CUMULUS_MAX_MB",
+                    self.maxMemoryMB - \
+                    long(linearInRange(8000, self.cumulusOverflowBufferMbLower,
+                                   60000, self.cumulusOverflowBufferMbUpper,
+                                   self.maxMemoryMB)),
+                checkEnviron=True
+                ))
+
+        self.cumulusVectorRamCacheMB = long(self.getConfigValue(
+                "CUMULUS_VECTOR_MB",
+                self.cumulusMaxRamCacheMB - \
+                    long(linearInRange(7000, self.vdmOverflowBufferMbLower,
+                                       25000, self.vdmOverflowBufferMbUpper,
+                                       self.cumulusMaxRamCacheMB)),
+                checkEnviron=True
+                ))
 
         self.computedValueGatewayRAMCacheMB = long(
             self.getConfigValue("COMPUTED_VALUE_GATEWAY_RAM_MB", 400)
@@ -169,7 +179,7 @@ class Config(object):
             self.getConfigValue("CUMULUS_CHECKPOINT_COMMIT_INTERVAL_SEC", 0)
             )
 
-        self.cumulusDiskCacheStorageSubdirectory = None
+        self.cumulusDiskCacheStorageSubdirectory = self.getConfigValue("CUMULUS_DISK_STORAGE_SUBDIR", None, checkEnviron=True)
 
         self.maxPageSizeInBytes = long(
             self.getConfigValue("CUMULUS_VECTOR_MAX_CHUNK_SIZE_BYES", 20 * 1024 * 1024)

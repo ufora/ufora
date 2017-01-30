@@ -1,0 +1,81 @@
+/***************************************************************************
+    Copyright 2016 Ufora Inc.
+
+    Licensed under the Apache License, Version 2.0 (the "License");
+    you may not use this file except in compliance with the License.
+    You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+    Unless required by applicable law or agreed to in writing, software
+    distributed under the License is distributed on an "AS IS" BASIS,
+    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    See the License for the specific language governing permissions and
+    limitations under the License.
+****************************************************************************/
+
+#include "GpuCallTasks.hppml"
+#include "CUDAExecutionContext.hppml"
+#include "../TypedFora/ABI/FindAllReachableVectorPages.hppml"
+#include "../Core/ExecutionContext.hppml"
+#include "../Core/ExecutionContextImpl.hppml"
+#include "NativeCFGToPTX.hppml"
+
+CUDAExecutionContext& getCudaContext()
+    {
+    static CUDAExecutionContext c;
+    return c;
+    }
+
+GpuCallTaskResult GpuCallTasks::execute(
+                    const ImplValContainer& toCall, 
+                    const ImplValContainer& vector, 
+                    PolymorphicSharedPtr<Fora::Interpreter::ExecutionContext> containingContext,
+                    Ufora::threading::Trigger& earlyTerminationTrigger
+                    )
+    {
+    try {
+        CUDAExecutionContext& context(getCudaContext());
+
+        TypedFora::Abi::FindAllReachableVectorPages reachable(
+            containingContext->getVDM().polymorphicSharedPtrFromThis(), 
+            containingContext->getMemoryPool()
+            );
+
+        reachable.visit(toCall);
+        reachable.visit(vector);
+
+        if (reachable.getMissedPages().size())
+            {
+            return GpuCallTaskResult::Blocked(
+                ImmutableTreeSet<Fora::PageId>(reachable.getReachablePages())
+                );
+            }
+
+        containingContext->getImpl()->lockAndSetFinishedResult([&]() {
+            return Fora::Interpreter::ComputationResult::Result(
+                context.executeKernel(
+                    toCall,
+                    vector
+                    )
+                );
+            });
+
+        return GpuCallTaskResult::ValidResult();
+        }
+    catch(std::logic_error& e)
+        {
+        LOG_ERROR << "GPU task failed: " << e.what();
+        return GpuCallTaskResult::Failed(e.what());
+        }
+    catch(UnableToConvertToPTX& msg)
+        {
+        LOG_ERROR << "GPU task failed: can't convert to PTX because " << msg.reason();
+        return GpuCallTaskResult::Failed(msg.reason());
+        }
+    catch(...)
+        {
+        LOG_ERROR << "GPU task failed";
+        return GpuCallTaskResult::Failed("Unknown error");
+        }
+    }

@@ -22,15 +22,17 @@ their result
 import pyfora.Future as Future
 import pyfora.Exceptions as Exceptions
 import pyfora.RemotePythonObject as RemotePythonObject
-import pyfora.PythonObjectRehydrator as PythonObjectRehydrator
-import pyfora.ObjectRegistry as ObjectRegistry
+from pyfora.PythonObjectRehydrator import PythonObjectRehydrator
+import pyfora.BinaryObjectRegistry as BinaryObjectRegistry
 import pyfora.PyObjectWalker as PyObjectWalker
+from pyfora.UnresolvedFreeVariableExceptions import UnresolvedFreeVariableExceptionWithTrace
 import pyfora.WithBlockExecutor as WithBlockExecutor
-import pyfora.PureImplementationMappings as PureImplementationMappings
+import pyfora.PyObjectWalkerDefaults as PyObjectWalkerDefaults
+
 import traceback
 import logging
 import threading
-
+import base64
 
 class Executor(object):
     """Submits computations to a pyfora cluster and marshals data to/from the local Python.
@@ -71,13 +73,11 @@ class Executor(object):
         self.connection = connection
         self.stayOpenOnExit = False
         self.pureImplementationMappings = \
-            pureImplementationMappings or PureImplementationMappings.PureImplementationMappings()
-        self.objectRegistry = ObjectRegistry.ObjectRegistry()
-        self.objectRehydrator = PythonObjectRehydrator.PythonObjectRehydrator(
+            pureImplementationMappings or PyObjectWalkerDefaults.mappings
+        self.binaryObjectRegistry = BinaryObjectRegistry.BinaryObjectRegistry()
+        self.objectRehydrator = PythonObjectRehydrator(
             self.pureImplementationMappings
             )
-        self.lock = threading.Lock()
-
 
     def getWorkerCount(self):
         """Returns the number of workers connected to the cluster.
@@ -201,10 +201,10 @@ class Executor(object):
         self._raiseIfClosed()
         try:
             objectId = PyObjectWalker.PyObjectWalker(
-                purePythonClassMapping=self.pureImplementationMappings,
-                objectRegistry=self.objectRegistry
+                self.pureImplementationMappings,
+                self.binaryObjectRegistry
                 ).walkPyObject(obj)
-        except PyObjectWalker.UnresolvedFreeVariableExceptionWithTrace as e:
+        except UnresolvedFreeVariableExceptionWithTrace as e:
             logging.error(
                 "Converting UnresolvedFreeVariableExceptionWithTrace to PythonToForaConversionError:\n%s",
                 traceback.format_exc())
@@ -216,7 +216,7 @@ class Executor(object):
                 result = RemotePythonObject.DefinedRemotePythonObject(objectId, self)
             self._resolve_future(future, result)
 
-        self.connection.convertObject(objectId, self.objectRegistry, onConverted)
+        self.connection.convertObject(objectId, self.binaryObjectRegistry, onConverted)
         return future
 
     def submit(self, fn, *args):
@@ -311,6 +311,8 @@ class Executor(object):
 
 
     def _downloadComputedValueResult(self, computation, maxBytecount):
+        self._raiseIfClosed()
+        
         future = self._create_future()
 
         def onResultCallback(jsonResult):
@@ -350,9 +352,15 @@ class Executor(object):
             if 'maxBytesExceeded' in jsonResult:
                 return Exceptions.ResultExceededBytecountThreshold()
             else:
-                return self.objectRehydrator.convertJsonResultToPythonObject(jsonResult['result'])
+                return self.objectRehydrator.convertEncodedStringToPythonObject(
+                    base64.b64decode(jsonResult['result']['data']), 
+                    jsonResult['result']['root_id']
+                    )
 
-        result = self.objectRehydrator.convertJsonResultToPythonObject(jsonResult['result'])
+        result = self.objectRehydrator.convertEncodedStringToPythonObject(
+            base64.b64decode(jsonResult['result']['data']), 
+            jsonResult['result']['root_id']
+            )
         return Exceptions.ComputationError(result, jsonResult['trace'])
 
     def _expandComputedValueToDictOfAssignedVarsToProxyValues(self, computedValue):
@@ -363,7 +371,10 @@ class Executor(object):
             if not isinstance(jsonResult, Exception):
                 if jsonResult['isException']:
                     result = Exceptions.ComputationError(
-                        self.objectRehydrator.convertJsonResultToPythonObject(jsonResult['result']),
+                        self.objectRehydrator.convertEncodedStringToPythonObject(
+                            base64.b64decode(jsonResult['result']['data']),
+                            jsonResult['result']['root_id']
+                            ),
                         jsonResult['trace']
                         )
                 else:
@@ -388,8 +399,9 @@ class Executor(object):
             if not isinstance(jsonResult, Exception):
                 if jsonResult['isException']:
                     result = Exceptions.ComputationError(
-                        self.objectRehydrator.convertJsonResultToPythonObject(
-                            jsonResult['result']
+                        self.objectRehydrator.convertEncodedStringToPythonObject(
+                            base64.b64decode(jsonResult['result']['data']),
+                            jsonResult['result']['root_id']
                             ),
                         jsonResult['trace']
                         )

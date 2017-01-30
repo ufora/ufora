@@ -275,13 +275,14 @@ void	Block::writeVariable(const NativeVariable& var)
 			term().getFollow().dumpToSlots().dumpToSlots() + var;
 	}
 
-NativeBlockID flatten(
+NativeBlockID flattenNativeCFG(
 				const NativeCFG& f,
 				const ImmutableTreeVector<NativeBlockID>& exitBlocks,
 				const ImmutableTreeVector<Nullable<uword_t> >& inSimpleExits,
 				map<NativeBlockID, Block>& outBlocks,
 				const ImmutableTreeMap<NativeVariable, Input>& varMap,
 				const ImmutableTreeVector<Metadata>& exteriorMetadata,
+				const ImmutableTreeMap<NativeBlockID, ImmutableTreeSet<NativeVariable> >& resumptionTargets,
 				bool renameAllBlocks,
 				NativeBlockID primaryBlock,
 				double relativeFrequency
@@ -311,7 +312,7 @@ NativeBlockID flatten(
 		NativeBlockID internalName = f.blocks().pairAtPosition(k).first;
 		NativeBlockID extName = blockMap[internalName];
 
-		flatten(
+		flattenBlock(
 			outBlocks[extName],
 			*f.blocks()[internalName],
 			exitBlocks,
@@ -319,7 +320,8 @@ NativeBlockID flatten(
 			blockMap,
 			outBlocks,
 			varMap,
-			exteriorMetadata
+			exteriorMetadata,
+			resumptionTargets
 			);
 		}
 
@@ -362,7 +364,7 @@ void	setupBlockArgs(Block& outBlock, const NativeBlock& block)
 		}
 	}
 
-void	flatten(
+void	flattenBlock(
 			Block& outBlock,
 			const NativeBlock& block,
 			const ImmutableTreeVector<NativeBlockID>& exitBlocks,
@@ -371,7 +373,8 @@ void	flatten(
 			const map<NativeBlockID, NativeBlockID>& blockNameMap,
 			map<NativeBlockID, Block>& outBlocks,
 			const ImmutableTreeMap<NativeVariable, Input>& varMap,
-			const ImmutableTreeVector<Metadata>& exteriorMetadata
+			const ImmutableTreeVector<Metadata>& exteriorMetadata,
+			const ImmutableTreeMap<NativeBlockID, ImmutableTreeSet<NativeVariable> >& resumptionTargets
 			)
 	{
 	ImmutableTreeMap<NativeVariable, Input> newVarMap = varMap;
@@ -391,7 +394,7 @@ void	flatten(
 		prettyPrintString(block.expression()) << " shouldn't produce a value"
 		);
 	Nullable<Input> i =
-		flatten(
+		flattenNativeExpression(
 			blockPtr,
 			block.expression(),
 			exitBlocks,
@@ -399,7 +402,8 @@ void	flatten(
 			blockNameMap,
 			outBlocks,
 			newVarMap,
-			exteriorMetadata
+			exteriorMetadata,
+			resumptionTargets
 			);
 
 	lassert_dump(
@@ -450,7 +454,7 @@ Block duplicateBlock(
 	}
 }
 
-Nullable<Input> flatten(
+Nullable<Input> flattenNativeExpression(
 		Block* & outBlock,
 		const NativeExpression& expr,
 		const ImmutableTreeVector<NativeBlockID>& exitBlocks,
@@ -458,7 +462,8 @@ Nullable<Input> flatten(
 		const map<NativeBlockID, NativeBlockID>& blockNameMap,
 		map<NativeBlockID, Block>& outBlocks,
 		const ImmutableTreeMap<NativeVariable, Input>& varMap,
-		const ImmutableTreeVector<Metadata>& exteriorMetadata
+		const ImmutableTreeVector<Metadata>& exteriorMetadata,
+		const ImmutableTreeMap<NativeBlockID, ImmutableTreeSet<NativeVariable> >& resumptionTargets
 		)
 	{
 	@match NativeExpression(expr)
@@ -500,7 +505,7 @@ Nullable<Input> flatten(
 						{
 						Block* ifCheckBlock = &outBlocks[ifCheck];
 						outBlocks[ifCheck].relativeFrequency() = outBlock->relativeFrequency();
-						flatten(
+						flattenNativeExpression(
 							ifCheckBlock,
 							t,
 							exitBlocks,
@@ -508,7 +513,8 @@ Nullable<Input> flatten(
 							blockNameMap,
 							outBlocks,
 							varMap,
-							exteriorMetadata
+							exteriorMetadata,
+							resumptionTargets
 							);
 
 						//cause 'ifCheck' to rejoin with 'ifSkip'
@@ -524,7 +530,7 @@ Nullable<Input> flatten(
 				else
 					{
 					return
-						flatten(
+						flattenNativeExpression(
 							outBlock,
 							t,
 							exitBlocks,
@@ -532,7 +538,8 @@ Nullable<Input> flatten(
 							blockNameMap,
 							outBlocks,
 							varMap,
-							exteriorMetadata
+							exteriorMetadata,
+							resumptionTargets
 							);
 					}
 				}
@@ -541,7 +548,7 @@ Nullable<Input> flatten(
 				for (long k = 0; k < elts.size(); k++)
 					{
 					Nullable<Input> res =
-										flatten(
+										flattenNativeExpression(
 											outBlock,
 											elts[k],
 											exitBlocks,
@@ -549,7 +556,8 @@ Nullable<Input> flatten(
 											blockNameMap,
 											outBlocks,
 											varMap,
-											exteriorMetadata
+											exteriorMetadata,
+											resumptionTargets
 											);
 
 					if (!res)
@@ -562,7 +570,7 @@ Nullable<Input> flatten(
 				}
 		-|	DiscardFirst(f,s) ->> {
 				Nullable<Input> i =
-									flatten(
+									flattenNativeExpression(
 										outBlock,
 										f,
 										exitBlocks,
@@ -570,12 +578,13 @@ Nullable<Input> flatten(
 										blockNameMap,
 										outBlocks,
 										varMap,
-										exteriorMetadata
+										exteriorMetadata,
+										resumptionTargets
 										);
 				if (!i)
 					return i;
 
-				return flatten(
+				return flattenNativeExpression(
 							outBlock,
 							s,
 							exitBlocks,
@@ -583,11 +592,12 @@ Nullable<Input> flatten(
 							blockNameMap,
 							outBlocks,
 							varMap,
-							exteriorMetadata
+							exteriorMetadata,
+							resumptionTargets
 							);
 				}
 		-|	Load(var, isVol) ->> {
-				Nullable<Input> i = flatten(
+				Nullable<Input> i = flattenNativeExpression(
 										outBlock,
 										var,
 										exitBlocks,
@@ -595,7 +605,8 @@ Nullable<Input> flatten(
 										blockNameMap,
 										outBlocks,
 										varMap,
-										exteriorMetadata
+										exteriorMetadata,
+										resumptionTargets
 										);
 				if (!i)
 					return i;
@@ -605,7 +616,7 @@ Nullable<Input> flatten(
 				return null() << outBlock->add(Expression::Alloc(t,count, forceInitialize), *expr.type());
 				}
 		-|	Store(a,v) ->> {
-				Nullable<Input> aVal = flatten(
+				Nullable<Input> aVal = flattenNativeExpression(
 											outBlock,
 											a,
 											exitBlocks,
@@ -613,13 +624,14 @@ Nullable<Input> flatten(
 											blockNameMap,
 											outBlocks,
 											varMap,
-											exteriorMetadata
+											exteriorMetadata,
+											resumptionTargets
 											);
 
 				if (!aVal)
 					return aVal;
 
-				Nullable<Input> vVal = flatten(
+				Nullable<Input> vVal = flattenNativeExpression(
 											outBlock,
 											v,
 											exitBlocks,
@@ -627,7 +639,8 @@ Nullable<Input> flatten(
 											blockNameMap,
 											outBlocks,
 											varMap,
-											exteriorMetadata
+											exteriorMetadata,
+											resumptionTargets
 											);
 				if (!vVal)
 					return vVal;
@@ -635,7 +648,7 @@ Nullable<Input> flatten(
 				return null() << outBlock->add(Expression::Store(*aVal, *vVal), *expr.type());
 				}
 		-|	Selector(s,t,f) ->> {
-				Nullable<Input> sVal = flatten(
+				Nullable<Input> sVal = flattenNativeExpression(
 											outBlock,
 											s,
 											exitBlocks,
@@ -643,12 +656,13 @@ Nullable<Input> flatten(
 											blockNameMap,
 											outBlocks,
 											varMap,
-											exteriorMetadata
+											exteriorMetadata,
+											resumptionTargets
 											);
 				if (!sVal)
 					return sVal;
 
-				Nullable<Input> tVal = flatten(
+				Nullable<Input> tVal = flattenNativeExpression(
 											outBlock,
 											t,
 											exitBlocks,
@@ -656,13 +670,14 @@ Nullable<Input> flatten(
 											blockNameMap,
 											outBlocks,
 											varMap,
-											exteriorMetadata
+											exteriorMetadata,
+											resumptionTargets
 											);
 
 				if (!tVal)
 					return tVal;
 
-				Nullable<Input> fVal = flatten(
+				Nullable<Input> fVal = flattenNativeExpression(
 											outBlock,
 											f,
 											exitBlocks,
@@ -670,7 +685,8 @@ Nullable<Input> flatten(
 											blockNameMap,
 											outBlocks,
 											varMap,
-											exteriorMetadata
+											exteriorMetadata,
+											resumptionTargets
 											);
 
 				if (!fVal)
@@ -682,7 +698,7 @@ Nullable<Input> flatten(
 									);
 				}
 		-|	BinaryOp(o,l,r) ->> {
-				Nullable<Input> lVal = flatten(
+				Nullable<Input> lVal = flattenNativeExpression(
 											outBlock,
 											l,
 											exitBlocks,
@@ -690,12 +706,13 @@ Nullable<Input> flatten(
 											blockNameMap,
 											outBlocks,
 											varMap,
-											exteriorMetadata
+											exteriorMetadata,
+											resumptionTargets
 											);
 				if (!lVal)
 					return lVal;
 
-				Nullable<Input> rVal = flatten(
+				Nullable<Input> rVal = flattenNativeExpression(
 											outBlock,
 											r,
 											exitBlocks,
@@ -703,14 +720,15 @@ Nullable<Input> flatten(
 											blockNameMap,
 											outBlocks,
 											varMap,
-											exteriorMetadata
+											exteriorMetadata,
+											resumptionTargets
 											);
 				if (!rVal)
 					return rVal;
 				return null() << outBlock->add(Expression::BinaryOp(o, *lVal, *rVal), *expr.type());
 				}
 		-|	UnaryOp(o,r) ->> {
-				Nullable<Input> rVal = flatten(
+				Nullable<Input> rVal = flattenNativeExpression(
 											outBlock,
 											r,
 											exitBlocks,
@@ -718,14 +736,15 @@ Nullable<Input> flatten(
 											blockNameMap,
 											outBlocks,
 											varMap,
-											exteriorMetadata
+											exteriorMetadata,
+											resumptionTargets
 											);
 				if (!rVal)
 					return rVal;
 				return null() << outBlock->add(Expression::UnaryOp(o, *rVal), *expr.type());
 				}
 		-|	Cast(d, s, force) ->> {
-				Nullable<Input> sVal = flatten(
+				Nullable<Input> sVal = flattenNativeExpression(
 											outBlock,
 											s,
 											exitBlocks,
@@ -733,7 +752,8 @@ Nullable<Input> flatten(
 											blockNameMap,
 											outBlocks,
 											varMap,
-											exteriorMetadata
+											exteriorMetadata,
+											resumptionTargets
 											);
 				if (!sVal)
 					return sVal;
@@ -743,7 +763,7 @@ Nullable<Input> flatten(
 				ImmutableTreeVector<Input> i;
 				for (long k = 0; k < elts.size(); k++)
 					{
-					Nullable<Input> res = flatten(
+					Nullable<Input> res = flattenNativeExpression(
 											outBlock,
 											elts[k],
 											exitBlocks,
@@ -751,7 +771,8 @@ Nullable<Input> flatten(
 											blockNameMap,
 											outBlocks,
 											varMap,
-											exteriorMetadata
+											exteriorMetadata,
+											resumptionTargets
 											);
 
 					if (!res)
@@ -759,7 +780,7 @@ Nullable<Input> flatten(
 
 					i = i + *res;
 					}
-				Nullable<Input> sVal = flatten(
+				Nullable<Input> sVal = flattenNativeExpression(
 											outBlock,
 											s,
 											exitBlocks,
@@ -767,14 +788,15 @@ Nullable<Input> flatten(
 											blockNameMap,
 											outBlocks,
 											varMap,
-											exteriorMetadata
+											exteriorMetadata,
+											resumptionTargets
 											);
 				if (!sVal)
 					return sVal;
 				return null() << outBlock->add(Expression::ElementAddress(i, *sVal), *expr.type());
 				}
 		-|	ValueExtract(elts, s) ->> {
-				Nullable<Input> sVal = flatten(
+				Nullable<Input> sVal = flattenNativeExpression(
 											outBlock,
 											s,
 											exitBlocks,
@@ -782,11 +804,15 @@ Nullable<Input> flatten(
 											blockNameMap,
 											outBlocks,
 											varMap,
-											exteriorMetadata
+											exteriorMetadata,
+											resumptionTargets
 											);
 				if (!sVal)
 					return sVal;
 				return null() << outBlock->add(Expression::ValueExtract(elts, *sVal), *expr.type());
+				}
+		-| SideEffectfulNoOp() ->> {
+				return null() << Input::Constant(NativeConstant());
 				}
 		-|	CallLibraryFunction(name, ret, elts, passArgumentsAsPointers, resultPassedByPtr) ->> {
 				bool anyNull = false;
@@ -810,7 +836,7 @@ Nullable<Input> flatten(
 							) >> var.expr().load()
 						);
 
-					return flatten(
+					return flattenNativeExpression(
 						outBlock,
 						subexpr,
 						exitBlocks,
@@ -818,7 +844,8 @@ Nullable<Input> flatten(
 						blockNameMap,
 						outBlocks,
 						varMap,
-						exteriorMetadata
+						exteriorMetadata,
+						resumptionTargets
 						);
 					}
 				for (long k = ((long)passArgumentsAsPointers.size()) - 1; k >= 0 && !anyNull; k--)
@@ -845,7 +872,7 @@ Nullable<Input> flatten(
 								subexpr
 							);
 
-						return flatten(
+						return flattenNativeExpression(
 							outBlock,
 							subexpr,
 							exitBlocks,
@@ -853,14 +880,15 @@ Nullable<Input> flatten(
 							blockNameMap,
 							outBlocks,
 							varMap,
-							exteriorMetadata
+							exteriorMetadata,
+							resumptionTargets
 							);
 						}
 
 				ImmutableTreeVector<Input> i;
 				for (long k = 0; k < elts.size(); k++)
 					{
-					Nullable<Input> res = flatten(
+					Nullable<Input> res = flattenNativeExpression(
 												outBlock,
 												elts[k],
 												exitBlocks,
@@ -868,7 +896,8 @@ Nullable<Input> flatten(
 												blockNameMap,
 												outBlocks,
 												varMap,
-												exteriorMetadata
+												exteriorMetadata,
+												resumptionTargets
 												);
 
 					if (!res)
@@ -893,7 +922,7 @@ Nullable<Input> flatten(
 				}
 		-|	Let(var, Variable(v), within) ->> {
 				//just a renaming.
-				return flatten(
+				return flattenNativeExpression(
 							outBlock,
 							within,
 							exitBlocks,
@@ -901,11 +930,12 @@ Nullable<Input> flatten(
 							blockNameMap,
 							outBlocks,
 							varMap + var + *varMap[v],
-							exteriorMetadata
+							exteriorMetadata,
+							resumptionTargets
 							);
 				}
 		-|	Let(var, e, within) ->> {
-				Nullable<Input> i = flatten(
+				Nullable<Input> i = flattenNativeExpression(
 										outBlock,
 										e,
 										exitBlocks,
@@ -913,12 +943,13 @@ Nullable<Input> flatten(
 										blockNameMap,
 										outBlocks,
 										varMap,
-										exteriorMetadata
+										exteriorMetadata,
+										resumptionTargets
 										);
 				if (!i)
 					return i;
 
-				Nullable<Input> res = flatten(
+				Nullable<Input> res = flattenNativeExpression(
 											outBlock,
 											within,
 											exitBlocks,
@@ -926,7 +957,8 @@ Nullable<Input> flatten(
 											blockNameMap,
 											outBlocks,
 											varMap + var + *i,
-											exteriorMetadata
+											exteriorMetadata,
+											resumptionTargets
 											);
 
 				return res;
@@ -937,7 +969,7 @@ Nullable<Input> flatten(
 					{
 					bool which = cond.getConstant().c().booleanValue();
 
-					return flatten(
+					return flattenNativeExpression(
 								outBlock,
 								which ? t : f,
 								exitBlocks,
@@ -945,11 +977,12 @@ Nullable<Input> flatten(
 								blockNameMap,
 								outBlocks,
 								varMap,
-								exteriorMetadata
+								exteriorMetadata,
+								resumptionTargets
 								);
 					}
 
-				Nullable<Input> i = flatten(
+				Nullable<Input> i = flattenNativeExpression(
 										outBlock,
 										cond,
 										exitBlocks,
@@ -957,7 +990,8 @@ Nullable<Input> flatten(
 										blockNameMap,
 										outBlocks,
 										varMap,
-										exteriorMetadata
+										exteriorMetadata,
+										resumptionTargets
 										);
 				if (!i)
 					return i;
@@ -975,7 +1009,7 @@ Nullable<Input> flatten(
 					outBlock->relativeFrequency() * (1.0 - fracTrue);
 
 				Nullable<Input> tVal =
-									flatten(
+									flattenNativeExpression(
 										blockPtrs.first,
 										t,
 										exitBlocks,
@@ -983,10 +1017,11 @@ Nullable<Input> flatten(
 										blockNameMap,
 										outBlocks,
 										varMap,
-										exteriorMetadata
+										exteriorMetadata,
+										resumptionTargets
 										);
 				Nullable<Input> fVal =
-									flatten(
+									flattenNativeExpression(
 										blockPtrs.second,
 										f,
 										exitBlocks,
@@ -994,7 +1029,8 @@ Nullable<Input> flatten(
 										blockNameMap,
 										outBlocks,
 										varMap,
-										exteriorMetadata
+										exteriorMetadata,
+										resumptionTargets
 										);
 
 				if (!tVal && !fVal)
@@ -1024,7 +1060,135 @@ Nullable<Input> flatten(
 				outBlock = finalOut;
 				return null() << res;
 				}
+		-|	JumpToResumption(resumptionName, variableDefinitions) ->> {
+				lassert_dump(resumptionTargets.contains(resumptionName), prettyPrintString(resumptionName));
 
+				ImmutableTreeVector<Input> jumpTargetArgs;
+
+				for (auto targetVar: *resumptionTargets[resumptionName])
+					{
+					if (variableDefinitions.contains(targetVar))
+						{
+						Nullable<Input> res =
+							flattenNativeExpression(
+								outBlock,
+								*variableDefinitions[targetVar],
+								exitBlocks,
+								inSimpleExits,
+								blockNameMap,
+								outBlocks,
+								varMap,
+								exteriorMetadata,
+								resumptionTargets
+								);
+
+						if (!res)
+							return null();
+
+						jumpTargetArgs = jumpTargetArgs + *res;
+						}
+					else
+						{
+						lassert(varMap[targetVar]);
+
+						jumpTargetArgs = jumpTargetArgs + *varMap[targetVar];
+						}
+					}
+
+				outBlock->jump(resumptionName, jumpTargetArgs);
+
+				return null();
+				}
+		-|	Resumption(resumptionName, ifNormal, ifResumption) ->> {
+				if (!resumptionTargets.contains(resumptionName))
+					return flattenNativeExpression(
+							outBlock,
+							ifNormal,
+							exitBlocks,
+							inSimpleExits,
+							blockNameMap,
+							outBlocks,
+							varMap,
+							exteriorMetadata,
+							resumptionTargets
+							);
+
+				lassert_dump(resumptionTargets.contains(resumptionName), prettyPrintString(resumptionName));
+				
+				pair<NativeBlockID, NativeBlockID> blocks(
+										NativeBlockID::internal(),
+										resumptionName
+										);
+
+				outBlock->jump(blocks.first, emptyTreeVec());
+
+				pair<Block*, Block*> blockPtrs(&outBlocks[blocks.first], &outBlocks[blocks.second]);
+
+				outBlocks[blocks.second].args() = 
+					mapITV(ImmutableTreeVector<NativeVariable>(*resumptionTargets[resumptionName]),
+						[&](NativeVariable var) -> NativeVariable { 
+							lassert_dump(varMap[var], "no definition for " << prettyPrintString(var));
+
+							@match Input(*varMap[var])
+								-| Variable(v) ->> { return v; }
+								-| _ ->> { lassert_dump(false, "shouldn't be able to have a non-var input here."); }
+							}
+						);
+
+				Nullable<Input> normalVal =
+									flattenNativeExpression(
+										blockPtrs.first,
+										ifNormal,
+										exitBlocks,
+										inSimpleExits,
+										blockNameMap,
+										outBlocks,
+										varMap,
+										exteriorMetadata,
+										resumptionTargets
+										);
+
+				Nullable<Input> resumptionVal =
+									flattenNativeExpression(
+										blockPtrs.second,
+										ifResumption,
+										exitBlocks,
+										inSimpleExits,
+										blockNameMap,
+										outBlocks,
+										varMap,
+										exteriorMetadata,
+										resumptionTargets
+										);
+
+				if (!normalVal && !resumptionVal)
+					return null();
+
+				if (normalVal && !resumptionVal)
+					{
+					outBlock = blockPtrs.first;
+					return normalVal;
+					}
+
+				if (!normalVal && resumptionVal)
+					{
+					outBlock = blockPtrs.second;
+					return resumptionVal;
+					}
+
+				NativeBlockID termBlockID = NativeBlockID::internal();
+
+				Block* finalOut = &outBlocks[termBlockID];
+				
+				blockPtrs.first->jump(termBlockID, emptyTreeVec() + *normalVal);
+
+				blockPtrs.second->jump(termBlockID, emptyTreeVec() + *resumptionVal);
+
+				Input res = finalOut->addArg(*expr.type());
+				outBlock = finalOut;
+
+				return null() << res;
+				}
 		-|	Continuations(conts, meta) ->> {
 				//first, create the relevant blocks
 				ImmutableTreeVector<Cont> o;
@@ -1048,14 +1212,15 @@ Nullable<Input> flatten(
 					Input contArg = b->addArg(conts[k].var().type());
 
 					Nullable<Input> shouldBeEmpty =
-						flatten(b,
+						flattenNativeExpression(b,
 							conts[k].expression(),
 							exitBlocks,
 							inSimpleExits,
 							blockNameMap,
 							outBlocks,
 							varMap + conts[k].var() + contArg,
-							exteriorMetadata
+							exteriorMetadata,
+							resumptionTargets
 							);
 
 					lassert_dump(!shouldBeEmpty, prettyPrintString(shouldBeEmpty));
@@ -1073,12 +1238,11 @@ Nullable<Input> flatten(
 									);
 				}
 		-|	Jump(loc, elts) ->> {
-
 				ImmutableTreeVector<Input> i;
 				for (long k = 0; k < elts.size(); k++)
 					{
 					Nullable<Input> res =
-										flatten(
+										flattenNativeExpression(
 											outBlock,
 											elts[k],
 											exitBlocks,
@@ -1086,7 +1250,8 @@ Nullable<Input> flatten(
 											blockNameMap,
 											outBlocks,
 											varMap,
-											exteriorMetadata
+											exteriorMetadata,
+											resumptionTargets
 											);
 
 					if (!res)
@@ -1105,7 +1270,7 @@ Nullable<Input> flatten(
 				}
 		-|	FollowContinuation(var, cont, index) ->> {
 				Nullable<Input> vVal =
-									flatten(
+									flattenNativeExpression(
 										outBlock,
 										var,
 										exitBlocks,
@@ -1113,14 +1278,15 @@ Nullable<Input> flatten(
 										blockNameMap,
 										outBlocks,
 										varMap,
-										exteriorMetadata
+										exteriorMetadata,
+										resumptionTargets
 										);
 
 				if (!vVal)
 					return vVal;
 
 				Nullable<Input> contVal =
-										flatten(
+										flattenNativeExpression(
 											outBlock,
 											cont,
 											exitBlocks,
@@ -1128,7 +1294,8 @@ Nullable<Input> flatten(
 											blockNameMap,
 											outBlocks,
 											varMap,
-											exteriorMetadata
+											exteriorMetadata,
+											resumptionTargets
 											);
 				if (!contVal)
 					return contVal;
@@ -1139,7 +1306,7 @@ Nullable<Input> flatten(
 		-|	Return(exit, val) ->> {
 
 				Nullable<Input> vVal =
-									flatten(
+									flattenNativeExpression(
 										outBlock,
 										val,
 										exitBlocks,
@@ -1147,7 +1314,8 @@ Nullable<Input> flatten(
 										blockNameMap,
 										outBlocks,
 										varMap,
-										exteriorMetadata
+										exteriorMetadata,
+										resumptionTargets
 										);
 
 				if (!vVal)
@@ -1170,7 +1338,7 @@ Nullable<Input> flatten(
 				for (long k = 0; k < args.size(); k++)
 					{
 					Nullable<Input> res =
-						flatten(
+						flattenNativeExpression(
 							outBlock,
 							args[k],
 							exitBlocks,
@@ -1178,7 +1346,8 @@ Nullable<Input> flatten(
 							blockNameMap,
 							outBlocks,
 							varMap,
-							exteriorMetadata
+							exteriorMetadata,
+							resumptionTargets
 							);
 
 					if (!res)
@@ -1228,7 +1397,7 @@ Nullable<Input> flatten(
 					Input contArg = b->addArg(conts[k].var().type());
 
 					Nullable<Input> result =
-						flatten(
+						flattenNativeExpression(
 							b,
 							conts[k].expression(),
 							exitBlocks,
@@ -1236,7 +1405,8 @@ Nullable<Input> flatten(
 							blockNameMap,
 							outBlocks,
 							varMap + conts[k].var() + contArg,
-							exteriorMetadata
+							exteriorMetadata,
+							resumptionTargets
 							);
 
 					o = o + Cont(conts[k].var().type(), newEntryBlock);
@@ -1268,13 +1438,14 @@ Nullable<Input> flatten(
 						for (long k = 0; k < o.size(); k++)
 							ids = ids + o[k].block();
 
-						NativeBlockID toJumpTo = flatten(
+						NativeBlockID toJumpTo = flattenNativeCFG(
 													f,
 													ids,
 													newContsAreSimple,
 													outBlocks,
 													varMap,
 													exteriorMetadata + mapMetadata(meta, varMap),
+													resumptionTargets,
 													true,
 													block,
 													outBlock->relativeFrequency()
@@ -1298,7 +1469,7 @@ Nullable<Input> flatten(
 					-|	Pointer(p, isInternal) ->> {
 
 						Nullable<Input> pRes =
-											flatten(
+											flattenNativeExpression(
 												outBlock,
 												p,
 												exitBlocks,
@@ -1306,7 +1477,8 @@ Nullable<Input> flatten(
 												blockNameMap,
 												outBlocks,
 												varMap,
-												exteriorMetadata
+												exteriorMetadata,
+												resumptionTargets
 												);
 
 						if (!pRes)

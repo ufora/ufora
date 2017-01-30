@@ -388,7 +388,7 @@ class ComputedValueTestCases(object):
             hasMemory = 0
 
             for c in simpleComps:
-                if c.checkpointStatus.statistics.timeSpentInCompiler > 1.0:
+                if c.checkpointStatus.statistics.timeElapsed.timeSpentInCompiledCode > 1.0:
                     spentALongTime += 1
                 if c.checkpointStatus.statistics.totalBytesInMemory > 0:
                     hasMemory += 1

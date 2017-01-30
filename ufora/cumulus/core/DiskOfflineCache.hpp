@@ -13,8 +13,7 @@
    See the License for the specific language governing permissions and
    limitations under the License.
 ****************************************************************************/
-#ifndef BSA_cumulus_DiskOfflineCache_hpp_
-#define BSA_cumulus_DiskOfflineCache_hpp_
+#pragma once
 
 #include "../../core/math/Hash.hpp"
 #include "../../core/IntegerTypes.hpp"
@@ -126,8 +125,4 @@ private:
 };
 
 }
-
-
-#endif
-
 

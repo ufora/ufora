@@ -1,0 +1,1264 @@
+#include "ExecutionContextThreadStateTree.hppml"
+#include "ExecutionContextConfiguration.hppml"
+#include "ExecutionContextImpl.hppml"
+#include "ValueDeepcopier.hppml"
+#include "../TypedFora/ABI/StackFrameVisitor.hppml"
+#include "../ControlFlowGraph/ControlFlowGraphUtil.hppml"
+#include "../TypedFora/ABI/BigVectorLayouts.hppml"
+#include "../ControlFlowGraph/ControlFlowGraphToCodeLocation.hppml"
+
+namespace {
+
+ImplValContainer implValIdentityFunction(ImplValContainer in) 
+	{
+	return in; 
+	}
+
+const static int kBranchesPerSplitHighPage = 30;
+const static int kMaxSlotsPerSimulation = 50;
+const static int kMovingAverageWindowForChildEstimates = 6;
+const static double kMovingAveragePerCachecall = 0.01;
+const static double kMovingAverageSplitThreshold = 0.001;
+
+std::string nullOrEmpty(Nullable<std::string> s)
+	{
+	if (!s)
+		return "";
+	return *s;
+	}
+
+		
+}
+
+namespace Fora {
+namespace Interpreter {
+
+typedef ExecutionContextThreadStateTree::child_map_type child_map_type;
+
+ExecutionContextThreadStateTree::ExecutionContextThreadStateTree(ExecutionContextImpl* inContext) : 
+		mExecutionContextImpl(inContext),
+		mPoorSplitsInARow(0),
+		mChildMergeStyle(ChildMergeStyle::NoChildren()),
+		mTimeElapsedInChildrenOfCurrentSimulation(0),
+		mTimeElapsedInChildrenOfCurrentSimulationCount(0)
+	{
+	}
+
+ExecutionContextThreadStateTree::ExecutionContextThreadStateTree(
+					ExecutionContextImpl* inContext, 
+					hash_type computationHash
+					) :
+		mExecutionContextImpl(inContext),
+		mPoorSplitsInARow(0),
+		mChildMergeStyle(ChildMergeStyle::NoChildren()),
+		mTimeElapsedInChildrenOfCurrentSimulation(0),
+		mTimeElapsedInChildrenOfCurrentSimulationCount(0)
+	{
+	mSplitHoleHash = computationHash;
+	}
+
+std::string ExecutionContextThreadStateTree::treeStateToString() const
+	{
+	std::ostringstream s;
+	extractPausedComputationTree(implValIdentityFunction).treeStateToString(s, 0);
+	return s.str();
+	}
+		
+bool ExecutionContextThreadStateTree::isSplitHole() const
+	{
+	return (bool)mSplitHoleHash;
+	}
+
+hash_type ExecutionContextThreadStateTree::splitHoleComputationHash() const
+	{
+	return *mSplitHoleHash;
+	}
+
+void ExecutionContextThreadStateTree::placeInEvaluationState(
+					const ImplValContainer& inArgs, 
+					boost::function1<ImplValContainer, ImplValContainer> valueImportFunction
+					)
+	{
+	reset_();
+	mThread->placeInEvaluationState(inArgs, valueImportFunction);
+	updateTreeStats_();
+	}
+
+void ExecutionContextThreadStateTree::evaluateFunctionPointer(
+					const TypedFora::TypedJumpTarget& toCall, 
+					const ImplValContainer& inArgs
+					)
+	{
+	reset_();
+	mThread->evaluateFunctionPointer(toCall, inArgs);
+	}
+
+void ExecutionContextThreadStateTree::compute()
+	{
+	compute_();
+	}
+
+void ExecutionContextThreadStateTree::compute_()
+	{	
+	while (!mExecutionContextImpl->isInterruptTriggerSet())
+		{
+		computeSingleStep_();
+		
+		if (!mExecutionContextImpl->isInterruptTriggerSet() 
+				&& mExecutionContextImpl->getConfiguration()->allowInternalSplitting()
+				&& wantsToSplitHigh_()
+				)
+			{
+			if (!tryToSplitHigh_())
+				{
+				if (mTreeStats.countOfActiveThreads() == 0)
+					return;
+				}
+			}
+			else
+		if (mTreeStats.countOfActiveThreads() == 0)
+			return;
+		}
+	}
+
+bool ExecutionContextThreadStateTree::wantsToSplitHigh_()
+	{
+	if (mTreeStats.totalBranchCount() > 100)
+		return false;
+	
+	if (mTreeStats.countOfBlockingThreads() > 4)
+		return false;
+
+	if (mTreeStats.countOfActiveThreads() <= 2)
+		return true;
+
+	return false;
+	}
+
+void ExecutionContextThreadStateTree::splitThreadAtFrameIndex_(const PausedComputation& comp, long ix)
+	{
+	//split the computation in half, so we don't have to keep walking the stackframes
+	PolymorphicSharedPtr<ExecutionContextThreadStateTree> subtree;
+
+	subtree.reset(new ExecutionContextThreadStateTree(mExecutionContextImpl));
+
+	subtree->placeInEvaluationState(
+		PausedComputationTree::Thread(
+			PausedComputationTreeThreadChildren::NoChildren(),
+			PausedComputation(
+				comp.frames().slice(ix),
+				comp.tail()
+				),
+			TimeElapsed(),
+			PausedComputationTreeStats()
+			),
+		implValIdentityFunction
+		);
+	
+	subtree->mTreeStats = mTreeStats;
+	subtree->mChildren = mChildren;
+	subtree->mChildMergeStyle = mChildMergeStyle;
+
+	mThread->placeInEvaluationState(
+		PausedComputation(
+			comp.frames().slice(0, ix)
+			),
+		implValIdentityFunction
+		);
+
+	mChildren.clear();
+	mChildren[0] = subtree;
+	mChildMergeStyle = ChildMergeStyle::SingleChildPassedBackToParent();
+
+	updateTreeStats_();
+	}
+
+bool ExecutionContextThreadStateTree::tryToSplitSelf_(bool fromTop, PausedComputation comp)
+	{
+	if (comp.frames().size() < 1)
+		return false;
+
+	long index = 0;
+	long indexEnd = comp.frames().size() - 1;
+	long indexStep = 1;
+
+	if (!fromTop)
+		{
+		index = indexEnd;
+		indexEnd = -1;
+		indexStep = -1;
+		}
+
+	while (index != indexEnd)
+		{
+		lassert(index >= 0 && index < comp.frames().size());
+
+		if (comp.frames()[index].areAllValuesConst() && 
+				comp.frames()[index].isApplyFrame())
+			{
+			if (!ControlFlowGraphUtil::isCanonicalApplyNode(
+										comp.frames()[index].graph(),
+										comp.frames()[index].label()
+										)
+									)
+				{
+				PolymorphicSharedPtr<CFGWithFutures> futures = 
+					CFGWithFutures::createCfgWithFutures(
+						comp.frames()[index].graph(),
+						comp.frames()[index].label(),
+						comp.frames()[index].values()
+						);
+
+				if (futures)
+					{
+					futures->enableIfSplit();
+					futures->setMaxRepeatNodesAllowed(1000);
+					
+					lassert_dump(futures->indicesOfSubmittableFutures().size() == 1 && 
+						*futures->indicesOfSubmittableFutures().begin() == 0,
+						prettyPrintString(futures->indicesOfSubmittableFutures()) << " != {0}"
+						);
+
+					PolymorphicSharedPtr<ExecutionContextThreadStateTree> subtree;
+
+					subtree.reset(new ExecutionContextThreadStateTree(mExecutionContextImpl));
+
+					if (index + 1 == comp.frames().size())
+						subtree->placeInEvaluationState(
+							PausedComputationTree::Thread(
+								PausedComputationTreeThreadChildren::NoChildren(),
+								futures->asSubmittable(0)->toPausedComputation(),
+								TimeElapsed(),
+								PausedComputationTreeStats()
+								),
+							implValIdentityFunction
+							);
+					else
+						subtree->placeInEvaluationState(
+							PausedComputationTree::Thread(
+								PausedComputationTreeThreadChildren::NoChildren(),
+								PausedComputation(
+									comp.frames().slice(index+1),
+									comp.tail()
+									),
+								TimeElapsed(),
+								PausedComputationTreeStats()
+								),
+							implValIdentityFunction
+							);
+
+					subtree->mChildren = mChildren;
+					subtree->mChildMergeStyle = mChildMergeStyle;
+					subtree->mTreeStats = mTreeStats;
+
+					mChildren.clear();
+
+					if (index == 0)
+						{
+						mSimulation = futures;
+						mSimulationParallelismMeasurement = ParallelismMeasurement();
+						mTimeElapsedInChildrenOfCurrentSimulation = 0.0;
+						mTimeElapsedInChildrenOfCurrentSimulationCount = 0;
+						mThread.reset();
+						mChildren[0] = subtree;
+
+						computeSimulation_(true);
+						}
+					else
+						{
+						PolymorphicSharedPtr<ExecutionContextThreadStateTree> simulationFrame;
+
+						simulationFrame.reset(new ExecutionContextThreadStateTree(mExecutionContextImpl));
+
+						simulationFrame->mSimulation = futures;
+						simulationFrame->mTimeElapsedInChildrenOfCurrentSimulation = 0.0;
+						simulationFrame->mTimeElapsedInChildrenOfCurrentSimulationCount = 0;
+						simulationFrame->mSimulationParallelismMeasurement = ParallelismMeasurement();
+						simulationFrame->mPoorSplitsInARow = 0;
+						simulationFrame->mChildren[0] = subtree;
+						
+						mThread->placeInEvaluationState(
+							PausedComputation(
+								comp.frames().slice(0, index)
+								),
+							implValIdentityFunction
+							);
+						mChildren[0] = simulationFrame;
+						mChildMergeStyle = ChildMergeStyle::SingleChildPassedBackToParent();
+
+						simulationFrame->computeSimulation_(true);
+						simulationFrame->updateTreeStats_();
+						}
+
+					updateTreeStats_();
+
+					return true;
+					}
+				}
+			}
+		else
+			{
+			updateTreeStats_();
+			return false;
+			}
+
+		index = index + indexStep;
+		}
+
+	updateTreeStats_();
+	return false;
+	}
+
+bool ExecutionContextThreadStateTree::tryToSplitHigh_()
+	{
+	std::deque<PolymorphicSharedPtr<ExecutionContextThreadStateTree> > toCheck;
+
+	toCheck.push_back(this->polymorphicSharedPtrFromThis());
+
+	while (toCheck.size())
+		{
+		auto check = toCheck[0];
+		toCheck.pop_front();
+
+		if (check->tryToSplitHigh_(toCheck))
+			return true;
+		}
+
+	return false;
+	}
+
+bool ExecutionContextThreadStateTree::tryToSplitHigh_(
+		std::deque<PolymorphicSharedPtr<ExecutionContextThreadStateTree> >& ioToCheck
+		)
+	{
+	if (!this->wantsToSplitHigh_())
+		return false;
+
+	if (mThread && !mThread->isFinished())
+		{
+		if (mPoorSplitsInARow > 10)
+			return false;
+			
+		PausedComputation comp = 
+			mThread->extractPausedComputation(implValIdentityFunction);
+
+		if (comp.frames().size() > 20)
+			{
+			long frameIx = std::min<long>(15, comp.frames().size()/2);
+
+			splitThreadAtFrameIndex_(comp, frameIx);
+
+			comp = mThread->extractPausedComputation(implValIdentityFunction);
+			}
+
+		if (tryToSplitSelf_(true, comp))
+			return true;
+		}
+
+	for (auto& child: mChildren)
+		ioToCheck.push_back(child.second);
+
+	return false;
+	}
+
+void ExecutionContextThreadStateTree::computeSingleStep_()
+	{
+	if (mExecutionContextImpl->isInterruptTriggerSet())
+		return;
+
+	if (mSplitHoleHash)
+		return;
+		else
+	if (mThread)
+		{
+		if (mChildren.size())
+			{
+			for (auto child: mChildren)
+				child.second->computeSingleStep_();
+			tryToMergeChildren_();
+			updateTreeStats_();
+			return;
+			}
+		else
+			{
+			computeThread_();
+			updateTreeStats_();
+			return;
+			}
+		}
+	else
+		{
+		lassert(mSimulation);
+		computeSimulation_(false);
+		}
+	
+	tryToMergeChildren_();
+	updateTreeStats_();
+	}
+
+void ExecutionContextThreadStateTree::updateTreeStats_()
+	{
+	if (mThread && mChildMergeStyle.isSingleChildPassedBackToParent())
+		lassert_dump(mChildren.size() == 1, "found " << mChildren.size() << " but expected 1. " << treeStateToString());
+
+	if (mThread && mChildren.size() == 0)
+		{
+		mTreeStats = PausedComputationTreeStats();
+		
+		if (mThread->isVectorLoad())
+			{
+			mTreeStats.countOfBlockingThreads() += 1;
+
+			mTreeStats.pagesBlockedOn() = 
+				mExecutionContextImpl->getVDM().getBigVectorLayouts()->convertSliceToPages(
+					mThread->getVectorLoad()
+					);
+			}
+		else
+			mTreeStats.pagesBlockedOn() = emptyTreeSet();
+
+		if (mThread->isCacheRequest())
+			mTreeStats.countOfCachecallThreads() = 1;
+
+		if (mThread->isInterrupted())
+			mTreeStats.countOfActiveThreads() = 1;
+		
+		return;
+		}
+
+	mTreeStats = PausedComputationTreeStats();
+
+	for (auto& child: mChildren)
+		mTreeStats += child.second->mTreeStats;
+
+	if (mSimulation)
+		mTreeStats.totalBranchCount() += mSimulation->countOfUnfinishedSlots();
+
+	if (mSplitHoleHash)
+		mTreeStats.holes() = mTreeStats.holes() + *mSplitHoleHash;
+	}
+
+void ExecutionContextThreadStateTree::computeThread_()
+	{
+	mTreeStats = PausedComputationTreeStats();
+
+	if (mThread->isFinished())
+		return;	
+	
+	mTreeStats.totalBranchCount()++;
+
+	if (mThread->isCacheRequest())
+		return;
+
+	TimeElapsed oldTime = mThread->getTotalTimeElapsed();
+
+	if (mExecutionContextImpl->getConfiguration()->allowInternalSplitting())
+		mThread->computeForFixedTime(0.01);
+	else
+		mThread->compute();
+
+	if (mThread->isVectorLoad())
+		{
+		mTreeStats.pagesBlockedOn() = 
+			mExecutionContextImpl->getVDM().getBigVectorLayouts()->convertSliceToPages(
+				mThread->getVectorLoad()
+				);
+		}
+	else
+		mTreeStats.pagesBlockedOn() = emptyTreeSet();
+
+	if (mThread->isInterrupted())
+		mTreeStats.countOfActiveThreads() = 1;
+	else
+		mTreeStats.countOfActiveThreads() = 0;
+
+	mTimeElapsed = mTimeElapsed + (mThread->getTotalTimeElapsed() - oldTime);
+	}
+
+bool ExecutionContextThreadStateTree::simulationShouldContinue()
+	{
+	int64_t childrenWithCachecalls = 0;
+
+	for (auto c: mChildren)
+		if (c.second->treeStats().countOfCachecallThreads() || c.second->treeStats().holes().size())
+			childrenWithCachecalls++;
+
+	if (mTimeElapsedInChildrenOfCurrentSimulationCount >= kMovingAverageWindowForChildEstimates)
+		{
+		int64_t countToUse = mTimeElapsedInChildrenOfCurrentSimulationCount;
+		double elapsed = mTimeElapsedInChildrenOfCurrentSimulation * mTimeElapsedInChildrenOfCurrentSimulationCount;
+
+		for (auto c: mChildren)
+			{
+			double elapsedThisChild = 0;
+
+			if (c.second->treeStats().countOfCachecallThreads() || c.second->treeStats().holes().size() ||
+					c.second->getTotalTimeElapsed().cachecalls())
+				elapsedThisChild = kMovingAveragePerCachecall;
+			else
+				elapsedThisChild = c.second->getTotalTimeElapsed().total();
+
+			elapsed += elapsedThisChild;
+			countToUse++;
+			}
+
+		if (elapsed / countToUse < kMovingAverageSplitThreshold)
+			return false;
+		}
+
+	return childrenWithCachecalls + 3 >= mChildren.size() && mSimulation->countOfUnfinishedSlots() < kMaxSlotsPerSimulation;
+	}
+
+void ExecutionContextThreadStateTree::computeSimulation_(bool assumeExistingChildrenComputed)
+	{
+	std::set<uint64_t> childrenComputed;
+
+	if (assumeExistingChildrenComputed)
+		for (auto child: mChildren)
+			childrenComputed.insert(child.first);
+
+	bool didAnything = true;
+
+	while (!mExecutionContextImpl->isInterruptTriggerSet() && mSimulation && didAnything)
+		{
+		didAnything = false;
+
+		//first see if we want to try to push the simulation itself forward
+		if (simulationShouldContinue())
+			{
+			bool done = false;
+
+			while (!done)
+				{
+				if (!mSimulation->continueSimulation())
+					done = true;
+
+				long priorChildren = mChildren.size();
+
+				if (mSimulation->indicesOfSubmittableFutures().size() != mChildren.size())
+					{
+					createChildComputationsForNewSubmittableFutures_();
+					done = true;
+					}
+
+				if (!simulationShouldContinue())
+					done = true;
+				}
+			}
+
+		for (auto child: mChildren)
+			if (childrenComputed.find(child.first) == childrenComputed.end())
+				{
+				child.second->computeSingleStep_();
+				childrenComputed.insert(child.first);
+				didAnything = true;
+				}
+
+		tryToMergeChildren_();
+		}
+
+	updateTreeStats_();
+	}
+
+void ExecutionContextThreadStateTree::createChildComputationsForNewSubmittableFutures_()
+	{
+	set<uint64_t> indices = mSimulation->indicesOfSubmittableFutures();
+	bool createdAnything = false;
+
+	for (auto i: indices)
+		if (mChildren.find(i) == mChildren.end())
+			{
+			mChildren[i].reset(new ExecutionContextThreadStateTree(mExecutionContextImpl));
+			mChildren[i]->placeInEvaluationState(
+				PausedComputationTree::Thread(
+					PausedComputationTreeThreadChildren::NoChildren(),
+					mSimulation->asSubmittable(i)->toPausedComputation(),
+					TimeElapsed(),
+					PausedComputationTreeStats()
+					),
+				implValIdentityFunction
+				);
+			
+			mChildren[i]->mTreeStats.countOfActiveThreads() = 1;
+
+			createdAnything = true;
+			}
+
+	if (createdAnything)
+		updateTreeStats_();
+	}
+
+void ExecutionContextThreadStateTree::tryToMergeChildren_()
+	{
+	if (isEmpty())
+		return;
+
+	if (mSimulation)
+		{
+		std::set<uint64_t> indices;
+
+		for (auto& child: mChildren)
+			if (child.second->getCurrentThread() && 
+					child.second->getCurrentThread()->isFinished())
+				indices.insert(child.first);
+
+		for (auto i: indices)
+			{
+			if (mChildren[i]->getCurrentThread()->isError())
+				{
+				ErrorState state = mChildren[i]->getCurrentThread()->getErrorState();
+				setErrorState(state);
+				updateTreeStats_();
+				return;
+				}
+
+			mSimulation->slotCompleted(
+				i, 
+				mChildren[i]->getCurrentThread()->isExceptionResult() ? 
+					ComputationResult::Exception(
+						mChildren[i]->getCurrentThread()->getResult()
+						)
+				:	ComputationResult::Result(
+						mChildren[i]->getCurrentThread()->getResult()
+						)
+				);
+
+			mSimulationParallelismMeasurement.observe(mChildren[i]->getTotalTimeElapsed().total());
+
+			double childEstimate = 
+				mChildren[i]->getTotalTimeElapsed().total() + 
+					(mChildren[i]->getTotalTimeElapsed().cachecalls() > 0 ? kMovingAveragePerCachecall : 0.0);
+
+			//keep an exponentially weighted moving average of 'childEstimate'
+			if (mTimeElapsedInChildrenOfCurrentSimulationCount < kMovingAverageWindowForChildEstimates)
+				{
+				mTimeElapsedInChildrenOfCurrentSimulation += childEstimate / 10.0;
+				mTimeElapsedInChildrenOfCurrentSimulationCount++;
+				}
+			else
+				{
+				mTimeElapsedInChildrenOfCurrentSimulation = 
+					(mTimeElapsedInChildrenOfCurrentSimulation * (kMovingAverageWindowForChildEstimates - 1) + childEstimate) / 
+						kMovingAverageWindowForChildEstimates;
+				}
+
+			mTimeElapsed += mChildren[i]->getTotalTimeElapsed();
+			mChildren.erase(i);
+			}
+
+		//we need to check to see if any new computations are now submittable
+		createChildComputationsForNewSubmittableFutures_();
+
+		lassert(mChildren.size() == mSimulation->indicesOfSubmittableFutures().size());
+
+		auto final = mSimulation->getFinalResult();
+
+		if (final)
+			{
+			if (mSimulationParallelismMeasurement.wasPoorSplit(0.01, 1.5))
+				mPoorSplitsInARow++;
+			else
+				mPoorSplitsInARow = 0;
+
+			@match CFGWithFutures::SimulationResult(*final)
+				-| Result(Result(r)) ->> {
+					setResult(r, false);
+					}
+				-| Result(Exception(r)) ->> {
+					setResult(r, true);
+					}
+				-| Result(Failure(r)) ->> {
+					setErrorState(r);
+					}
+				-| Paused(frame) ->> {
+					placeInEvaluationState(
+						PausedComputationTree::Thread(
+							PausedComputationTreeThreadChildren::NoChildren(),
+							PausedComputation(
+								emptyTreeVec() + frame
+								),
+							mTimeElapsed,
+							mTreeStats
+							),
+						implValIdentityFunction
+						);
+					}
+
+			updateTreeStats_();
+			}
+		}
+	else
+		{
+		bool allChildrenFinished = true;
+		for (auto ixAndChild: mChildren)
+			if (!(ixAndChild.second->getCurrentThread() && ixAndChild.second->isFinished()))
+				allChildrenFinished = false;
+
+		if (mThread && allChildrenFinished && mChildren.size())
+			{
+			for (auto ixAndChild: mChildren)
+				if (ixAndChild.second->mThread->isError())
+					{
+					setErrorState(ixAndChild.second->mThread->getErrorState());
+					updateTreeStats_();
+					return;
+					}
+
+			PausedComputation comp;
+			if (!mThread->isEmpty())
+				comp = mThread->extractPausedComputation(implValIdentityFunction);
+			lassert(comp.tail().isNone());
+
+			ImmutableTreeVector<ImplValContainer> childVals;
+
+			bool wasException = false;
+			for (auto ixAndChild: mChildren)
+				if (ixAndChild.second->isExceptionResult())
+					{
+					comp.tail() = PausedComputationTail::PendingResult(
+						ImplValContainer(ixAndChild.second->getResult()),
+						true
+						);
+					wasException = true;
+					break;
+					}
+				else
+					childVals = childVals + ImplValContainer(ixAndChild.second->getResult());
+
+			if (!wasException)
+				{
+				@match ChildMergeStyle(mChildMergeStyle)
+					-| SingleChildPassedBackToParent() ->> {
+						comp.tail() = PausedComputationTail::PendingResult(childVals[0], false);
+						}
+					-| MultipleChildrenAsTuple(names) ->> {
+						comp.tail() = PausedComputationTail::PendingResult(
+								mapITVWithIndices(childVals, [&](ImplValContainer val, int index) {
+									return make_pair(val, names[index]);
+									}),
+								false
+								);
+						}
+					-| MultipleChildrenAsApply(names) ->> {
+						comp.frames() = comp.frames() + 
+							PausedComputationFrame(
+								childVals,
+								ControlFlowGraphUtil::canonicalApplyGraph(ApplySignature(names)),
+								null()
+								);
+						}
+					-| _ ->> {
+						lassert_dump(false, "unexpected mChildMergeStyle");
+						}
+				}
+
+			for (auto ixAndChild: mChildren)
+				mTimeElapsed += ixAndChild.second->getTotalTimeElapsed();
+
+			mThread->placeInEvaluationState(comp, implValIdentityFunction);
+			mChildren.clear();
+			mChildMergeStyle = ChildMergeStyle::NoChildren();
+			updateTreeStats_();
+			}
+		}
+	}
+
+
+bool ExecutionContextThreadStateTree::splitComputation(
+					boost::function1<ImplValContainer, ImplValContainer> inExportFunction,
+					boost::function<hash_type (PausedComputationTree)> inCreateSplit,
+					double minSecondsElapsed
+					)
+	{
+	if (mChildren.size() == 1)
+		{
+		auto res = mChildren.begin()->second->splitComputation(
+			inExportFunction,
+			inCreateSplit,
+			minSecondsElapsed
+			);
+		updateTreeStats_();
+		return res;
+		}
+
+	if (mChildren.size() == 0)
+		return false;
+
+	long countHadCompute = 0;
+
+	for (auto& child: mChildren)
+		if (child.second->getTotalTimeElapsed().total() >= 0.01 || child.second->treeStats().countOfCachecallThreads())
+			countHadCompute++;
+	
+	ImmutableTreeVector<PausedComputationTreeSplit> children;
+
+	if (countHadCompute < 2 || containsAnySplitHoles())
+		{
+		bool splitAny = false;
+
+		//split across children
+		for (auto& child: mChildren)
+			{
+			if (child.second->splitComputation(
+					inExportFunction,
+					inCreateSplit,
+					minSecondsElapsed
+					))
+				splitAny = true;
+			}
+
+		updateTreeStats_();
+		return splitAny;
+		}
+
+	bool splitAny = false;
+	for (auto& ixAndChild: mChildren)
+		{
+		PausedComputationTree pc = ixAndChild.second->extractPausedComputationTree(inExportFunction);
+
+		hash_type hash = inCreateSplit(pc);
+
+		mTimeElapsed += ixAndChild.second->getTotalTimeElapsed();
+
+		ixAndChild.second.reset(
+			new ExecutionContextThreadStateTree(
+				mExecutionContextImpl,
+				hash
+				)
+			);
+		ixAndChild.second->updateTreeStats_();
+		splitAny = true;
+		}
+
+	updateTreeStats_();
+	
+	return splitAny;
+	}
+
+bool ExecutionContextThreadStateTree::splitCachecallFrames(
+					boost::function1<ImplValContainer, ImplValContainer> inExportFunction,
+					boost::function<hash_type (PausedComputationTree)> inCreateSplit,
+					bool isRoot
+					)
+	{
+	if (mThread && mThread->isCacheRequest())
+		{
+		lassert_dump(mChildren.size() == 0, prettyPrintString(extractPausedComputationTree(implValIdentityFunction)));
+
+		//split out the bottommost frame
+		PausedComputation comp = 
+			mThread->extractPausedComputation(implValIdentityFunction);
+
+		lassert(comp.tail().isCachecall());
+
+		if (comp.frames().size() > 1)
+			{
+			splitThreadAtFrameIndex_(comp, comp.frames().size()-1);
+
+			lassert(mChildren.size() == 1);
+
+			PausedComputationTree sub = mChildren.begin()->second->extractPausedComputationTree(inExportFunction);
+
+			hash_type hash = inCreateSplit(sub);
+
+			mTimeElapsed += mChildren.begin()->second->getTotalTimeElapsed();
+
+			mChildren.begin()->second.reset(
+				new ExecutionContextThreadStateTree(
+					mExecutionContextImpl,
+					hash
+					)
+				);
+			mChildren.begin()->second->updateTreeStats_();
+			updateTreeStats_();
+			}
+		else
+			{
+			//if we are a single-frame root computation, don't split
+			if (isRoot)
+				return false;
+
+			PausedComputationTree sub = extractPausedComputationTree(inExportFunction);
+
+			hash_type hash = inCreateSplit(sub);
+
+			mThread.reset();
+			mSimulation.reset();
+			mTimeElapsedInChildrenOfCurrentSimulation = 0.0;
+			mTimeElapsedInChildrenOfCurrentSimulationCount = 0;
+			mTreeStats = PausedComputationTreeStats();
+			mPoorSplitsInARow = 0;
+			mSimulationParallelismMeasurement = ParallelismMeasurement();
+
+			mSplitHoleHash = hash;
+
+			updateTreeStats_();
+			}
+
+		return true;
+		}
+
+	bool splitAny = false;
+	for (auto& ixAndChild: mChildren)
+		if (ixAndChild.second->treeStats().countOfCachecallThreads())
+			{
+			if (ixAndChild.second->splitCachecallFrames(
+					inExportFunction,
+					inCreateSplit,
+					false
+					))
+				splitAny = true;
+			}
+
+	updateTreeStats_();
+	
+	return splitAny;
+	}
+
+bool ExecutionContextThreadStateTree::absorbSplitResult(
+		hash_type computationHash,
+		ImplValContainer result,
+		bool isException,
+		TimeElapsed totalTimeElapsed
+		)
+	{
+	if (mSplitHoleHash && *mSplitHoleHash == computationHash)
+		{
+		setResult(result, isException);
+		mTimeElapsed = totalTimeElapsed;
+		return true;
+		}
+
+	if (mSplitHoleHash)
+		return false;
+
+	bool didAbsorb = false;
+
+	for (auto child: mChildren)
+		if (child.second->absorbSplitResult(computationHash, result, isException, totalTimeElapsed))
+			didAbsorb = true;
+	
+	if (didAbsorb)
+		tryToMergeChildren_();
+
+	return didAbsorb;
+	}
+
+void ExecutionContextThreadStateTree::addCachecallResult(
+					const ImplValContainer& inValue,
+					bool isException
+					)
+	{
+	auto left = getLeftmostThread();
+
+	ValueDeepcopierState state;
+
+	PausedComputation comp = left->extractPausedComputation(implValIdentityFunction);
+
+	lassert_dump(comp.tail().isCachecall(), prettyPrintString(comp.tail()));
+
+	comp.tail() = PausedComputationTail::PendingResult(inValue, isException);
+
+	left->placeInEvaluationState(comp, implValIdentityFunction);
+
+	left->getTotalTimeElapsed().cachecalls()++;
+	
+	updateTreeStats_();
+	}
+
+void ExecutionContextThreadStateTree::visitStackFramesAndValues(TypedFora::Abi::StackFrameVisitor& visitor)
+	{
+	if (mThread)
+		mThread->visitStackFramesAndValues(visitor);
+
+	if (mSimulation)
+		mSimulation->visitValues(
+			[&](ImplValContainer& val) { visitor.visitFreeValue(val); }
+			);
+
+	for (auto& child: mChildren)
+		child.second->visitStackFramesAndValues(visitor);
+	}	
+
+bool ExecutionContextThreadStateTree::isFinished() const
+	{
+	return mThread && !mChildren.size() && mThread->isFinished();
+	}
+
+ErrorState ExecutionContextThreadStateTree::getErrorState() const
+	{
+	lassert(isFinished());
+	return mThread->getErrorState();
+	}
+
+ImplVal ExecutionContextThreadStateTree::getResult() const
+	{
+	lassert(isFinished());
+	return mThread->getResult();
+	}
+
+bool ExecutionContextThreadStateTree::isExceptionResult() const
+	{
+	lassert(isFinished());
+	return mThread->isExceptionResult();
+	}
+
+void ExecutionContextThreadStateTree::setErrorState(const ErrorState& inErrorState)
+	{
+	reset_();
+	mThread->setErrorState(inErrorState);
+	}
+
+void ExecutionContextThreadStateTree::setResult(const ImplValContainer& inValue, bool isException)
+	{
+	reset_();
+	mThread->setResult(inValue, isException);
+	}
+
+bool ExecutionContextThreadStateTree::isEmpty() const
+	{
+	return !mThread && !mSimulation;
+	}
+
+PolymorphicSharedPtr<ExecutionContextThreadStateTree> ExecutionContextThreadStateTree::getLeftmostTree()
+	{
+	if (!mChildren.size())
+		return this->polymorphicSharedPtrFromThis();
+
+	return mChildren.begin()->second->getLeftmostTree();
+	}
+
+boost::shared_ptr<ExecutionContextThreadState> ExecutionContextThreadStateTree::getLeftmostThread() const
+	{
+	if (!mChildren.size())
+		return mThread;
+
+	return mChildren.begin()->second->getLeftmostThread();
+	}
+
+boost::shared_ptr<ExecutionContextThreadState> ExecutionContextThreadStateTree::getCurrentThread() const
+	{
+	return mThread;
+	}
+
+PolymorphicSharedPtr<CFGWithFutures> ExecutionContextThreadStateTree::getSimulation() const
+	{
+	return mSimulation;
+	}
+
+PausedComputationTree ExecutionContextThreadStateTree::extractPausedComputationTree(
+			boost::function1<ImplValContainer, ImplValContainer> inExportFunction
+			) const
+	{
+	if (mThread)
+		{
+		ImmutableTreeVector<PausedComputationTree> children;
+
+		for (auto& ixAndChild: mChildren)
+			children = children + 
+				ixAndChild.second->extractPausedComputationTree(inExportFunction)
+				;
+
+		PausedComputationTreeThreadChildren threadChildren;
+
+		@match ChildMergeStyle(mChildMergeStyle)
+			-| NoChildren() ->> {
+				threadChildren = PausedComputationTreeThreadChildren::NoChildren();
+				lassert(children.size() == 0);
+				}
+			-| SingleChildPassedBackToParent() ->> {
+				lassert_dump(
+					children.size() == 1, 
+					"found " << children.size() << " but we are a SingleChildPassedBackToParent"
+					);
+				threadChildren = PausedComputationTreeThreadChildren::SingleChildPassedBackToParent(children[0]);
+				}
+			-| MultipleChildrenAsTuple(names) ->> {
+				threadChildren = PausedComputationTreeThreadChildren::MultipleChildrenAsTuple(
+					mapITVWithIndices(children, [&](PausedComputationTree t, int ix) { return make_pair(t, names[ix]); })
+					);
+				}
+			-| MultipleChildrenAsApply(names) ->> {
+				threadChildren = PausedComputationTreeThreadChildren::MultipleChildrenAsApply(
+					mapITVWithIndices(children, [&](PausedComputationTree t, int ix) { return make_pair(t, names[ix]); })
+					);
+				}
+		
+		return PausedComputationTree::Thread(
+			threadChildren,
+			mThread->extractPausedComputation(inExportFunction),
+			mTimeElapsed,
+			mTreeStats
+			);
+		}
+		else
+	if (mSimulation)
+		{
+		ImmutableTreeMap<int64_t, PausedComputationTree> children;
+
+		for (auto& ixAndChild: mChildren)
+			children = children + 
+				ixAndChild.first + 
+				ixAndChild.second->extractPausedComputationTree(inExportFunction)
+				;
+
+		return PausedComputationTree::Simulation(
+			children,
+			mSimulation->deepcopy(inExportFunction),
+			mTimeElapsed,
+			mTreeStats
+			);
+		}
+		else
+	if (mSplitHoleHash)
+		{
+		return PausedComputationTree::Hole(
+			*mSplitHoleHash
+			);
+		}
+	else
+		return PausedComputationTree();
+	}
+
+void ExecutionContextThreadStateTree::placeInEvaluationState(
+			const PausedComputationTree& computation,
+			boost::function1<ImplValContainer, ImplValContainer> valueImportFunction
+			)
+	{
+	ImmutableTreeMap<int64_t, PausedComputationTree> children;
+
+	@match PausedComputationTree(computation)
+		-| Thread(c, thread, elapsed, treeStats) ->> {
+			@match PausedComputationTreeThreadChildren(c)
+				-| NoChildren() ->> { 
+					mChildMergeStyle = ChildMergeStyle::NoChildren(); 
+					}
+				-| SingleChildPassedBackToParent(child) ->> { 
+					mChildMergeStyle = ChildMergeStyle::SingleChildPassedBackToParent(); 
+					children = children + (int64_t)0 + child;
+					}
+				-| MultipleChildrenAsApply(subs) ->> {
+					mChildMergeStyle = ChildMergeStyle::MultipleChildrenAsApply(
+						mapITV(subs, [&](pair<PausedComputationTree, Nullable<Symbol> > p) { return p.second; })
+						);
+					for (auto s: subs)
+						children = children + (int64_t)children.size() + s.first;
+					}
+				-| MultipleChildrenAsTuple(subs) ->> { 
+					mChildMergeStyle = ChildMergeStyle::MultipleChildrenAsTuple(
+						mapITV(subs, [&](pair<PausedComputationTree, Nullable<Symbol> > p) { return p.second; })
+						);
+					for (auto s: subs)
+						children = children + (int64_t)children.size() + s.first;
+					}
+
+			mThread.reset(new ExecutionContextThreadState(mExecutionContextImpl));
+			mThread->placeInEvaluationState(thread, valueImportFunction);
+
+			mSimulation.reset();
+			mTimeElapsedInChildrenOfCurrentSimulation = 0.0;
+			mTimeElapsedInChildrenOfCurrentSimulationCount = 0;
+			mTimeElapsed = elapsed;
+			mTreeStats = treeStats;
+			}
+		-| Simulation(c, sim, elapsed, stats) ->> {
+			children = c;
+			mSimulation = sim->deepcopy(valueImportFunction);
+			mTimeElapsedInChildrenOfCurrentSimulation = 0.0;
+			mTimeElapsedInChildrenOfCurrentSimulationCount = 0;
+			mThread.reset();
+			mTimeElapsed = elapsed;
+			mTreeStats = stats;
+			}
+		-| Hole(hash) ->> {
+			mSplitHoleHash = hash;
+			mTimeElapsed = TimeElapsed();
+			}
+
+	mChildren.clear();
+
+	for (auto ixAndChild: children)
+		{
+		PolymorphicSharedPtr<ExecutionContextThreadStateTree> child;
+		child.reset(new ExecutionContextThreadStateTree(mExecutionContextImpl));
+		child->placeInEvaluationState(ixAndChild.second, valueImportFunction);
+		child->updateTreeStats_();
+
+		mChildren[ixAndChild.first] = child;
+		}
+
+	updateTreeStats_();
+	}
+
+const child_map_type& ExecutionContextThreadStateTree::getChildren() const
+	{
+	return mChildren;
+	}
+
+void ExecutionContextThreadStateTree::reset_()
+	{
+	mThread.reset(new ExecutionContextThreadState(mExecutionContextImpl));
+	mSimulation.reset();
+	mTimeElapsedInChildrenOfCurrentSimulation = 0.0;
+	mTimeElapsedInChildrenOfCurrentSimulationCount = 0;
+	mChildren.clear();
+	mChildMergeStyle = ChildMergeStyle::NoChildren();
+	mTreeStats = PausedComputationTreeStats();
+	}
+
+TimeElapsed ExecutionContextThreadStateTree::getTotalTimeElapsed() const
+	{
+	TimeElapsed res = mTimeElapsed;
+
+	for (auto& ixAndChild: mChildren)
+		{
+		lassert(ixAndChild.second);
+		res = res + ixAndChild.second->getTotalTimeElapsed();
+		}
+
+	return res;
+	}
+
+void ExecutionContextThreadStateTree::validateTreeState_(std::string reason)
+	{
+	if (isEmpty())
+		return;
+
+	lassert_dump(!(mThread && mSimulation), reason);
+
+	if (mThread)
+		{
+		if (mChildren.size())
+			lassert_dump(mChildren.size() < 2, reason);
+		}
+	else
+		{
+		lassert_dump(mSimulation, reason);
+		lassert_dump(
+			mSimulation->indicesOfSubmittableFutures().size() == mChildren.size(),
+			"Simulation has " << mSimulation->indicesOfSubmittableFutures().size()
+				<< " submittable futures, but hasn't submitted them yet."
+				<< "\n"
+				<< reason
+			);
+		lassert_dump(mChildren.size() > 0, reason);
+		}
+
+	for (auto child: mChildren)
+		child.second->validateTreeState_();
+	}
+
+bool ExecutionContextThreadStateTree::containsAnySplitHoles() const
+	{
+	if (mSplitHoleHash)
+		return true;
+
+	for (auto& child: mChildren)
+		if (child.second->containsAnySplitHoles())
+			return true;
+
+	return false;
+	}
+
+}
+}

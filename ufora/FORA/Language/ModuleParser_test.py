@@ -41,7 +41,7 @@ class ModuleParserTest(unittest.TestCase):
         result = parser.parse(
             tree,
             allowPrivate,
-            ForaNative.CodeDefinitionPoint.ExternalFromStringList([])
+            ForaNative.CodeDefinitionPoint.ExternalFromStringList(["dummy"])
             )
 
         return result

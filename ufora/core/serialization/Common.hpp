@@ -20,5 +20,10 @@
 
 #include "../Common.hppml"
 
+class StreamException : public std::logic_error {
+public:
+   StreamException(std::string msg) : std::logic_error(msg)
+      {}
+};
 
 

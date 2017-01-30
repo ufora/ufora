@@ -18,12 +18,12 @@ import traceback
 import ufora.FORA.python.ForaValue as ForaValue
 import ufora.BackendGateway.ComputedValue.ComputedValue as ComputedValue
 import ufora.BackendGateway.ComputedGraph.ComputedGraph as ComputedGraph
-import ufora.BackendGateway.SubscribableWebObjects.ObjectClassesToExpose.PyforaToJsonTransformer \
-    as PyforaToJsonTransformer
+import ufora.FORA.python.PurePython.PyforaToJsonTransformer as PyforaToJsonTransformer
 import ufora.BackendGateway.SubscribableWebObjects.ObjectClassesToExpose.PyforaObjectConverter \
     as PyforaObjectConverter
 import ufora.native.FORA as ForaNative
 import ufora.BackendGateway.ComputedValue.ComputedValueGateway as ComputedValueGateway
+import base64
 
 def validateObjectIds(ids):
     converter = PyforaObjectConverter.PyforaObjectConverter()
@@ -159,13 +159,11 @@ class PyforaComputedValue(ComputedValue.ComputedValue):
             if len(tup) != 2:
                 return None
 
-            _, stacktraceAndVarsInScope = self.valueIVC.getTuple()
-            hashes = stacktraceAndVarsInScope[0].getStackTrace()
+            _, stacktrace = self.valueIVC.getTuple()
+            codeLocations = stacktrace.getStackTrace()
 
-            if hashes is None:
+            if codeLocations is None:
                 return None
-
-            codeLocations = [ForaNative.getCodeLocation(h) for h in hashes]
 
             def formatCodeLocation(c):
                 if c is None:
@@ -174,7 +172,6 @@ class PyforaComputedValue(ComputedValue.ComputedValue):
                     return None
                 def posToJson(simpleParsePosition):
                     return {
-                        'characterOffset': simpleParsePosition.rawOffset,
                         'line': simpleParsePosition.line,
                         'col': simpleParsePosition.col
                         }
@@ -192,6 +189,27 @@ class PyforaComputedValue(ComputedValue.ComputedValue):
 
         else:
             return None
+
+def isOfSimpleType(implVal):
+    """Is this type simple enough that when we encode a value in a numpy array using a dtype,
+    we'll get back an object of the correct type?"""
+    typename = str(implVal.type)
+
+    if typename.startswith("purePython.PyInt.<instance>"):
+        return True
+    if typename.startswith("purePython.PyFloat.<instance>"):
+        return True
+    if typename.startswith("purePython.PyBool.<instance>"):
+        return True
+    if typename.startswith("purePython.PyNone.<instance>"):
+        return True
+    if typename.startswith("purePython.PyTuple.<instance>"):
+        for elt in implVal.getObjectMember("@m").getTuple():
+            if not isOfSimpleType(elt):
+                return False
+        return True
+    return False
+
 
 class PyforaResultAsJson(ComputedGraph.Location):
     #the value to extract
@@ -224,10 +242,6 @@ class PyforaResultAsJson(ComputedGraph.Location):
 
         c = PyforaObjectConverter.PyforaObjectConverter()
 
-        #ask the objectConverter to convert this python object to something
-        #we can send back to the server as json
-        transformer = PyforaToJsonTransformer.PyforaToJsonTransformer(self.maxBytecount)
-
         try:
             def extractVectorContents(vectorIVC):
                 if len(vectorIVC) == 0:
@@ -244,12 +258,14 @@ class PyforaResultAsJson(ComputedGraph.Location):
 
                     #see if it's simple enough to transmit as numpy data
                     if len(vectorIVC.getVectorElementsJOR()) == 1 and len(vectorIVC) > 1:
-                        res = vdm.extractVectorContentsAsNumpyArray(vectorIVC, 0, len(vectorIVC))
+                        firstElement = vdm.extractVectorItem(vectorIVC, 0)
 
-                        if res is not None:
-                            assert len(res) == len(vectorIVC)
-                            firstElement = vdm.extractVectorItem(vectorIVC, 0)
-                            return {'firstElement': firstElement, 'contentsAsNumpyArrays': [res]}
+                        if isOfSimpleType(firstElement):
+                            res = vdm.extractVectorContentsAsNumpyArray(vectorIVC, 0, len(vectorIVC))
+
+                            if res is not None:
+                                assert len(res) == len(vectorIVC)
+                                return {'contentsAsNumpyArray': res}
 
                     #see if we can extract the data as a regular pythonlist
                     res = vdm.extractVectorContentsAsPythonArray(vectorIVC, 0, len(vectorIVC)) 
@@ -270,7 +286,7 @@ class PyforaResultAsJson(ComputedGraph.Location):
 
                 #see if it's simple enough to transmit as numpy data
                 if res is None and len(vectorIVC.getVectorElementsJOR()) == 1 and len(vectorIVC) > 1:
-                    res = vecSlice.extractVectorDataAsNumpyArrayInChunks()
+                    res = vecSlice.extractVectorDataAsNumpyArray()
 
                     if res is not None:
                         firstElement = vecSlice.extractVectorItemAsIVC(0)
@@ -282,7 +298,10 @@ class PyforaResultAsJson(ComputedGraph.Location):
                                 "Shouldn't be possible to download data as numpy, and then not get the first value"
                                 )
 
-                        res = {'firstElement': firstElement, 'contentsAsNumpyArrays': res}
+                        if isOfSimpleType(firstElement):
+                            res = {'contentsAsNumpyArray': res}
+                        else:
+                            res = None
                     else:
                         if not vecSlice.vdmThinksIsLoaded():
                             #there's a race condition where the data could be loaded between now and
@@ -302,11 +321,21 @@ class PyforaResultAsJson(ComputedGraph.Location):
                 return res
 
             try:
-                res = c.transformPyforaImplval(
+                import pyfora.BinaryObjectRegistry as BinaryObjectRegistry
+                stream = BinaryObjectRegistry.BinaryObjectRegistry()
+
+                root_id, needsLoading = c.transformPyforaImplval(
                     value,
-                    transformer,
-                    extractVectorContents
+                    stream,
+                    extractVectorContents,
+                    self.maxBytecount
                     )
+
+                if needsLoading:
+                    return None
+
+                result_to_send = {'data': base64.b64encode(stream.str()), 'root_id': root_id}
+
             except Exception as e:
                 import pyfora
                 if self.computedValue.isException and isinstance(e, pyfora.ForaToPythonConversionError):
@@ -324,20 +353,17 @@ class PyforaResultAsJson(ComputedGraph.Location):
                 else:
                     raise
 
-            if transformer.anyListsThatNeedLoading:
-                return None
+            if self.computedValue.isException:
+                return {
+                    'result': result_to_send,
+                    'isException': True,
+                    'trace': self.computedValue.exceptionCodeLocationsAsJson
+                    }
             else:
-                if self.computedValue.isException:
-                    return {
-                        'result': res,
-                        'isException': True,
-                        'trace': self.computedValue.exceptionCodeLocationsAsJson
-                        }
-                else:
-                    return {
-                        'result': res,
-                        'isException': False
-                        }
+                return {
+                    'result': result_to_send,
+                    'isException': False
+                    }
 
         except PyforaToJsonTransformer.HaltTransformationException:
             if self.computedValue.isException:

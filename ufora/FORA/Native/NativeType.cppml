@@ -13,13 +13,14 @@
    See the License for the specific language governing permissions and
    limitations under the License.
 ****************************************************************************/
+#include "NativeRuntimeCallbacks.hppml"
 #include "NativeType.hppml"
 #include "NativeTypeFor.hpp"
 #include "../TypedFora/ABI/ImplValNativeCodeModel.hppml"
 #include "../TypedFora/ABI/VectorRecord.hpp"
 #include "../Vector/MutableVectorRecord.hppml"
-#include "NativeRuntimeCallbacks.hppml"
 
+#include "../../core/Logging.hpp"
 
 uword_t NativeType::compositeSlotOffset(long index)
 	{
@@ -67,28 +68,28 @@ uword_t NativeType::computeAlignment(void) const
 	{
 	@match NativeType(*this)
 		-|	Nothing() ->> {
-			return  0;
+			return 1;
 			}
 		-|	Integer(bits, isSigned) ->> {
-			return  ((bits + 7) / 8);
+			return std::max<uword_t>(1, ((bits + 7) / 8));
 			}
 		-|	Float(bits) ->> {
-			return  ((bits + 7)/8);
+			return std::max<uword_t>(1, ((bits + 7)/8));
 			}
 		-|	Pointer(element) ->> {
-			return  sizeof(void*);
+			return sizeof(void*);
 			}
 		-|	Composite(elements) ->> {
-			uword_t tr = 0;
+			uword_t tr = 1;
 			for (long k = 0; k < elements.size();k++)
-				tr = std::max(tr, elements[k].alignment());
+				tr = std::max<uword_t>(tr, elements[k].alignment());
 			return tr;
 			}
 		-|	Array(element, sz) ->> {
-			return  element.alignment();
+			return element.alignment();
 			}
 		-|	Continuations(t) ->> {
-			return  sizeof(void*) * 3 + (sizeof(uword_t) + sizeof(void*)) * t.size();
+			return sizeof(void*) * 3 + (sizeof(uword_t) + sizeof(void*)) * t.size();
 			}
 		;
 	}
@@ -110,7 +111,7 @@ uword_t NativeType::computeAlignedSize(void) const
 			}
 		-|	Composite(elements) ->> {
 			uword_t tr = 0;
-			for (long k = 0; k < elements.size();k++)
+			for (long k = 0; k < elements.size(); k++)
 				tr = alignedOffset(elements[k], tr) + elements[k].alignedSize();
 			return alignedOffset(*this, tr);
 			}
@@ -166,6 +167,19 @@ NativeType NativeType::operator+(const NativeType& inOtherComposite) const
 
 NativeType NativeType::ptr() const
 	{
+	return NativeType::Pointer(*this);
+	}
+
+NativeType NativeType::deref() const
+	{
+	@match NativeType(*this)
+		-|	Pointer(e) ->> {
+			return e;
+			}
+		-|	_ ->> {
+			lassert_dump(false, "trying to dereference a non-pointer native type");
+		}
+		;
 	return NativeType::Pointer(*this);
 	}
 
@@ -273,13 +287,17 @@ bool NativeType::computeIsEmpty(void) const
 uword_t alignedOffset(const NativeType& nt, uword_t unalignedOffset)
 	{
 	uword_t align = nt.alignment();
+
+	lassert(align != 0);
+
 	uword_t padding = (align - (unalignedOffset % align)) % align;
 	return unalignedOffset + padding;
 	}
 
 bool isRuntimeCallbackType(const NativeType& t)
 	{
-	return t == NativeTypeFor<NativeRuntimeCallbacks>::get().ptr();
+	static NativeType rtCallbackType = NativeTypeFor<NativeRuntimeCallbacks>::get().ptr();
+	return t == rtCallbackType;
 	}
 
 NativeType cppmlAlternative()
@@ -296,5 +314,3 @@ NativeType cppmlAlternative()
 			);
 	return *tr;
 	}
-
-
