@@ -19,9 +19,6 @@
 #include "Axioms.hppml"
 #include "Axiom.hppml"
 #include "AxiomGroup.hppml"
-#include "AxiomSearch.hppml"
-#include "../Judgment/JudgmentOnValueTreeMatchImplvalCppCodegen.hppml"
-#include "../Judgment/JudgmentOnValueTreeMatchJovtCppCodegen.hppml"
 #include "../Judgment/JudgmentOnValue.hppml"
 #include "../VectorDataManager/VectorDataManager.hppml"
 #include "../ControlFlowGraph/ControlFlowGraph.hppml"
@@ -42,6 +39,7 @@
 #include "../../core/Logging.hpp"
 #include "../../core/threading/SimpleCallbackSchedulerFactory.hppml"
 #include "../../core/Clock.hpp"
+#include "../Judgment/JudgmentTupleSearchTree.hppml"
 
 using namespace std;
 
@@ -49,30 +47,6 @@ class AxiomsStorage {
 public:
 	vector<PolymorphicSharedPtr<AxiomGroup> > axioms;
 };
-
-NativeCFG nativeWrapper(NativeType argType, NativeType retType, string name)
-	{
-	NativeVariable x = NativeVariable::Temp(argType);
-
-	return NativeCFG(
-		emptyTreeVec() + x,
-		NativeExpression::CallLibraryFunction(
-			name,
-			retType,
-			emptyTreeVec() + x.expr()
-			)
-		)
-		;
-	}
-
-NativeCFG blankFunction(NativeType t)
-	{
-	return NativeCFG(
-		emptyTreeVec() + NativeVariable::Temp(t),
-		NativeExpression::Nothing()
-		)
-		;
-	}
 
 namespace {
 
@@ -328,11 +302,12 @@ void Axioms::parseNodeToAxiom(const SimpleParseNode& node)
 Axioms::Axioms(const std::string& inAxiomsString)
 	{
 	mAxioms = new AxiomsStorage();
+	mJudgmentSearchTree.reset(new JudgmentTupleSearchTree());
 
 	for (auto it = AxiomGroups::groups().begin(); it != AxiomGroups::groups().end(); ++it)
 		for (auto it2 = it->second.begin(); it2 != it->second.end(); ++it2)
 			mAxioms->axioms.push_back(*it2);
-
+			
 	SimpleParseNode spn = parseStringToSimpleParse(inAxiomsString);
 
 	@match SimpleParseNode(spn)
@@ -346,6 +321,9 @@ Axioms::Axioms(const std::string& inAxiomsString)
 			;
 
 	mAxioms->axioms.push_back(getBadApplyAxiom());
+
+	for (auto axiom: mAxioms->axioms)
+		mJudgmentSearchTree->add(axiom->signature());
 	}
 
 PolymorphicSharedPtr<AxiomGroup> Axioms::getBadApplyAxiom()
@@ -473,7 +451,12 @@ Nullable<uword_t>		Axioms::axiomSearchLinear(const JudgmentOnValueTuple& s)
 
 Nullable<uword_t>		Axioms::axiomSearchTree(const JudgmentOnValueTuple& s)
 	{
-	return Fora::searchJOVTree(s);
+	return mJudgmentSearchTree->search(s);
+	}
+
+uword_t Axioms::axiomSearchTree(const Fora::ApplyArgFrame& s)
+	{
+	return mJudgmentSearchTree->search(s);
 	}
 
 Nullable<uword_t>			Axioms::axiomIndex(const JudgmentOnValueTuple& s)
@@ -488,7 +471,7 @@ Nullable<uword_t>			Axioms::axiomIndex(const JudgmentOnValueTuple& s)
 
 	if (it == mIndexCache.end())
 		{
-		Nullable<uword_t> index = Fora::searchJOVTree(s);
+		Nullable<uword_t> index = mJudgmentSearchTree->search(s);
 		mIndexCache[s.hash()] = index;
 
 		actualLookups++;
@@ -722,19 +705,6 @@ JudgmentOnAction Axioms::resolveAxiomDirectly(
 		throw;
 		}
 	}
-
-pair<std::string, std::string> Axioms::getCppWrapperCode()
-	{
-	interpreterAxioms();
-
-	JudgmentOnValueTree tree = createJOVTreeRule(mInterpreterAxiomIndexes, EqualFrequency(), false);
-
-	return make_pair(
-		Fora::JudgmentOnValueTreeMatchImplvalCppCodegen::generateLookupCppCode(tree),
-		Fora::JudgmentOnValueTreeMatchJovtCppCodegen::generateLookupCppCode(tree)
-		);
-	}
-
 
 
 

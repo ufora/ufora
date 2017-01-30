@@ -1,0 +1,263 @@
+/***************************************************************************
+    Copyright 2017 Ufora Inc.
+ 
+    Licensed under the Apache License, Version 2.0 (the "License");
+    you may not use this file except in compliance with the License.
+    You may obtain a copy of the License at
+ 
+        http://www.apache.org/licenses/LICENSE-2.0
+ 
+    Unless required by applicable law or agreed to in writing, software
+    distributed under the License is distributed on an "AS IS" BASIS,
+    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    See the License for the specific language governing permissions and
+    limitations under the License.
+****************************************************************************/
+
+#pragma once
+
+#include "JudgmentOnValue.hppml"
+#include "../Core/ApplyArgFrame.hppml"
+#include <vector>
+#include <boost/shared_ptr.hpp>
+
+class DisjointJudgmentTupleSearchTree {
+public:
+	bool isDisjoint(const JudgmentOnValueTuple& jovt) const
+		{
+		bool isNotDisjoint = false;
+
+		auto nIndex = search(jovt, isNotDisjoint);
+
+		if (nIndex)
+			//not disjoint because it's covered
+			return false;
+
+		if (isNotDisjoint)
+			return false;
+
+		return true;
+		}
+
+	static bool isFrequentSymbol(Symbol s)
+		{
+		return s == Symbol::Call() || s == Symbol::Member() || s == Symbol::Operator();
+		}
+
+	void add(const JudgmentOnValueTuple& jovt)
+		{
+		uword_t newIndex = mIndices.size();
+
+		mIndices[jovt] = newIndex;
+
+		//prioritize infrequent symbols first
+		for (long k = 0; k < jovt.jovs().size();k++)
+			if (!jovt.names()[k] && jovt.jovs()[k].constant() && jovt.jovs()[k].constant()->type().isSymbol() && 
+					!isFrequentSymbol(jovt.jovs()[k].constant()->cast<Symbol>()))
+				{
+				mSymbolJovs[k][jovt.jovs()[k].constant()->cast<Symbol>()].push_back(jovt);
+				return;
+				}
+
+		//the frequent symbols
+		for (long k = 0; k < jovt.jovs().size();k++)
+			if (!jovt.names()[k] && jovt.jovs()[k].constant() && jovt.jovs()[k].constant()->type().isSymbol())
+				{
+				mSymbolJovs[k][jovt.jovs()[k].constant()->cast<Symbol>()].push_back(jovt);
+				return;
+				}
+
+		//otherwise put it in the grab bag
+		mSymbollessJovts.push_back(jovt);
+		}
+
+	Nullable<uword_t> search(const Fora::ApplyArgFrame& frame) const
+		{
+		for (auto& dimAndSymbols: mSymbolJovs)
+			{
+			if (dimAndSymbols.first < frame.size())
+				{
+				auto value = frame[dimAndSymbols.first];
+				if (!value.second && value.first.type().isSymbol())
+					{
+					//we have to check each one
+					auto which = dimAndSymbols.second.find(value.first.cast<Symbol>());
+					if (which != dimAndSymbols.second.end())
+						{
+						for (auto candidate: which->second)
+							if (candidate.covers(frame))
+								return null() << mIndices.find(candidate)->second;
+						}
+					}
+				}
+			}
+
+		for (auto candidate: mSymbollessJovts)
+			if (candidate.covers(frame))
+				return null() << mIndices.find(candidate)->second;
+
+		return null();
+		}
+
+	Nullable<uword_t> search(const JudgmentOnValueTuple& jovt, bool& outIsNotDisjoint) const
+		{
+		static JudgmentOnValue symbolJov = JOV::OfType(Type::Symbol());
+
+		for (auto& dimAndSymbols: mSymbolJovs)
+			{
+			long dim = dimAndSymbols.first;
+
+			if (dim >= jovt.jovs().size() && !jovt.hasExtras())
+				{
+				//definitely disjoint from this group because the jovt is too small
+				}
+				else
+			if (dim < jovt.jovs().size() && jovt.jovs()[dim].disjoint(symbolJov))
+				{
+				//this jovt definitely doesn't have a symbol in this slot
+				}
+				else
+			if (dim < jovt.jovs().size() && symbolJov.covers(jovt.jovs()[dim]))
+				{
+				//this jovt has a symbol in this slot
+				if (jovt.jovs()[dim].constant())
+					{
+					//we know what it is, so we only need to check those slots
+					auto candidateSetIt = dimAndSymbols.second.find(jovt.jovs()[dim].constant()->cast<Symbol>());
+					if (candidateSetIt != dimAndSymbols.second.end())
+						for (auto candidate: candidateSetIt->second)
+							if (candidate.covers(jovt))
+								return null() << mIndices.find(candidate)->second;
+								else
+							if (!candidate.disjoint(jovt))
+								{
+								outIsNotDisjoint = true;
+								return null();
+								}
+					}
+				else
+					{
+					//we don't know, so we have to check them all
+					for (auto& symbolAndCandidates: dimAndSymbols.second)
+						for (auto candidate: symbolAndCandidates.second)
+							if (candidate.covers(jovt))
+								return null() << mIndices.find(candidate)->second;
+								else
+							if (!candidate.disjoint(jovt))
+								{
+								outIsNotDisjoint = true;
+								return null();
+								}
+					}
+				}
+			else
+				{
+				//we don't know, so we have to check them all
+				for (auto& symbolAndCandidates: dimAndSymbols.second)
+					for (auto candidate: symbolAndCandidates.second)
+						if (candidate.covers(jovt))
+							return null() << mIndices.find(candidate)->second;
+							else
+						if (!candidate.disjoint(jovt))
+							{
+							outIsNotDisjoint = true;
+							return null();
+							}
+				}
+			}
+
+		for (auto candidate: mSymbollessJovts)
+			if (candidate.covers(jovt))
+				return null() << mIndices.find(candidate)->second;
+				else
+			if (!candidate.disjoint(jovt))
+				{
+				outIsNotDisjoint = true;
+				return null();
+				}
+
+		return null();
+		}
+
+	uword_t count() const
+		{
+		return mIndices.size();
+		}
+
+private:
+	//no symbols in the JOVT
+	std::vector<JudgmentOnValueTuple> mSymbollessJovts;
+
+	//every JOVT that has a symbol will be in here exactly once
+	std::map<long, std::map<Symbol, std::vector<JudgmentOnValueTuple> > > mSymbolJovs;
+
+	std::map<JudgmentOnValueTuple, uword_t> mIndices;
+};
+
+class JudgmentTupleSearchTree {
+public:
+	void add(const JudgmentOnValueTuple& jovt)
+		{
+		if (!mDisjointTrees.size() || !mDisjointTrees.back()->isDisjoint(jovt))
+			{
+			mDisjointTrees.push_back(boost::shared_ptr<DisjointJudgmentTupleSearchTree>(new DisjointJudgmentTupleSearchTree()));
+			mDisjointTrees.back()->add(jovt);
+			}
+		else
+			{
+			mDisjointTrees.back()->add(jovt);
+			}
+		}
+
+	uword_t search(const Fora::ApplyArgFrame& tup)
+		{
+		uword_t baseIndices = 0;
+
+		for (long k = 0; k < mDisjointTrees.size();k++)
+			{
+			auto treePtr = mDisjointTrees[k];
+
+			Nullable<uword_t> val = treePtr->search(tup);
+
+			if (val)
+				return *val + baseIndices;
+
+			baseIndices += treePtr->count();
+			}
+
+		lassert_dump(false, "every actual frame should be either non-disjoint or covered by something in the tree");
+		}
+
+	Nullable<uword_t> search(const JudgmentOnValueTuple& tup)
+		{
+		uword_t baseIndices = 0;
+
+		for (long k = 0; k < mDisjointTrees.size();k++)
+			{
+			auto treePtr = mDisjointTrees[k];
+
+			bool isNotDisjoint = false;
+
+			Nullable<uword_t> val = treePtr->search(tup, isNotDisjoint);
+
+			if (isNotDisjoint)
+				return null();
+
+			if (val)
+				return null() << uword_t(*val + baseIndices);
+
+			baseIndices += treePtr->count();
+			}
+
+		lassert_dump(false, "every tuple should be either non-disjoint or covered by something in the tree");
+		}
+
+	uword_t size() const
+		{
+		return mDisjointTrees.size();
+		}
+
+private:
+	std::vector<boost::shared_ptr<DisjointJudgmentTupleSearchTree> > mDisjointTrees;
+};
+

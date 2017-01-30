@@ -23,9 +23,19 @@ class AxiomsTest(unittest.TestCase):
         jmtsToTest = [axiom.signature() for axiom in axioms]
 
         for tupJmt in jmtsToTest:
+            linear = axioms.axiomSearchLinear(tupJmt)
+            tree = axioms.axiomSearchTree(tupJmt)
             self.assertEqual(
-                axioms.axiomSearchLinear(tupJmt),
-                axioms.axiomSearchTree(tupJmt),
-                "Didn't produce same results for %s" % str(tupJmt)
+                linear,
+                tree,
+                "Didn't produce same results for %s: %s vs %s" % (str(tupJmt), linear, tree)
                 )
 
+    def testAxiomLookupsDontThrow(self):
+        axioms = Runtime.getMainRuntime().getAxioms()
+
+        jmtsToTest = [axiom.signature() for axiom in axioms]
+
+        for tupJmt in jmtsToTest:
+            tree = axioms.axiomSearchTree(tupJmt)
+            

@@ -87,17 +87,7 @@ public:
             return boost::python::object(axioms->resolveAxiomDirectly(*compiler, jovt));
             }
 
-        static boost::python::object
-        AxiomsGetCppWrapperCode(
-                    PolymorphicSharedPtr<Axioms>& axioms
-                    )
-            {
-            pair<std::string, std::string> code = axioms->getCppWrapperCode();
-
-            return boost::python::make_tuple(code.first, code.second);
-            }
-
-		void exportPythonWrapper()
+        void exportPythonWrapper()
 			{
 			using namespace boost::python;
 
@@ -110,7 +100,6 @@ public:
                 .def("__getitem__", &AxiomsGetAxiomGroupByIndex)
                 .def("axiomSearchLinear", &axiomSearchLinear)
                 .def("axiomSearchTree", &axiomSearchTree)
-                .def("getCppWrapperCode", &AxiomsGetCppWrapperCode)
                 ;
 			}
 };
