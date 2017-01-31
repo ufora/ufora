@@ -15,6 +15,7 @@
 ****************************************************************************/
 #include "../TypedFora/ABI/VectorHandle.hpp"
 #include "../TypedFora/ABI/BigVectorLayouts.hppml"
+#include "../TypedFora/ABI/ForaValueArray.hppml"
 #include "VectorUtilities.hpp"
 #include "../../core/math/RandomHashGenerator.hpp"
 #include "../Core/ExecutionContext.hppml"

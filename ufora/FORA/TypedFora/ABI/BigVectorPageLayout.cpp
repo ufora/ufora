@@ -14,6 +14,7 @@
    limitations under the License.
 ****************************************************************************/
 #include "BigVectorPageLayout.hppml"
+#include "../../Judgment/JudgmentOnValue.hppml"
 #include "../../../core/Logging.hpp"
 
 namespace TypedFora {
@@ -21,7 +22,7 @@ namespace Abi {
 
 BigVectorPageLayout::BigVectorPageLayout(
 							VectorDataIDSlice slice,
-							JudgmentOnResult jor,
+							const JudgmentOnResult& jor,
 							hash_type inGuid
 							)
 	{
@@ -34,7 +35,7 @@ BigVectorPageLayout::BigVectorPageLayout(
 BigVectorPageLayout::BigVectorPageLayout(
 							VectorDataID id,
 							uint64_t count,
-							JudgmentOnResult jor,
+							const JudgmentOnResult& jor,
 							hash_type inGuid
 							)
 	{
@@ -51,7 +52,7 @@ BigVectorPageLayout::BigVectorPageLayout(
 BigVectorPageLayout::BigVectorPageLayout(
 							VectorDataID id,
 							uint64_t count,
-							JudgmentOnValue jov,
+							const JudgmentOnValue& jov,
 							hash_type inGuid
 							)
 	{
@@ -67,7 +68,7 @@ BigVectorPageLayout::BigVectorPageLayout(
 
 BigVectorPageLayout::BigVectorPageLayout(
 						ImmutableTreeVector<VectorDataIDSlice> slices,
-						JudgmentOnResult inVectorJor,
+						const JudgmentOnResult& inVectorJor,
 						hash_type inGuid
 						)
 	{

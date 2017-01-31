@@ -21,6 +21,7 @@
 #include "../../core/containers/MapWithIndex.hpp"
 #include "../Vector/VectorDataID.hppml"
 #include "../Vector/MutableVectorRecord.hppml"
+#include "../Judgment/JudgmentOnValue.hppml"
 #include "../TypedFora/ABI/VectorRecord.hpp"
 #include "../TypedFora/ABI/VectorHandle.hpp"
 #include "../Core/CSTValue.hppml"

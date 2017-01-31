@@ -15,7 +15,6 @@
 ****************************************************************************/
 #pragma once
 
-#include "../../Judgment/JudgmentOnValue.hppml"
 #include "../../../core/Common.hppml"
 #include "../../../core/SymbolExport.hpp"
 #include "../../Vector/VectorDataID.hppml"
@@ -32,6 +31,8 @@
 #include <boost/bind.hpp>
 
 class MemoryPool;
+
+class JudgmentOnResult;
 
 class VectorPage;
 
