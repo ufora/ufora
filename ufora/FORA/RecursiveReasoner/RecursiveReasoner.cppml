@@ -1,0 +1,121 @@
+/***************************************************************************
+    Copyright 2017 Ufora Inc.
+ 
+    Licensed under the Apache License, Version 2.0 (the "License");
+    you may not use this file except in compliance with the License.
+    You may obtain a copy of the License at
+ 
+        http://www.apache.org/licenses/LICENSE-2.0
+ 
+    Unless required by applicable law or agreed to in writing, software
+    distributed under the License is distributed on an "AS IS" BASIS,
+    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    See the License for the specific language governing permissions and
+    limitations under the License.
+****************************************************************************/
+
+#include "RecursiveReasoner.hppml"
+#include "RecursiveJudgmentUtil.hppml"
+#include "../Axioms/Axiom.hppml"
+
+RecursiveReasoner::RecursiveReasoner(
+            PolymorphicSharedPtr<TypedFora::Compiler> inCompiler,
+            PolymorphicSharedPtr<Axioms> inAxioms
+            ) : 
+        mCompiler(inCompiler),
+        mAxioms(inAxioms)
+    {
+    }
+
+void RecursiveReasoner::addIncoming(
+        ControlFlowGraph graph, 
+        ImmutableTreeVector<RecursiveJudgment> judgments
+        )
+    {
+    mStates[graph].tree().visitLeaves(judgments,
+        [&](ImmutableTreeVector<RecursiveJudgment> refinedJudgments, 
+                ImmutableTreeVector<ReasonerPredicateResponse> pathToGetHere,
+                EntrypointState& entrypointState
+                ) 
+            {
+            addIncoming(entrypointState, ControlFlowGraphLabel(), refinedJudgments);
+            }
+        );
+    }
+
+void RecursiveReasoner::addIncoming(
+        EntrypointState& entrypointState,
+        ControlFlowGraphLabel label,
+        ImmutableTreeVector<RecursiveJudgment> judgments
+        )
+    {
+    entrypointState.values()[label].visitLeaves(
+        judgments,
+        [&](ImmutableTreeVector<RecursiveJudgment> refinedJudgments, 
+                ImmutableTreeVector<ReasonerPredicateResponse> pathToGetHere,
+                LeafState& leafState
+                ) 
+            {
+            addIncoming(leafState, refinedJudgments);
+            }
+        );
+    }
+
+void RecursiveReasoner::addIncoming(
+        LeafState& leafState,
+        ImmutableTreeVector<RecursiveJudgment> judgments
+        )
+    {
+    leafState.values().resize(judgments.size());
+    for (long k = 0; k < judgments.size(); k++)
+        leafState.values()[k] = judgments[k];
+    }
+
+void RecursiveReasoner::process()
+    {
+    }
+
+RecursiveJudgment RecursiveReasoner::reasonAboutApply(JudgmentOnValueTuple applyJovt)
+    {
+    auto axiom = mAxioms->axiom(*mCompiler, applyJovt);
+
+    lassert(axiom);
+    lassert(!applyJovt.hasExtras());
+
+    //start by expanding the apply tuple
+    @match Axiom(*axiom)
+        -| Expands(jovt, generator) ->> {
+            auto cfg = generator(ApplySignature(applyJovt.jovs().size()));
+
+            auto recursiveJovs = mapITV(applyJovt.jovs(), jovToRecJov);
+
+            addIncoming(cfg, recursiveJovs);
+
+            process();
+
+            std::vector<RecursiveJudgment> results;
+
+            mStates[cfg].tree().visitLeaves(recursiveJovs,
+                    [&](ImmutableTreeVector<RecursiveJudgment> refinedJudgments, 
+                        ImmutableTreeVector<ReasonerPredicateResponse> pathToGetHere,
+                        EntrypointState& entrypointState
+                        ) 
+                    {
+                    entrypointState.values()[ControlFlowGraphLabel()].visitLeaves(
+                        refinedJudgments,
+                        [&](    ImmutableTreeVector<RecursiveJudgment> refinedJudgments2,
+                                ImmutableTreeVector<ReasonerPredicateResponse> pathToGetHere,
+                                LeafState& leafState
+                                ) 
+                            {
+                            results.push_back(leafState.normalValuesOut());
+                            }
+                        );
+                    }
+                );
+
+            lassert(results.size() == 1);
+            
+            return results[0];
+            }
+    }
