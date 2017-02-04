@@ -61,6 +61,7 @@ rule
   | ("<<" | ">>" | "++" | "--" | "&&" | "||") as s       { TOKEN(s) }
 
 
+  | "..."       { TRIPLEDOTS }
   | "::"        { SCOPE }
   |	"=" 		   { EQ }
   |	"*" 		   { STAR }

@@ -4,7 +4,7 @@
 %token <string> WHITESPACE
 %token <string> IDENT
 %token SCOPE GT LT AS CLASS PUBLIC PRIVATE
-%token MATCH_BECOMES TYPE COMMA SEMI EQ AND OF MATCH MINUSPIPE WITH CONST STAR AMP
+%token MATCH_BECOMES TYPE COMMA SEMI EQ AND OF MATCH MINUSPIPE WITH CONST STAR AMP TRIPLEDOTS
 %token LPAREN RPAREN LBRACK RBRACK LBRACE RBRACE COLON
 %token EOL EOF HASH TYPENAME TEMPLATE
 %token NAMESPACE
@@ -46,6 +46,7 @@ atom:
 
 expr_atom_simple:
     TOKEN                           { Codemodel.Token( $1 ) }
+|   TRIPLEDOTS                      { Codemodel.Token( "..." ) }
 |   IDENT                           { Codemodel.Token( $1 ) }
 |   AND                             { Codemodel.Token( "and" ) }
 |   WITH                            { Codemodel.Token( "with" ) }
@@ -180,7 +181,9 @@ template_args_nonempty:
 ;
 template_term:
 	CLASS sp IDENT sp opt_template_default { match $5 with str, deft -> ("class" ^ $2 ^ $3 ^ $4 ^ str, ("class", $3, deft)) }
+|	CLASS sp TRIPLEDOTS sp IDENT sp opt_template_default { match $7 with str, deft -> ("class ... " ^ $2 ^ $4 ^ $5 ^ $6 ^ str, ("class ... ", $5, deft)) }
 |	cpp_typename IDENT sp opt_template_default { (match $4 with str, deft -> match $1 with s,w -> s ^ w ^ $2 ^ $3 ^ str, (s, $2, deft)) }
+|	cpp_typename sp TRIPLEDOTS sp IDENT sp opt_template_default { (match $7 with str, deft -> match $1 with s,w -> s ^ w ^ $2 ^ "..." ^ $4 ^ $5 ^ $6 ^ str, (s, $5, deft)) }
 |   CLASS sp error {disp_error "miss class name"; raise Bad_parse }
 |   cpp_typename error {disp_error "miss type name"; raise Bad_parse }
 ;
@@ -256,6 +259,11 @@ individual_unnamed_typeterm:
 ;
 
 cpp_type_post_prename:
+    cpp_type_post_prename_2 { $1 }
+|	TRIPLEDOTS sp cpp_type_post_prename_2 { match $3 with s,w -> (" ... " ^ s, $2 ^ w) }
+;
+
+cpp_type_post_prename_2:
     IDENT sp                { ($1, $2) }
 |   IDENT sp sharps         { match $3 with s,w -> ($1 ^ " " ^ s, $2 ^ w) }
 ;
